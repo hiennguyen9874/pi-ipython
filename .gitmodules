@@ -1,0 +1,9 @@
+[submodule "references/Unharnessed"]
+	path = references/Unharnessed
+	url = https://github.com/unharnessed-agent/Unharnessed.git
+[submodule "references/prime-agent"]
+	path = references/prime-agent
+	url = https://github.com/PrimeIntellect-ai/prime-agent.git
+[submodule "references/howaboua-pi-stuff"]
+	path = references/howaboua-pi-stuff
+	url = https://github.com/IgorWarzocha/howaboua-pi-stuff.git
