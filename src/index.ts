@@ -3,6 +3,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { loadConfig, type PiIpythonConfig } from "./config.ts";
 import { ensureKernelPython, resolveProjectPython, RUNTIME_SRC_DIR } from "./kernel/bootstrap.ts";
 import { KernelClient } from "./kernel/client.ts";
+import { buildSystemPrompt } from "./prompt/system-prompt.ts";
 import { createIpythonTool, IPYTHON_TOOL_NAME, KERNEL_BOOTSTRAP_CODE } from "./tool/ipython-tool.ts";
 
 /**
@@ -53,7 +54,10 @@ export default function piIpython(pi: ExtensionAPI): void {
 		}
 		forceExclusive();
 	});
-	pi.on("before_agent_start", forceExclusive);
+	pi.on("before_agent_start", (event) => {
+		forceExclusive();
+		return { systemPrompt: buildSystemPrompt(event.systemPromptOptions) };
+	});
 	pi.on("session_shutdown", async () => {
 		await kernel?.shutdown();
 		kernel = undefined;

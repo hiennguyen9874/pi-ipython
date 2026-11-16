@@ -13,6 +13,7 @@
 
 ### Added
 
+- Forced system prompt: pi's prompt is replaced by an Unharnessed-style REPL prompt (one `ipython` tool, `bash()` handles, no `%magic`/`!cmd`), followed by pi's context files, the skills list with `SKILL.md` paths to read from Python, the current date, and the cwd. (#6)
 - Cell output shaping: the result text is truncated to its tail at `output.maxLines` / `output.maxBytes` (pi's 2000 lines / 50KB by default), with the full text spilled to a temp file whose path is in the result. `display` payloads with image MIME types (png, jpeg, gif, webp) become image blocks. stdout/stderr with no owning Cell (threads, subprocesses, tasks of finished Cells) is buffered and appended to the next Cell's result under `[background output]`. (#5)
 - Config: `<agentDir>/pi-ipython.json` (global) merged with `.pi/pi-ipython.json` (project), project values winning per key. Keys: `confirmEachCell`, `python.source` (`uv` | `project`), `python.version`, `output.maxBytes`, `output.maxLines`. Invalid files, values, and unknown keys are reported with the file and key and skipped, so defaults apply. `python.source: "project"` runs the Kernel with `<cwd>/.venv`'s Python and the vendored runtime on `PYTHONPATH`. (#4)
 - `ipython` tool, the only active tool while the extension is loaded. Each call runs one Cell in a persistent Kernel (`python -m rlm.repl`, REPL protocol v3) started lazily in the session cwd; the result carries stdout, labelled stderr, the trailing expression's repr, errors with tracebacks, and the duration. (#3)
