@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Lifecycle cleanup preserves live hosts with unknown identities, never kills historical process groups without ownership proof, and retains journals after unresolved cleanup. Windows Kernels contain ordinary subprocesses in a kill-on-close job. Explicit new/resume/fork sessions receive a state-lost notice even without earlier Cells. After a POSIX host crash, groups whose leaders have already died are deliberately skipped because their ownership cannot be established safely. (#7)
+
 - Cell output spills are owner-only and preserve the Cell result if saving fails. Background text is preserved in full (including literal truncation markers), keeps its attribution after tail truncation, and background image displays are delivered with the next result. (#5)
 
 - Config reports inherited property names as unknown keys instead of failing to load, and rejects Python versions below the runtime's minimum (3.11) so defaults apply.

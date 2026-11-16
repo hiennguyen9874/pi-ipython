@@ -47,7 +47,7 @@ export default function piIpython(pi: ExtensionAPI): void {
 
 	const forceExclusive = () => pi.setActiveTools([IPYTHON_TOOL_NAME]);
 
-	pi.on("session_start", (_event, ctx) => {
+	pi.on("session_start", (event, ctx) => {
 		cwd = ctx.cwd;
 		const loaded = loadConfig(cwd);
 		config = loaded.config;
@@ -66,7 +66,7 @@ export default function piIpython(pi: ExtensionAPI): void {
 		if (config.python.source === "uv") ensureKernelPython({ pythonVersion: config.python.version }).catch(() => undefined);
 
 		// Every session starts with a fresh Kernel: Cells already in the conversation ran in one that is gone.
-		if (hasEarlierCells(ctx.sessionManager.getBranch())) {
+		if (["new", "resume", "fork"].includes(event.reason) || hasEarlierCells(ctx.sessionManager.getBranch())) {
 			pi.sendMessage({ customType: STATE_LOST_TYPE, content: STATE_LOST_NOTICE, display: true }, { deliverAs: "nextTurn" });
 		}
 		forceExclusive();

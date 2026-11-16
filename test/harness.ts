@@ -55,6 +55,12 @@ export function resultText(message: ToolResultMessage): string {
 
 /** Pids of Kernel processes (`python -m rlm.repl`) that are children of this test process. */
 export function kernelPids(): number[] {
+	if (process.platform === "win32") {
+		const output = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
+			`Get-CimInstance Win32_Process | Where-Object { $_.ParentProcessId -eq ${process.pid} -and ($_.CommandLine -match 'windows-kernel.py|-m rlm.repl') } | ForEach-Object { $_.ProcessId }`],
+			{ encoding: "utf8" });
+		return output.trim() ? output.trim().split(/\s+/).map(Number) : [];
+	}
 	const ps = execFileSync("ps", ["-A", "-o", "pid=,ppid=,args="], { encoding: "utf8" });
 	return ps.split("\n").flatMap((line) => {
 		const [pid, ppid, ...args] = line.trim().split(/\s+/);

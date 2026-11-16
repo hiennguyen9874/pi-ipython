@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -16,11 +16,16 @@ afterEach(async () => {
 	for (const cleanup of cleanups.splice(0)) cleanup();
 });
 
-const SPAWN_CHILD = "import os, subprocess\np = subprocess.Popen(['sleep', '300'])\n(os.getpid(), p.pid)";
+const SPAWN_CHILD = "import os, subprocess, sys\np = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(300)'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n(os.getpid(), p.pid)";
 
 /** Alive and not a zombie. */
 function isAlive(pid: number): boolean {
 	try {
+		if (process.platform === "win32") {
+			return execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
+				`if (Get-Process -Id ${pid} -ErrorAction SilentlyContinue) { 'alive' }`],
+				{ encoding: "utf8" }).trim() === "alive";
+		}
 		const stat = execFileSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }).trim();
 		return stat !== "" && !stat.startsWith("Z");
 	} catch {
@@ -70,7 +75,7 @@ test.each(["quit", "reload", "new", "resume", "fork"] as const)(
 	},
 );
 
-test("a Kernel left behind by a killed pi host is reaped when the extension next starts", async () => {
+test.skipIf(process.platform === "win32")("a Kernel left behind by a killed pi host is reaped when the extension next starts", async () => {
 	const agentDir = mkdtempSync(join(tmpdir(), "pi-ipython-agent-"));
 	cleanups.push(() => rmSync(agentDir, { recursive: true, force: true }));
 	const script = `
@@ -132,8 +137,102 @@ test.each(["resume", "fork", "startup"] as const)(
 	},
 );
 
-test("a session without earlier Cells gets no state-lost notice", async () => {
-	h = await createHarness({ sessionStartEvent: { type: "session_start", reason: "new" } });
+test.each(["new", "resume", "fork"] as const)("an explicit %s session is notified even without earlier Cells", async (reason) => {
+	h = await createHarness({ sessionStartEvent: { type: "session_start", reason } });
+	let seen = "";
+	h.setResponses([(context) => {
+		seen = JSON.stringify(context.messages);
+		return fauxAssistantMessage("noted");
+	}]);
+	await h.session.prompt("continue");
+	expect(seen).toContain(STATE_LOST_NOTICE);
+});
+
+test("a live host with an unknown recorded identity keeps its Kernel", async () => {
+	h = await createHarness();
+	const [result] = await h.runCells("import os; os.getpid()");
+	const pid = Number(resultText(result!));
+	const dir = join(h.agentDir, "pi-ipython", "journal");
+	const name = readdirSync(dir).find((name) => name.startsWith(`${process.pid}-`))!;
+	renameSync(join(dir, name), join(dir, `${process.pid}-unknown.jsonl`));
+
+	await h.session.extensionRunner.emit({ type: "session_start", reason: "reload" });
+	expect(isAlive(pid)).toBe(true);
+	const [next] = await h.runCells("40 + 2");
+	expect(resultText(next!)).toBe("42");
+});
+
+test("unresolved journal records are kept and retried once identity is available", async () => {
+	h = await createHarness();
+	const [result] = await h.runCells("import os; os.getpid()");
+	const pid = Number(resultText(result!));
+	const dir = join(h.agentDir, "pi-ipython", "journal");
+	const ownJournal = join(dir, readdirSync(dir).find((name) => name.startsWith(`${process.pid}-`))!);
+	const original = readFileSync(ownJournal, "utf8");
+	// No process can have this host pid on supported platforms.
+	const abandoned = join(dir, "2147483647-unknown.jsonl");
+	writeFileSync(abandoned, JSON.stringify({ version: 1, pid, active: true }) + "\n");
+
+	await h.session.extensionRunner.emit({ type: "session_start", reason: "reload" });
+	expect(existsSync(abandoned)).toBe(true);
+	expect(isAlive(pid)).toBe(true);
+
+	writeFileSync(abandoned, original);
+	await h.session.extensionRunner.emit({ type: "session_start", reason: "reload" });
+	expect(await waitFor(() => !isAlive(pid))).toBe(true);
+	expect(existsSync(abandoned)).toBe(false);
+});
+
+test("an unreadable journal is retained without failing session startup", async () => {
+	h = await createHarness();
+	const journal = join(h.agentDir, "pi-ipython", "journal", "2147483647-unknown.jsonl");
+	// A directory deterministically fails readFile, including when tests run as root.
+	mkdirSync(journal, { recursive: true });
+	await h.session.extensionRunner.emit({ type: "session_start", reason: "reload" });
+	expect(existsSync(journal)).toBe(true);
+	const [result] = await h.runCells("40 + 2");
+	expect(resultText(result!)).toBe("42");
+});
+
+test.skipIf(process.platform === "win32")("a historical dead leader never authorizes killing an unverified group", async () => {
+	const leader = spawn(process.execPath, ["-e", `
+		const { spawn } = require("node:child_process");
+		const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+		console.log(child.pid);
+		child.unref();
+	`], { detached: true, stdio: ["ignore", "pipe", "inherit"] });
+	const exited = new Promise((resolve) => leader.once("exit", resolve));
+	const child = await new Promise<number>((resolve, reject) => {
+		leader.stdout!.once("data", (data) => resolve(Number(String(data).trim())));
+		leader.once("error", reject);
+	});
+	cleanups.push(() => {
+		try { process.kill(child, "SIGKILL"); } catch {}
+	});
+	await exited;
+	expect(isAlive(child)).toBe(true);
+
+	h = await createHarness({ setup: ({ agentDir }) => {
+		const dir = join(agentDir, "pi-ipython", "journal");
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "2147483647-unknown.jsonl"), JSON.stringify({
+			version: 1, pid: leader.pid, processStartId: "historical-identity", active: true,
+		}) + "\n");
+	} });
+	expect(isAlive(child)).toBe(true);
+});
+
+test.skipIf(process.platform !== "win32")("Windows kills ordinary children even when the Kernel exits abruptly", async () => {
+	h = await createHarness();
+	const [result] = await h.runCells(SPAWN_CHILD);
+	const [kernel, child] = pidsOf(resultText(result!));
+	expect(isAlive(child)).toBe(true);
+	await h.runCells("os._exit(1)");
+	expect(await waitFor(() => !isAlive(kernel) && !isAlive(child))).toBe(true);
+});
+
+test("a fresh startup without earlier Cells gets no state-lost notice", async () => {
+	h = await createHarness();
 	let seen = "";
 	h.setResponses([
 		(context) => {

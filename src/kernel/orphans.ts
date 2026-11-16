@@ -14,6 +14,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { appendFileSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
+import { isProcessAlive } from "./process.ts";
 
 /** Env var the runtime reads to journal its `bash()` children (runtime/src/rlm/bash.py). */
 export const ORPHAN_JOURNAL_ENV = "UNHARNESSED_INTERNAL_ORPHAN_PROCESS_JOURNAL";
@@ -47,11 +48,15 @@ export function recordProcess(journal: string, pid: number, active: boolean): vo
 
 /** After a Kernel exits: kill what is left of its process group and the `bash()` children it journaled. */
 export function reapKernel(journal: string | undefined, kernelPid: number): void {
-	killExitedGroup(kernelPid);
+	const groupReaped = killExitedGroup(kernelPid);
 	if (!journal) return;
-	recordProcess(journal, kernelPid, false);
-	for (const record of activeRecords(journal)) {
-		if (record.kernelPid === kernelPid && reap(record)) recordProcess(journal, record.pid, false);
+	if (groupReaped) recordProcess(journal, kernelPid, false);
+	try {
+		for (const record of activeRecords(journal)) {
+			if (record.kernelPid === kernelPid && reap(record)) recordProcess(journal, record.pid, false);
+		}
+	} catch {
+		// Retain the journal if reading it failed; exit handlers must not throw.
 	}
 }
 
@@ -67,21 +72,27 @@ export function reapDeadHosts(dir: string): void {
 		const match = /^(\d+)-(\w+)\.jsonl$/.exec(name);
 		if (!match) continue;
 		const pid = Number(match[1]);
-		if (isProcessAlive(pid) && startIdTag(getProcessStartId(pid)) === match[2]) continue;
+		if (isProcessAlive(pid)) {
+			const current = getProcessStartId(pid);
+			if (!current || match[2] === "unknown" || startIdTag(current) === match[2]) continue;
+		}
 		const journal = path.join(dir, name);
-		for (const record of activeRecords(journal)) reap(record);
-		rmSync(journal, { force: true });
+		try {
+			const records = activeRecords(journal);
+			let complete = true;
+			for (const record of records) {
+				if (!reap(record)) complete = false;
+			}
+			if (complete) rmSync(journal, { force: true });
+		} catch {
+			// Keep unreadable or unresolved journals for the next startup.
+		}
 	}
 }
 
 /** Latest record per pid that is still marked active. */
 function activeRecords(journal: string): JournalRecord[] {
-	let contents: string;
-	try {
-		contents = readFileSync(journal, "utf8");
-	} catch {
-		return [];
-	}
+	const contents = readFileSync(journal, "utf8");
 	const latest = new Map<number, JournalRecord>();
 	for (const line of contents.split("\n")) {
 		if (!line) continue;
@@ -102,14 +113,15 @@ function activeRecords(journal: string): JournalRecord[] {
  * A live pid is only killed when its start id proves it is still the journaled process.
  */
 function reap(record: JournalRecord): boolean {
-	if (!isProcessAlive(record.pid)) return killExitedGroup(record.pid);
+	// A historical PGID may now belong to an unrelated group. Only the immediate
+	// child-exit callback may clean a group after its leader has died.
+	if (!isProcessAlive(record.pid)) return true;
 	const current = getProcessStartId(record.pid);
-	if (record.processStartId !== undefined && current !== record.processStartId) return true; // pid reused: ours is gone
+	if (!record.processStartId || !current) return false;
+	if (current !== record.processStartId) return true; // pid reused: ours is gone
 	if (process.platform === "win32") {
-		// Identity-free records cannot rule out a reused pid; the runtime's job objects cover that case.
-		if (record.processStartId === undefined) return false;
 		const taskkill = path.win32.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe");
-		return spawnSync(taskkill, ["/F", "/T", "/PID", String(record.pid)], { stdio: "ignore", windowsHide: true }).status === 0;
+		return spawnSync(taskkill, ["/F", "/T", "/PID", String(record.pid)], { stdio: "ignore", windowsHide: true, timeout: 10_000 }).status === 0;
 	}
 	try {
 		process.kill(-record.pid, "SIGKILL");
@@ -125,26 +137,18 @@ function reap(record: JournalRecord): boolean {
 }
 
 /**
- * Kill the surviving members of a dead leader's process group. Safe without an identity check:
- * POSIX does not reuse a pid while a process group with that id exists.
+ * Clean a just-exited child's group, never a historical journal entry.
+ * shortcut: after a crash, dead leaders' groups cannot be identified safely;
+ * use an OS-owned supervisor if cleanup without a surviving leader is required.
  */
 function killExitedGroup(pid: number): boolean {
 	if (process.platform === "win32") return true;
 	try {
 		process.kill(-pid, "SIGKILL");
-	} catch {
-		// No such group: nothing left to kill.
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "ESRCH";
 	}
 	return true;
-}
-
-function isProcessAlive(pid: number): boolean {
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch (error) {
-		return (error as NodeJS.ErrnoException).code === "EPERM";
-	}
 }
 
 function startIdTag(startId: string | undefined): string {

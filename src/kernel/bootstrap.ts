@@ -17,6 +17,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { tryAcquireDirLock } from "./dir-lock.ts";
+import { isProcessAlive } from "./process.ts";
 
 export const DEFAULT_PYTHON_VERSION = "3.13";
 
@@ -147,15 +148,6 @@ async function acquireLock(venv: string): Promise<() => Promise<void>> {
 		});
 		if (attempt === "acquired") return () => rm(lockPath, { recursive: true, force: true });
 		if (attempt === "held") await sleep(LOCK_RETRY_MS);
-	}
-}
-
-function isProcessAlive(pid: number): boolean {
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch (error) {
-		return (error as NodeJS.ErrnoException).code === "EPERM";
 	}
 }
 

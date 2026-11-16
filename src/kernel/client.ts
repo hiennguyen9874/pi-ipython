@@ -11,6 +11,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
+import { fileURLToPath } from "node:url";
 import { ORPHAN_JOURNAL_ENV, reapKernel, recordProcess } from "./orphans.ts";
 
 export const REPL_PROTOCOL_VERSION = 3;
@@ -147,7 +148,10 @@ export class KernelClient {
 		this.stderrTail = "";
 		this.backgroundOutput = "";
 		this.backgroundImages = [];
-		const child = spawn(python, ["-m", "rlm.repl"], {
+		const args = process.platform === "win32"
+			? [fileURLToPath(new URL("./windows-kernel.py", import.meta.url))]
+			: ["-m", "rlm.repl"];
+		const child = spawn(python, args, {
 			cwd: this.options.cwd,
 			env: {
 				...process.env,
