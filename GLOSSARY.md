@@ -1,0 +1,25 @@
+# pi-ipython
+
+A pi extension that gives the model a persistent Python REPL as its primary tool, modelled on Unharnessed.
+
+## Language
+
+**Kernel**:
+The long-lived Python process owned by one pi session, in which all Cells run against one shared namespace.
+_Avoid_: Jupyter kernel, ipykernel, interpreter
+
+**Kernel runtime**:
+The Python package running inside the Kernel that speaks the host protocol (vendored from Unharnessed's `rlm`).
+_Avoid_: rlm, shim
+
+**Cell**:
+One unit of Python code the model submits to the Kernel in a single `ipython` tool call.
+_Avoid_: Script, snippet, execution
+
+**Python state**:
+The user-defined names (variables, functions, imports) living in the Kernel's namespace between Cells.
+_Avoid_: Kernel memory, variables, notebook state
+
+**Python-state notice**:
+The message telling the model which Python state survived after a compaction.
+_Avoid_: State summary, kernel report
