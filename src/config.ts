@@ -27,8 +27,12 @@ const FIELDS: Record<string, { valid: (v: unknown) => boolean; expected: string 
 	confirmEachCell: { valid: (v) => typeof v === "boolean", expected: "true or false" },
 	"python.source": { valid: (v) => v === "uv" || v === "project", expected: '"uv" or "project"' },
 	"python.version": {
-		valid: (v) => typeof v === "string" && /^\d+\.\d+(\.\d+)?$/.test(v),
-		expected: 'a Python version like "3.13"',
+		valid: (v) => {
+			if (typeof v !== "string" || !/^\d+\.\d+(\.\d+)?$/.test(v)) return false;
+			const [major, minor] = v.split(".").map(Number);
+			return major! > 3 || (major === 3 && minor! >= 11);
+		},
+		expected: 'a Python version >=3.11 like "3.13"',
 	},
 	"output.maxBytes": { valid: isPositiveInt, expected: "a positive integer" },
 	"output.maxLines": { valid: isPositiveInt, expected: "a positive integer" },
@@ -85,7 +89,7 @@ function readJsonObject(file: string, errors: string[]): Record<string, unknown>
 
 function collect(raw: Record<string, unknown>, file: string, values: Map<string, unknown>, errors: string[]): void {
 	const check = (key: string, value: unknown) => {
-		const field = FIELDS[key];
+		const field = Object.hasOwn(FIELDS, key) ? FIELDS[key] : undefined;
 		if (!field) errors.push(`${file}: unknown key "${key}"`);
 		else if (!field.valid(value)) errors.push(`${file}: "${key}" must be ${field.expected}, got ${JSON.stringify(value)}`);
 		else values.set(key, value);

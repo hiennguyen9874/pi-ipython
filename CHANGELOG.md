@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Config reports inherited property names as unknown keys instead of failing to load, and rejects Python versions below the runtime's minimum (3.11) so defaults apply.
+
 - Kernel pipe errors fail the Cell instead of crashing pi; a later Cell can start a fresh Kernel.
 - Bootstrap locks are published with their owner atomically, reclaim stale locks with identity checks, and recover abandoned ownerless directory locks.
 

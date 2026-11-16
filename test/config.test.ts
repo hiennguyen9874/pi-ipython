@@ -99,6 +99,40 @@ test("an invalid value is reported with the file and key, and the session starts
 	expect(resultText(r!)).toBe(`('${managedVenv}', '3.13')`);
 });
 
+test("inherited property names are reported as unknown keys without preventing Cells", async () => {
+	const notices: string[] = [];
+	let globalFile = "";
+	h = await createHarness({
+		ui: { notify: (m) => notices.push(m) },
+		setup: ({ agentDir }) => {
+			globalFile = join(agentDir, "pi-ipython.json");
+			writeGlobalConfig(agentDir, JSON.parse('{"constructor":true,"toString":true,"__proto__":true}'));
+		},
+	});
+	expect(notices).toEqual(
+		["constructor", "toString", "__proto__"].map((key) => `pi-ipython config: ${globalFile}: unknown key "${key}"`),
+	);
+	const [r] = await h.runCells(whereCell);
+	expect(resultText(r!)).toBe(`('${managedVenv}', '3.13')`);
+});
+
+test.each(["2.7", "3.10", "3.10.9"])("unsupported Python %s is reported and defaults apply", async (version) => {
+	const notices: string[] = [];
+	let projectFile = "";
+	h = await createHarness({
+		ui: { notify: (m) => notices.push(m) },
+		setup: ({ cwd }) => {
+			projectFile = join(cwd, ".pi", "pi-ipython.json");
+			writeProjectConfig(cwd, { python: { version } });
+		},
+	});
+	expect(notices).toEqual([
+		`pi-ipython config: ${projectFile}: "python.version" must be a Python version >=3.11 like "3.13", got "${version}"`,
+	]);
+	const [r] = await h.runCells(whereCell);
+	expect(resultText(r!)).toBe(`('${managedVenv}', '3.13')`);
+});
+
 test("unparseable JSON and unknown keys are reported with the file", async () => {
 	const notices: string[] = [];
 	h = await createHarness({
