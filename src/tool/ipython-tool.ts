@@ -9,7 +9,7 @@
 
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import type { CellError, CellResult, KernelClient } from "../kernel/client.ts";
+import type { CellResult, KernelClient } from "../kernel/client.ts";
 
 export const IPYTHON_TOOL_NAME = "ipython";
 
@@ -29,14 +29,7 @@ const ipythonSchema = Type.Object({
 	code: Type.String({ description: "Python code to run in the persistent Kernel." }),
 });
 
-export interface IpythonToolDetails {
-	status: CellResult["status"];
-	durationMs: number;
-	stdout: string;
-	stderr: string;
-	result?: string;
-	error?: CellError;
-}
+export type IpythonToolDetails = CellResult;
 
 /** Model-facing text: stdout, then stderr (labelled), then the trailing expression's repr, then the traceback. */
 export function formatCellResult(r: CellResult): string {
@@ -68,14 +61,7 @@ export function createIpythonTool(
 			const r = await getKernel().execute(params.code, signal);
 			return {
 				content: [{ type: "text", text: formatCellResult(r) }],
-				details: {
-					status: r.status,
-					durationMs: r.durationMs,
-					stdout: r.stdout,
-					stderr: r.stderr,
-					result: r.result,
-					error: r.error,
-				},
+				details: r,
 				isError: r.status !== "ok",
 			};
 		},

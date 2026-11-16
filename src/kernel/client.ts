@@ -185,6 +185,10 @@ export class KernelClient {
 		child.stderr?.on("data", (text: string) => {
 			this.stderrTail = (this.stderrTail + text).slice(-MAX_STDERR_TAIL_CHARS);
 		});
+		// Stream errors are separate from child-process errors, even with a write callback.
+		for (const stream of [child.stdin, child.stdout, child.stderr]) {
+			stream?.on("error", (error) => this.lose(child, error));
+		}
 		child.on("error", (error) => this.lose(child, error));
 		// "close" fires after stdio drained, so the stderr tail is complete.
 		child.on("close", (code, signal) => {

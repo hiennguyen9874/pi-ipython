@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Kernel pipe errors fail the Cell instead of crashing pi; a later Cell can start a fresh Kernel.
+- Bootstrap locks are published with their owner atomically, reclaim stale locks with identity checks, and recover abandoned ownerless directory locks.
+
 ### Added
 
 - `ipython` tool, the only active tool while the extension is loaded. Each call runs one Cell in a persistent Kernel (`python -m rlm.repl`, REPL protocol v3) started lazily in the session cwd; the result carries stdout, labelled stderr, the trailing expression's repr, errors with tracebacks, and the duration. (#3)

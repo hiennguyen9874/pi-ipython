@@ -10,17 +10,19 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { access, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { tryAcquireDirLock } from "./dir-lock.ts";
 
 export const DEFAULT_PYTHON_VERSION = "3.13";
 
 const MARKER_FILE = ".pi-ipython-bootstrap.json";
 const LOCK_RETRY_MS = 200;
+const OWNERLESS_LOCK_STALE_MS = 30_000;
 const UV_INSTALL_HINT = "curl -LsSf https://astral.sh/uv/install.sh | sh";
 
 /** The vendored Kernel runtime (`runtime/` at the package root). */
@@ -112,26 +114,23 @@ async function runtimeIdentity(version: string): Promise<string> {
 	return `sha256:${hash.digest("hex")}`;
 }
 
-/** Directory lock shared across pi processes. A lock whose owner pid is dead is taken over. */
+/** Atomically published lock shared across pi processes, including recovery of legacy directory locks. */
 async function acquireLock(venv: string): Promise<() => Promise<void>> {
-	const lockDir = `${venv}.lock`;
-	const pidFile = path.join(lockDir, "pid");
-	await mkdir(path.dirname(lockDir), { recursive: true });
+	const lockPath = `${venv}.lock`;
+	await mkdir(path.dirname(lockPath), { recursive: true });
 	for (;;) {
-		try {
-			await mkdir(lockDir);
-			await writeFile(pidFile, String(process.pid));
-			return () => rm(lockDir, { recursive: true, force: true });
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-		}
-		const owner = Number.parseInt(await readFile(pidFile, "utf8").catch(() => ""), 10);
-		// A missing pid means the owner is between mkdir and writeFile; wait for it.
-		if (Number.isSafeInteger(owner) && owner > 0 && !isProcessAlive(owner)) {
-			await rm(lockDir, { recursive: true, force: true });
-			continue;
-		}
-		await sleep(LOCK_RETRY_MS);
+		const attempt = await tryAcquireDirLock(lockPath, async (ownerPid) => {
+			if (ownerPid !== undefined) return isProcessAlive(ownerPid);
+			try {
+				const info = await stat(lockPath);
+				return Date.now() - info.mtimeMs <= OWNERLESS_LOCK_STALE_MS;
+			} catch {
+				// An unjudgeable lock may still be live.
+				return true;
+			}
+		});
+		if (attempt === "acquired") return () => rm(lockPath, { recursive: true, force: true });
+		if (attempt === "held") await sleep(LOCK_RETRY_MS);
 	}
 }
 

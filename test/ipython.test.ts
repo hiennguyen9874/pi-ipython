@@ -58,6 +58,29 @@ test("stdout and stderr are reported separately", async () => {
 	expect((r?.details as { durationMs: number }).durationMs).toBeGreaterThanOrEqual(0);
 });
 
+test("Kernel death during a pending write fails the Cell without crashing pi", async () => {
+	h = await createHarness();
+	await h.runCells("1");
+	const [pid] = kernelPids();
+	expect(pid).toBeDefined();
+	// Stop reads so the large request cannot drain before the process is killed.
+	process.kill(pid!, "SIGSTOP");
+	const kill = setTimeout(() => process.kill(pid!, "SIGKILL"), 100);
+	try {
+		const [failed] = await h.runCells(`#${"x".repeat(8 * 1024 * 1024)}\n42`);
+		expect(failed?.isError).toBe(true);
+		const [next] = await h.runCells("42");
+		expect(next?.isError).toBe(false);
+		expect(resultText(next!)).toBe("42");
+	} finally {
+		clearTimeout(kill);
+		// Also clean up if the assertion or request fails before the timer fires.
+		try {
+			process.kill(pid!, "SIGKILL");
+		} catch {}
+	}
+});
+
 test("the Kernel runs in the session cwd", async () => {
 	h = await createHarness();
 	const [r] = await h.runCells("import os\nos.getcwd()");
