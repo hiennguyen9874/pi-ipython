@@ -1,0 +1,18 @@
+pi-ipython
+Copyright (c) 2026 pi-ipython contributors
+
+This project includes code vendored or ported from the following MIT-licensed
+projects. Their copyright notices are kept in LICENSE and runtime/LICENSE.
+
+- Unharnessed (https://github.com/unharnessed-agent/Unharnessed)
+  Copyright (c) 2026 Unharnessed
+  runtime/src/rlm/ and runtime/test/ are vendored from unharnessed-runtime at
+  commit fe2cf2815f78463464b91c598fc0c31c0af98f4c.
+
+- Prime Agent (https://github.com/PrimeIntellect-ai/prime-agent)
+  Copyright (c) 2025-2026 Prime Intellect Ltd.
+  Upstream of Unharnessed; the Kernel runtime and host code derive from it.
+
+- pi (https://github.com/earendil-works/pi)
+  Portions Copyright (c) 2025 Mario Zechner
+  The Kernel host ported from Unharnessed's pre-Rust history was built on pi.

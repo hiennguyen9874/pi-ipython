@@ -1,2 +1,6 @@
 /.pi
 context.md
+node_modules/
+runtime/.venv/
+__pycache__/
+.pytest_cache/

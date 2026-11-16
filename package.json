@@ -1,0 +1,42 @@
+{
+  "name": "pi-ipython",
+  "version": "0.1.0",
+  "description": "pi extension: a persistent Python Kernel behind a single ipython tool",
+  "license": "MIT",
+  "type": "module",
+  "keywords": [
+    "pi-package"
+  ],
+  "files": [
+    "src",
+    "runtime/src",
+    "runtime/pyproject.toml",
+    "runtime/uv.lock",
+    "runtime/.python-version",
+    "runtime/LICENSE",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "npm run test:ts && npm run test:py",
+    "test:ts": "vitest --run",
+    "test:py": "cd runtime && uv run pytest -q",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "^1.5.2",
+    "@earendil-works/pi-coding-agent": "^1.5.2",
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.0"
+  }
+}
