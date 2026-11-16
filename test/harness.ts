@@ -1,7 +1,14 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type FauxResponseStep, fauxProvider } from "@earendil-works/pi-ai";
+import {
+	type FauxResponseStep,
+	fauxAssistantMessage,
+	fauxProvider,
+	fauxToolCall,
+	type ToolResultMessage,
+} from "@earendil-works/pi-ai";
 import {
 	type AgentSession,
 	createAgentSession,
@@ -18,7 +25,23 @@ export interface Harness {
 	cwd: string;
 	/** Queue scripted model replies. */
 	setResponses(responses: FauxResponseStep[]): void;
+	/** Have the model run each code string as one ipython Cell in a single turn; returns the tool results. */
+	runCells(...codes: string[]): Promise<ToolResultMessage[]>;
 	dispose(): Promise<void>;
+}
+
+/** Text the model sees in a tool result. */
+export function resultText(message: ToolResultMessage): string {
+	return message.content.map((block) => (block.type === "text" ? block.text : "")).join("");
+}
+
+/** Pids of Kernel processes (`python -m rlm.repl`) that are children of this test process. */
+export function kernelPids(): number[] {
+	const ps = execFileSync("ps", ["-A", "-o", "pid=,ppid=,args="], { encoding: "utf8" });
+	return ps.split("\n").flatMap((line) => {
+		const [pid, ppid, ...args] = line.trim().split(/\s+/);
+		return Number(ppid) === process.pid && args.join(" ").includes("-m rlm.repl") ? [Number(pid)] : [];
+	});
 }
 
 /**
@@ -30,6 +53,7 @@ export async function createHarness(): Promise<Harness> {
 	const root = mkdtempSync(join(tmpdir(), "pi-ipython-test-"));
 	const cwd = join(root, "work");
 	const agentDir = join(root, "agent");
+	mkdirSync(cwd, { recursive: true });
 
 	const faux = fauxProvider();
 	const modelRuntime = await ModelRuntime.create({
@@ -65,7 +89,19 @@ export async function createHarness(): Promise<Harness> {
 		resourceLoader,
 		cwd,
 		setResponses: (responses) => faux.setResponses(responses),
+		async runCells(...codes) {
+			const before = session.messages.length;
+			faux.setResponses([
+				...codes.map((code) => fauxAssistantMessage(fauxToolCall("ipython", { code }), { stopReason: "toolUse" })),
+				fauxAssistantMessage("done"),
+			]);
+			await session.prompt("run the cells");
+			return session.messages
+				.slice(before)
+				.filter((m): m is ToolResultMessage => m.role === "toolResult");
+		},
 		async dispose() {
+			await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
 			session.dispose();
 			rmSync(root, { recursive: true, force: true });
 		},
