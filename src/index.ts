@@ -1,8 +1,9 @@
 import path from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, getAgentDir, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { loadConfig, type PiIpythonConfig } from "./config.ts";
 import { ensureKernelPython, resolveProjectPython, RUNTIME_SRC_DIR } from "./kernel/bootstrap.ts";
 import { KernelClient } from "./kernel/client.ts";
+import { hostJournalPath, reapDeadHosts } from "./kernel/orphans.ts";
 import { buildSystemPrompt } from "./prompt/system-prompt.ts";
 import { createIpythonTool, IPYTHON_TOOL_NAME, KERNEL_BOOTSTRAP_CODE } from "./tool/ipython-tool.ts";
 
@@ -14,6 +15,7 @@ export default function piIpython(pi: ExtensionAPI): void {
 	let kernel: KernelClient | undefined;
 	let cwd = process.cwd();
 	let config: PiIpythonConfig = loadConfig(cwd).config;
+	let journalPath: string | undefined;
 
 	const createKernel = (): KernelClient => {
 		const { source, version } = config.python;
@@ -25,12 +27,14 @@ export default function piIpython(pi: ExtensionAPI): void {
 				resolvePython: () => resolveProjectPython(cwd),
 				bootstrapCode: KERNEL_BOOTSTRAP_CODE,
 				env: { PYTHONPATH: pythonPath },
+				journalPath,
 			});
 		}
 		return new KernelClient({
 			cwd,
 			resolvePython: () => ensureKernelPython({ pythonVersion: version }),
 			bootstrapCode: KERNEL_BOOTSTRAP_CODE,
+			journalPath,
 		});
 	};
 
@@ -52,6 +56,19 @@ export default function piIpython(pi: ExtensionAPI): void {
 			if (ctx.hasUI) ctx.ui.notify(message, "error");
 			else console.error(message);
 		}
+
+		// Kernels of pi hosts that died without shutting them down.
+		const journalDir = path.join(getAgentDir(), "pi-ipython", "journal");
+		reapDeadHosts(journalDir);
+		journalPath = hostJournalPath(journalDir);
+
+		// Warm the venv so the first Cell does not wait for it; a failure resurfaces on that Cell.
+		if (config.python.source === "uv") ensureKernelPython({ pythonVersion: config.python.version }).catch(() => undefined);
+
+		// Every session starts with a fresh Kernel: Cells already in the conversation ran in one that is gone.
+		if (hasEarlierCells(ctx.sessionManager.getBranch())) {
+			pi.sendMessage({ customType: STATE_LOST_TYPE, content: STATE_LOST_NOTICE, display: true }, { deliverAs: "nextTurn" });
+		}
 		forceExclusive();
 	});
 	pi.on("before_agent_start", (event) => {
@@ -62,4 +79,14 @@ export default function piIpython(pi: ExtensionAPI): void {
 		await kernel?.shutdown();
 		kernel = undefined;
 	});
+}
+
+export const STATE_LOST_TYPE = "ipython_state_lost";
+export const STATE_LOST_NOTICE =
+	"The Python Kernel was restarted, so all Python state from earlier Cells in this conversation is gone: variables, functions, and imports no longer exist. Recreate what you need before using it.";
+
+function hasEarlierCells(branch: SessionEntry[]): boolean {
+	return branch.some(
+		(entry) => entry.type === "message" && entry.message.role === "toolResult" && entry.message.toolName === IPYTHON_TOOL_NAME,
+	);
 }

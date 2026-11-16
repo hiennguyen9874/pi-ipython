@@ -11,6 +11,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
+import { ORPHAN_JOURNAL_ENV, reapKernel, recordProcess } from "./orphans.ts";
 
 export const REPL_PROTOCOL_VERSION = 3;
 const READY_TIMEOUT_MS = 30_000;
@@ -57,6 +58,8 @@ export interface KernelClientOptions {
 	bootstrapCode?: string;
 	/** Extra environment for the Kernel process. */
 	env?: Record<string, string>;
+	/** This host's orphan journal (see orphans.ts), so a Kernel left by a crashed host is reaped later. */
+	journalPath?: string;
 }
 
 interface ActiveCell {
@@ -152,11 +155,20 @@ export class KernelClient {
 				...(process.platform === "win32" ? { PYTHONUTF8: "1" } : {}),
 				// The runtime exits when this pid dies, so a crashed pi leaves no Kernel behind.
 				UNHARNESSED_KERNEL_OWNER_PID: String(process.pid),
+				...(this.options.journalPath ? { [ORPHAN_JOURNAL_ENV]: this.options.journalPath } : {}),
 			},
 			stdio: ["pipe", "pipe", "pipe"],
+			// Its own process group, so the Kernel's child processes can be killed with it.
+			detached: process.platform !== "win32",
 			windowsHide: true,
 		});
 		this.child = child;
+		const { journalPath } = this.options;
+		const pid = child.pid;
+		if (pid !== undefined) {
+			if (journalPath) recordProcess(journalPath, pid, true);
+			child.once("exit", () => reapKernel(journalPath, pid));
+		}
 		const ready = new Promise<number>((resolve, reject) => {
 			this.ready = { resolve, reject };
 		});

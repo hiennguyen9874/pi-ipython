@@ -14,6 +14,7 @@ import {
 	createAgentSession,
 	DefaultResourceLoader,
 	type ExtensionUIContext,
+	type FileEntry,
 	ModelRuntime,
 	SessionManager,
 	SettingsManager,
@@ -25,6 +26,12 @@ export interface HarnessOptions {
 	setup?: (dirs: { cwd: string; agentDir: string }) => void | Promise<void>;
 	/** Bind a UI with these methods (the rest are no-ops); without it the session is headless. */
 	ui?: Partial<ExtensionUIContext>;
+	/** Use this agent dir (kept on dispose) instead of a fresh one. */
+	agentDir?: string;
+	/** Start the session from these entries (header first), e.g. a previous session's `fileEntries()`. */
+	entries?: FileEntry[];
+	/** Defaults to `{ type: "session_start", reason: "startup" }`. */
+	sessionStartEvent?: { type: "session_start"; reason: "startup" | "reload" | "new" | "resume" | "fork" };
 }
 
 export interface Harness {
@@ -32,6 +39,8 @@ export interface Harness {
 	resourceLoader: DefaultResourceLoader;
 	cwd: string;
 	agentDir: string;
+	/** The session's header and entries, to start another session from. */
+	fileEntries(): FileEntry[];
 	/** Queue scripted model replies. */
 	setResponses(responses: FauxResponseStep[]): void;
 	/** Have the model run each code string as one ipython Cell in a single turn; returns the tool results. */
@@ -61,7 +70,7 @@ export function kernelPids(): number[] {
 export async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
 	const root = mkdtempSync(join(tmpdir(), "pi-ipython-test-"));
 	const cwd = join(root, "work");
-	const agentDir = join(root, "agent");
+	const agentDir = options.agentDir ?? join(root, "agent");
 	mkdirSync(cwd, { recursive: true });
 	mkdirSync(agentDir, { recursive: true });
 	// The extension finds its global config through pi's agent dir.
@@ -94,7 +103,8 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 		modelRuntime,
 		resourceLoader,
 		settingsManager,
-		sessionManager: SessionManager.inMemory(cwd),
+		sessionManager: SessionManager.inMemory(cwd, undefined, options.entries),
+		sessionStartEvent: options.sessionStartEvent,
 	});
 	const ui = options.ui;
 	await session.bindExtensions(
@@ -106,6 +116,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 		resourceLoader,
 		cwd,
 		agentDir,
+		fileEntries: () => [session.sessionManager.getHeader()!, ...session.sessionManager.getEntries()],
 		setResponses: (responses) => faux.setResponses(responses),
 		async runCells(...codes) {
 			const before = session.messages.length;
