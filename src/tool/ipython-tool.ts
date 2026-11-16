@@ -55,16 +55,40 @@ export function formatCellResult(r: CellResult): string {
 }
 
 /** Keep the tail within the limits (tracebacks and results come last); spill the full text to a temp file. */
-export function truncateCellText(text: string, limits: TruncationOptions): { text: string; fullOutputPath?: string } {
+export function truncateCellText(
+	text: string,
+	limits: TruncationOptions,
+	backgroundOutput = "",
+): { text: string; fullOutputPath?: string } {
 	const t = truncateTail(text, limits);
 	if (!t.truncated) return { text };
-	const fullOutputPath = join(tmpdir(), `pi-ipython-${randomUUID()}.log`);
-	writeFileSync(fullOutputPath, text);
-	const shown = t.lastLinePartial
+	let content = t.content;
+	let shown = t.lastLinePartial
 		? `the last ${formatSize(t.outputBytes)} of the last line`
 		: `the last ${t.outputLines} of ${t.totalLines} lines`;
+	const heading = "[background output]";
+	const background = backgroundOutput.replace(/\n$/, "");
+	const backgroundStart = text.length - background.length - heading.length - 1;
+	if (backgroundOutput && text.length - content.length > backgroundStart) {
+		// The tail starts inside the background section: restore its attribution, reserving space.
+		const tail = truncateTail(background, {
+			maxLines: Math.max(0, t.maxLines - 1),
+			maxBytes: Math.max(0, t.maxBytes - Buffer.byteLength(heading) - 1),
+		});
+		content = tail.content ? `${heading}\n${tail.content}` : heading;
+		shown = `the tail of background output (${formatSize(tail.outputBytes)})`;
+	}
+	const fullOutputPath = join(tmpdir(), `pi-ipython-${randomUUID()}.log`);
+	try {
+		writeFileSync(fullOutputPath, text, { mode: 0o600, flag: "wx" });
+	} catch (error) {
+		const reason = error instanceof Error ? error.message : String(error);
+		return {
+			text: `${content}\n\n[Output truncated (${formatSize(t.totalBytes)} total): showing ${shown}. Full output could not be saved: ${reason}]`,
+		};
+	}
 	return {
-		text: `${t.content}\n\n[Output truncated (${formatSize(t.totalBytes)} total): showing ${shown}. Full output: ${fullOutputPath}]`,
+		text: `${content}\n\n[Output truncated (${formatSize(t.totalBytes)} total): showing ${shown}. Full output: ${fullOutputPath}]`,
 		fullOutputPath,
 	};
 }
@@ -84,7 +108,7 @@ export function createIpythonTool(
 		executionMode: "sequential",
 		async execute(_toolCallId, params, signal) {
 			const r = await getKernel().execute(params.code, signal);
-			const { text, fullOutputPath } = truncateCellText(formatCellResult(r), getOutputLimits());
+			const { text, fullOutputPath } = truncateCellText(formatCellResult(r), getOutputLimits(), r.backgroundOutput);
 			const images: ImageContent[] = r.images.map((i) => ({ type: "image", ...i }));
 			const content: (TextContent | ImageContent)[] = [{ type: "text", text }, ...images];
 			return {

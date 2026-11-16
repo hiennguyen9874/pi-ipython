@@ -20,8 +20,6 @@ const MAX_STDERR_TAIL_CHARS = 8 * 1024;
 const MAX_PROTOCOL_LINE_CHARS = 32 * 1024 * 1024;
 // The exact event vocabulary of protocol v3: an unknown kind is corruption, not a newer runtime.
 const PROTOCOL_EVENT_KINDS = new Set(["ready", "stdout", "stderr", "result", "display", "host_request", "error", "done"]);
-// Cap for output with no owning Cell, buffered until the next Cell finishes.
-const MAX_BACKGROUND_OUTPUT_CHARS = 64 * 1024;
 /** Image MIME types models accept; other display payloads are ignored. */
 export const IMAGE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 
@@ -40,7 +38,7 @@ export interface CellImage {
 export interface CellResult {
 	stdout: string;
 	stderr: string;
-	/** Images this Cell emitted through `display` events. */
+	/** Images emitted by this Cell or buffered from background displays. */
 	images: CellImage[];
 	/** stdout/stderr with no owning Cell (threads, subprocesses, tasks of finished Cells) since the last Cell. */
 	backgroundOutput: string;
@@ -83,7 +81,9 @@ export class KernelClient {
 	/** Serializes requests: the runtime runs one at a time. */
 	private queue: Promise<unknown> = Promise.resolve();
 	private stderrTail = "";
+	// shortcut: buffer in memory like Cell stdout; spool during execution if streaming volume needs a memory bound.
 	private backgroundOutput = "";
+	private backgroundImages: CellImage[] = [];
 	/** Bumped by every shutdown so a stale in-flight start never keeps its process. */
 	private generation = 0;
 
@@ -143,6 +143,7 @@ export class KernelClient {
 
 		this.stderrTail = "";
 		this.backgroundOutput = "";
+		this.backgroundImages = [];
 		const child = spawn(python, ["-m", "rlm.repl"], {
 			cwd: this.options.cwd,
 			env: {
@@ -247,19 +248,15 @@ export class KernelClient {
 		if (!cell || event.id !== cell.id) {
 			// Output without this Cell's id (threads, subprocesses, other Cells) is not credited to it:
 			// it is buffered and reported as background output with the next finished Cell.
-			if (type === "stdout" || type === "stderr") this.appendBackgroundOutput(asString(event.text));
+			// Keep the full text, just like owned stdout/stderr, so the tool can spill it losslessly.
+			if (type === "stdout" || type === "stderr") this.backgroundOutput += asString(event.text);
+			else if (type === "display") this.backgroundImages.push(...imagesFromDisplay(event.data));
 			return;
 		}
 		if (type === "stdout") cell.stdout += asString(event.text);
 		else if (type === "stderr") cell.stderr += asString(event.text);
 		else if (type === "result") cell.result = asString(event.text);
-		else if (type === "display") {
-			const data = event.data;
-			if (typeof data !== "object" || data === null) return;
-			for (const [mimeType, payload] of Object.entries(data)) {
-				if (IMAGE_MIME_TYPES.has(mimeType) && typeof payload === "string") cell.images.push({ mimeType, data: payload });
-			}
-		}
+		else if (type === "display") cell.images.push(...imagesFromDisplay(event.data));
 		else if (type === "error") {
 			cell.error = {
 				ename: asString(event.ename) || "Error",
@@ -269,11 +266,13 @@ export class KernelClient {
 		} else if (type === "done") {
 			this.active = undefined;
 			const backgroundOutput = this.backgroundOutput;
+			const images = [...cell.images, ...this.backgroundImages];
 			this.backgroundOutput = "";
+			this.backgroundImages = [];
 			cell.resolve({
 				stdout: cell.stdout,
 				stderr: cell.stderr,
-				images: cell.images,
+				images,
 				backgroundOutput,
 				result: cell.result,
 				error: cell.error,
@@ -348,15 +347,6 @@ export class KernelClient {
 		});
 	}
 
-	private appendBackgroundOutput(text: string): void {
-		const marker = "\n[background output truncated]\n";
-		if (this.backgroundOutput.endsWith(marker)) return;
-		this.backgroundOutput += text;
-		if (this.backgroundOutput.length > MAX_BACKGROUND_OUTPUT_CHARS) {
-			this.backgroundOutput = this.backgroundOutput.slice(0, MAX_BACKGROUND_OUTPUT_CHARS) + marker;
-		}
-	}
-
 	private withStderr(message: string): Error {
 		return new Error(`${message}. stderr:\n${this.stderrTail.slice(-1024) || "(empty)"}`);
 	}
@@ -372,6 +362,13 @@ function invalidFrameReason(event: unknown): string | undefined {
 		return `${kind} frame without id`;
 	}
 	return undefined;
+}
+
+function imagesFromDisplay(data: unknown): CellImage[] {
+	if (typeof data !== "object" || data === null) return [];
+	return Object.entries(data).flatMap(([mimeType, payload]) =>
+		IMAGE_MIME_TYPES.has(mimeType) && typeof payload === "string" ? [{ mimeType, data: payload }] : [],
+	);
 }
 
 function asString(value: unknown): string {
