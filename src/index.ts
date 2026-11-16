@@ -33,7 +33,12 @@ export default function piIpython(pi: ExtensionAPI): void {
 		});
 	};
 
-	pi.registerTool(createIpythonTool(() => (kernel ??= createKernel())));
+	pi.registerTool(
+		createIpythonTool(
+			() => (kernel ??= createKernel()),
+			() => config.output,
+		),
+	);
 
 	const forceExclusive = () => pi.setActiveTools([IPYTHON_TOOL_NAME]);
 

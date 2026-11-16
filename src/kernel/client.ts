@@ -20,6 +20,10 @@ const MAX_STDERR_TAIL_CHARS = 8 * 1024;
 const MAX_PROTOCOL_LINE_CHARS = 32 * 1024 * 1024;
 // The exact event vocabulary of protocol v3: an unknown kind is corruption, not a newer runtime.
 const PROTOCOL_EVENT_KINDS = new Set(["ready", "stdout", "stderr", "result", "display", "host_request", "error", "done"]);
+// Cap for output with no owning Cell, buffered until the next Cell finishes.
+const MAX_BACKGROUND_OUTPUT_CHARS = 64 * 1024;
+/** Image MIME types models accept; other display payloads are ignored. */
+export const IMAGE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 
 export interface CellError {
 	ename: string;
@@ -27,9 +31,19 @@ export interface CellError {
 	traceback: string[];
 }
 
+export interface CellImage {
+	mimeType: string;
+	/** base64 */
+	data: string;
+}
+
 export interface CellResult {
 	stdout: string;
 	stderr: string;
+	/** Images this Cell emitted through `display` events. */
+	images: CellImage[];
+	/** stdout/stderr with no owning Cell (threads, subprocesses, tasks of finished Cells) since the last Cell. */
+	backgroundOutput: string;
 	/** repr of the trailing expression, when it is not None. */
 	result?: string;
 	error?: CellError;
@@ -53,6 +67,7 @@ interface ActiveCell {
 	signal?: AbortSignal;
 	stdout: string;
 	stderr: string;
+	images: CellImage[];
 	result?: string;
 	error?: CellError;
 	resolve: (result: CellResult) => void;
@@ -68,6 +83,7 @@ export class KernelClient {
 	/** Serializes requests: the runtime runs one at a time. */
 	private queue: Promise<unknown> = Promise.resolve();
 	private stderrTail = "";
+	private backgroundOutput = "";
 	/** Bumped by every shutdown so a stale in-flight start never keeps its process. */
 	private generation = 0;
 
@@ -126,6 +142,7 @@ export class KernelClient {
 		if (generation !== this.generation) throw new Error("Kernel was shut down during startup");
 
 		this.stderrTail = "";
+		this.backgroundOutput = "";
 		const child = spawn(python, ["-m", "rlm.repl"], {
 			cwd: this.options.cwd,
 			env: {
@@ -227,11 +244,22 @@ export class KernelClient {
 			return;
 		}
 		const cell = this.active;
-		// Output without this Cell's id (threads, subprocesses, other Cells) is not credited to it.
-		if (!cell || event.id !== cell.id) return;
+		if (!cell || event.id !== cell.id) {
+			// Output without this Cell's id (threads, subprocesses, other Cells) is not credited to it:
+			// it is buffered and reported as background output with the next finished Cell.
+			if (type === "stdout" || type === "stderr") this.appendBackgroundOutput(asString(event.text));
+			return;
+		}
 		if (type === "stdout") cell.stdout += asString(event.text);
 		else if (type === "stderr") cell.stderr += asString(event.text);
 		else if (type === "result") cell.result = asString(event.text);
+		else if (type === "display") {
+			const data = event.data;
+			if (typeof data !== "object" || data === null) return;
+			for (const [mimeType, payload] of Object.entries(data)) {
+				if (IMAGE_MIME_TYPES.has(mimeType) && typeof payload === "string") cell.images.push({ mimeType, data: payload });
+			}
+		}
 		else if (type === "error") {
 			cell.error = {
 				ename: asString(event.ename) || "Error",
@@ -240,9 +268,13 @@ export class KernelClient {
 			};
 		} else if (type === "done") {
 			this.active = undefined;
+			const backgroundOutput = this.backgroundOutput;
+			this.backgroundOutput = "";
 			cell.resolve({
 				stdout: cell.stdout,
 				stderr: cell.stderr,
+				images: cell.images,
+				backgroundOutput,
 				result: cell.result,
 				error: cell.error,
 				status: cell.signal?.aborted ? "aborted" : event.status === "ok" && !cell.error ? "ok" : "error",
@@ -258,7 +290,9 @@ export class KernelClient {
 	}
 
 	private send(code: string, signal?: AbortSignal): Promise<CellResult> {
-		if (signal?.aborted) return Promise.resolve({ stdout: "", stderr: "", status: "aborted", durationMs: 0 });
+		if (signal?.aborted) {
+			return Promise.resolve({ stdout: "", stderr: "", images: [], backgroundOutput: "", status: "aborted", durationMs: 0 });
+		}
 		if (!this.child) return Promise.reject(new Error("Kernel is not running"));
 		return new Promise<CellResult>((resolve, reject) => {
 			const onAbort = () => this.interrupt();
@@ -269,6 +303,7 @@ export class KernelClient {
 				signal,
 				stdout: "",
 				stderr: "",
+				images: [],
 				resolve: (result) => {
 					cleanup();
 					resolve(result);
@@ -311,6 +346,15 @@ export class KernelClient {
 		return new Promise((resolve, reject) => {
 			stdin.write(`${JSON.stringify(request)}\n`, (error) => (error ? reject(error) : resolve()));
 		});
+	}
+
+	private appendBackgroundOutput(text: string): void {
+		const marker = "\n[background output truncated]\n";
+		if (this.backgroundOutput.endsWith(marker)) return;
+		this.backgroundOutput += text;
+		if (this.backgroundOutput.length > MAX_BACKGROUND_OUTPUT_CHARS) {
+			this.backgroundOutput = this.backgroundOutput.slice(0, MAX_BACKGROUND_OUTPUT_CHARS) + marker;
+		}
 	}
 
 	private withStderr(message: string): Error {
