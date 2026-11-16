@@ -4,26 +4,7 @@ The product requirements are in `docs/prd.md`. Terms are defined in `GLOSSARY.md
 
 ## Code sources
 
-| What | From | License |
-|---|---|---|
-| Kernel runtime (`rlm` package) | `references/Unharnessed/unharnessed-runtime/src/rlm/` at HEAD `fe2cf281` | MIT (Unharnessed, Prime Intellect, Mario Zechner) |
-| Kernel host (TS) | `references/Unharnessed` at commit `7d442aafa` (the parent of "Port Prime Agent to Rust", `39bc99a91`), under `packages/coding-agent/src/` | MIT |
-| Spec for behaviour added after the TS era | Rust crates at HEAD: `uh-core/src/session_engine/ipython_state.rs`, `uh-core/src/kernel/manager/*`, `uh-core/src/tools/ipython.rs`, `uh-core/src/prompts/layers/core.md` | MIT |
-
-Read the files from history with `git -C references/Unharnessed show 7d442aafa:<path>`. Both the TS host and the HEAD runtime use REPL protocol **v3**.
-
-Files to port from `7d442aafa:packages/coding-agent/src/`:
-
-| File | Lines | Port into | Notes |
-|---|---|---|---|
-| `core/kernel/repl-manager.ts` | 1817 | `src/kernel/kernel-client.ts` | Spawning, JSONL framing, frame validation and repair, interrupt, `list_names`, shutdown. Drop subagent/delegation paths. Snapshot paths stay dormant until v2. |
-| `core/kernel/bootstrap.ts` | 1037 | `src/kernel/bootstrap.ts` | uv venv creation and dir lock. Swap `getPackageDir` for the package root. Python-skill install waits for v2. |
-| `core/kernel/shared.ts`, `boot-gate.ts`, `state-snapshot.ts` | ~420 | `src/kernel/` | Swap `registerSessionResourceCleanup` for `session_shutdown`. |
-| `core/tools/ipython.ts` | 770 | `src/tool/ipython-tool.ts` | Rewrite against `pi.registerTool`. Keep result composition, the busy-kernel choice, and the bootstrap cell. |
-| `core/prompts/rlm.ts` + `core.md` | ~260 | `src/prompt/` | Remove spawn, factory, and Prime memory sections. |
-| `utils/child-process.ts`, `orphan-process-journal.ts` | n/a | `src/util/` | Only the parts needed for orphan reaping. |
-
-Runtime files to vendor into `runtime/rlm/`: `__init__.py`, `repl.py`, `bash.py`, `_winjob.py`, `variables.py`, `skill.py`, `mcp.py`, `mcp_base.py`, plus `repl.md` and the `test/` suite. `mcp`/`bash` are imported by `__init__` and the bootstrap cell, so they ship in v1 even though the features they back come in later releases.
+What to vendor, what to port, and from which commit: `docs/agents/references.md`.
 
 ## Target layout
 
