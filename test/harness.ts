@@ -13,16 +13,25 @@ import {
 	type AgentSession,
 	createAgentSession,
 	DefaultResourceLoader,
+	type ExtensionUIContext,
 	ModelRuntime,
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import piIpython from "../src/index.ts";
 
+export interface HarnessOptions {
+	/** Runs before the session starts, e.g. to write config files. */
+	setup?: (dirs: { cwd: string; agentDir: string }) => void | Promise<void>;
+	/** Bind a UI with these methods (the rest are no-ops); without it the session is headless. */
+	ui?: Partial<ExtensionUIContext>;
+}
+
 export interface Harness {
 	session: AgentSession;
 	resourceLoader: DefaultResourceLoader;
 	cwd: string;
+	agentDir: string;
 	/** Queue scripted model replies. */
 	setResponses(responses: FauxResponseStep[]): void;
 	/** Have the model run each code string as one ipython Cell in a single turn; returns the tool results. */
@@ -49,11 +58,16 @@ export function kernelPids(): number[] {
  * faux provider playing the model. cwd and agentDir are fresh temp dirs, so no user
  * or project resources leak in.
  */
-export async function createHarness(): Promise<Harness> {
+export async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
 	const root = mkdtempSync(join(tmpdir(), "pi-ipython-test-"));
 	const cwd = join(root, "work");
 	const agentDir = join(root, "agent");
 	mkdirSync(cwd, { recursive: true });
+	mkdirSync(agentDir, { recursive: true });
+	// The extension finds its global config through pi's agent dir.
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	await options.setup?.({ cwd, agentDir });
 
 	const faux = fauxProvider();
 	const modelRuntime = await ModelRuntime.create({
@@ -82,12 +96,16 @@ export async function createHarness(): Promise<Harness> {
 		settingsManager,
 		sessionManager: SessionManager.inMemory(cwd),
 	});
-	await session.bindExtensions({});
+	const ui = options.ui;
+	await session.bindExtensions(
+		ui ? { uiContext: new Proxy(ui, { get: (t, k) => t[k as keyof typeof t] ?? (() => undefined) }) as ExtensionUIContext } : {},
+	);
 
 	return {
 		session,
 		resourceLoader,
 		cwd,
+		agentDir,
 		setResponses: (responses) => faux.setResponses(responses),
 		async runCells(...codes) {
 			const before = session.messages.length;
@@ -103,6 +121,8 @@ export async function createHarness(): Promise<Harness> {
 		async dispose() {
 			await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
 			session.dispose();
+			if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+			else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
 			rmSync(root, { recursive: true, force: true });
 		},
 	};

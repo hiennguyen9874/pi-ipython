@@ -9,6 +9,7 @@
 
 ### Added
 
+- Config: `<agentDir>/pi-ipython.json` (global) merged with `.pi/pi-ipython.json` (project), project values winning per key. Keys: `confirmEachCell`, `python.source` (`uv` | `project`), `python.version`, `output.maxBytes`, `output.maxLines`. Invalid files, values, and unknown keys are reported with the file and key and skipped, so defaults apply. `python.source: "project"` runs the Kernel with `<cwd>/.venv`'s Python and the vendored runtime on `PYTHONPATH`. (#4)
 - `ipython` tool, the only active tool while the extension is loaded. Each call runs one Cell in a persistent Kernel (`python -m rlm.repl`, REPL protocol v3) started lazily in the session cwd; the result carries stdout, labelled stderr, the trailing expression's repr, errors with tracebacks, and the duration. (#3)
 - Kernel bootstrap: a uv-managed venv (Python 3.13) built from the vendored runtime's lockfile on first use, rebuilt when the runtime changes, guarded by a directory lock. Location: `<agentDir>/pi-ipython/kernel-venv-<version>`, overridable with `PI_IPYTHON_VENV_DIR`. (#3)
 - Kernel client ported from Unharnessed's pre-Rust host: spawn, `ready` handshake, JSONL framing with frame validation, routing by Cell id, interrupt on abort, shutdown. (#3)

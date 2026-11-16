@@ -44,6 +44,22 @@ export function venvPython(venv: string): string {
 	return process.platform === "win32" ? path.join(venv, "Scripts", "python.exe") : path.join(venv, "bin", "python");
 }
 
+/** Source dir of the vendored runtime, put on PYTHONPATH when the Kernel runs in a project venv. */
+export const RUNTIME_SRC_DIR = path.join(RUNTIME_DIR, "src");
+
+/** The project's own `.venv` Python (`python.source: project`). The runtime is not installed there. */
+export async function resolveProjectPython(cwd: string): Promise<string> {
+	const python = venvPython(path.join(cwd, ".venv"));
+	try {
+		await access(python, constants.X_OK);
+	} catch {
+		throw new Error(
+			`python.source is "project" but no Python was found at ${python}. Create the project venv (for example \`uv venv\`) or set python.source to "uv".`,
+		);
+	}
+	return python;
+}
+
 const inFlight = new Map<string, Promise<string>>();
 
 /** Return the venv's Python, building the venv first when it is missing or stale. */

@@ -1,5 +1,7 @@
+import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { ensureKernelPython } from "./kernel/bootstrap.ts";
+import { loadConfig, type PiIpythonConfig } from "./config.ts";
+import { ensureKernelPython, resolveProjectPython, RUNTIME_SRC_DIR } from "./kernel/bootstrap.ts";
 import { KernelClient } from "./kernel/client.ts";
 import { createIpythonTool, IPYTHON_TOOL_NAME, KERNEL_BOOTSTRAP_CODE } from "./tool/ipython-tool.ts";
 
@@ -10,22 +12,40 @@ import { createIpythonTool, IPYTHON_TOOL_NAME, KERNEL_BOOTSTRAP_CODE } from "./t
 export default function piIpython(pi: ExtensionAPI): void {
 	let kernel: KernelClient | undefined;
 	let cwd = process.cwd();
+	let config: PiIpythonConfig = loadConfig(cwd).config;
 
-	pi.registerTool(
-		createIpythonTool(() => {
-			kernel ??= new KernelClient({
+	const createKernel = (): KernelClient => {
+		const { source, version } = config.python;
+		if (source === "project") {
+			// The project venv lacks the runtime: import it from the package's vendored sources.
+			const pythonPath = [RUNTIME_SRC_DIR, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter);
+			return new KernelClient({
 				cwd,
-				resolvePython: () => ensureKernelPython(),
+				resolvePython: () => resolveProjectPython(cwd),
 				bootstrapCode: KERNEL_BOOTSTRAP_CODE,
+				env: { PYTHONPATH: pythonPath },
 			});
-			return kernel;
-		}),
-	);
+		}
+		return new KernelClient({
+			cwd,
+			resolvePython: () => ensureKernelPython({ pythonVersion: version }),
+			bootstrapCode: KERNEL_BOOTSTRAP_CODE,
+		});
+	};
+
+	pi.registerTool(createIpythonTool(() => (kernel ??= createKernel())));
 
 	const forceExclusive = () => pi.setActiveTools([IPYTHON_TOOL_NAME]);
 
 	pi.on("session_start", (_event, ctx) => {
 		cwd = ctx.cwd;
+		const loaded = loadConfig(cwd);
+		config = loaded.config;
+		for (const error of loaded.errors) {
+			const message = `pi-ipython config: ${error}`;
+			if (ctx.hasUI) ctx.ui.notify(message, "error");
+			else console.error(message);
+		}
 		forceExclusive();
 	});
 	pi.on("before_agent_start", forceExclusive);

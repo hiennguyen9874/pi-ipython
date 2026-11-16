@@ -43,6 +43,8 @@ export interface KernelClientOptions {
 	resolvePython: () => Promise<string>;
 	/** Code run once right after the Kernel starts, before any Cell. */
 	bootstrapCode?: string;
+	/** Extra environment for the Kernel process. */
+	env?: Record<string, string>;
 }
 
 interface ActiveCell {
@@ -128,6 +130,7 @@ export class KernelClient {
 			cwd: this.options.cwd,
 			env: {
 				...process.env,
+				...this.options.env,
 				...(process.platform === "win32" ? { PYTHONUTF8: "1" } : {}),
 				// The runtime exits when this pid dies, so a crashed pi leaves no Kernel behind.
 				UNHARNESSED_KERNEL_OWNER_PID: String(process.pid),
