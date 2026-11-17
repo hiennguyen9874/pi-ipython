@@ -14,7 +14,7 @@ import { join } from "node:path";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import { formatSize, type ToolDefinition, type TruncationOptions, truncateTail } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import type { CellResult, KernelClient } from "../kernel/client.ts";
+import { type CellResult, type KernelClient, KernelBusyError } from "../kernel/client.ts";
 
 export const IPYTHON_TOOL_NAME = "ipython";
 
@@ -30,6 +30,20 @@ bash = _pi_ipython_rlm.bash
 import rlm.mcp as mcp
 `.trim();
 
+// Busy-Kernel choice, from Unharnessed's pre-Rust host (core/tools/ipython.ts).
+const BUSY_KERNEL_WAIT_CHOICE = "Wait and preserve state";
+const BUSY_KERNEL_KILL_CHOICE = "Kill kernel and restart";
+const BUSY_KERNEL_PROMPT = [
+	"Interrupted Python cell is still running",
+	"An interrupt was sent, but the previous cell has not stopped yet. A new command cannot start until it finishes.",
+	"Waiting preserves the current kernel state. Killing restarts the kernel and loses in-memory variables, imports, and running tasks.",
+].join("\n");
+export const KERNEL_RESTART_NOTICE = [
+	"<ipython_kernel_reset>",
+	"The Python kernel was restarted after a previous interrupted cell kept running. Variables, imports, async tasks, and open resources from before the restart are no longer available; recreate them before using them.",
+	"</ipython_kernel_reset>",
+].join("\n");
+
 const ipythonSchema = Type.Object({
 	code: Type.String({ description: "Python code to run in the persistent Kernel." }),
 });
@@ -37,6 +51,15 @@ const ipythonSchema = Type.Object({
 export interface IpythonToolDetails extends CellResult {
 	/** Set when the text was truncated: the temp file holding the full text. */
 	fullOutputPath?: string;
+	/** True when the user killed a busy Kernel before this Cell ran. */
+	kernelRestarted?: boolean;
+}
+
+export interface IpythonToolOptions {
+	getKernel: () => KernelClient;
+	/** Kill the Kernel; the next `getKernel()` returns a fresh one. */
+	killKernel: () => Promise<void>;
+	getOutputLimits?: () => TruncationOptions;
 }
 
 /** Model-facing text: stdout, then stderr (labelled), then the trailing expression's repr, then the traceback. */
@@ -93,10 +116,11 @@ export function truncateCellText(
 	};
 }
 
-export function createIpythonTool(
-	getKernel: () => KernelClient,
-	getOutputLimits: () => TruncationOptions = () => ({}),
-): ToolDefinition<typeof ipythonSchema, IpythonToolDetails> {
+export function createIpythonTool({
+	getKernel,
+	killKernel,
+	getOutputLimits = () => ({}),
+}: IpythonToolOptions): ToolDefinition<typeof ipythonSchema, IpythonToolDetails> {
 	return {
 		name: IPYTHON_TOOL_NAME,
 		label: "ipython",
@@ -106,14 +130,33 @@ export function createIpythonTool(
 		parameters: ipythonSchema,
 		// One Kernel runs one Cell at a time.
 		executionMode: "sequential",
-		async execute(_toolCallId, params, signal) {
-			const r = await getKernel().execute(params.code, signal);
-			const { text, fullOutputPath } = truncateCellText(formatCellResult(r), getOutputLimits(), r.backgroundOutput);
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			let kernelRestarted = false;
+			let r: CellResult;
+			for (;;) {
+				try {
+					r = await getKernel().execute(params.code, signal);
+					break;
+				} catch (error) {
+					if (!(error instanceof KernelBusyError) || signal?.aborted) throw error;
+					// Like the branch-switch choice, only the TUI prompts; elsewhere the model gets the busy error.
+					const choice = ctx.mode === "tui" && ctx.hasUI
+						? await ctx.ui.select(BUSY_KERNEL_PROMPT, [BUSY_KERNEL_WAIT_CHOICE, BUSY_KERNEL_KILL_CHOICE], { signal })
+						: undefined;
+					if (choice === BUSY_KERNEL_WAIT_CHOICE) continue;
+					if (choice !== BUSY_KERNEL_KILL_CHOICE) throw error;
+					await killKernel();
+					kernelRestarted = true;
+				}
+			}
+			const truncated = truncateCellText(formatCellResult(r), getOutputLimits(), r.backgroundOutput);
+			// Prepended after truncation, so a long output cannot cut the notice off.
+			const text = kernelRestarted ? `${KERNEL_RESTART_NOTICE}\n\n${truncated.text}` : truncated.text;
 			const images: ImageContent[] = r.images.map((i) => ({ type: "image", ...i }));
 			const content: (TextContent | ImageContent)[] = [{ type: "text", text }, ...images];
 			return {
 				content,
-				details: { ...r, fullOutputPath },
+				details: { ...r, fullOutputPath: truncated.fullOutputPath, kernelRestarted },
 				isError: r.status !== "ok",
 			};
 		},

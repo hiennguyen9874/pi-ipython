@@ -17,6 +17,11 @@ import { ORPHAN_JOURNAL_ENV, reapKernel, recordProcess } from "./orphans.ts";
 export const REPL_PROTOCOL_VERSION = 3;
 const READY_TIMEOUT_MS = 30_000;
 const SHUTDOWN_TIMEOUT_MS = 2_000;
+// After an abort, how long the interrupted Cell gets to finish before its tool call returns anyway.
+const ABORT_GRACE_MS = 1_000;
+// How long the next Cell waits for an interrupted Cell to finish, re-sending interrupts, before it is busy.
+const BUSY_WAIT_MS = 5_000;
+const BUSY_INTERRUPT_INTERVAL_MS = 500;
 const MAX_STDERR_TAIL_CHARS = 8 * 1024;
 // A line that cannot complete within this ceiling is corruption, not output worth buffering until OOM.
 const MAX_PROTOCOL_LINE_CHARS = 32 * 1024 * 1024;
@@ -24,6 +29,14 @@ const MAX_PROTOCOL_LINE_CHARS = 32 * 1024 * 1024;
 const PROTOCOL_EVENT_KINDS = new Set(["ready", "stdout", "stderr", "result", "display", "host_request", "error", "done"]);
 /** Image MIME types models accept; other display payloads are ignored. */
 export const IMAGE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+
+/** The Kernel is still running an interrupted Cell that ignored repeated interrupts. */
+export class KernelBusyError extends Error {
+	constructor() {
+		super("Kernel busy: the previously interrupted Cell is still running and did not stop after repeated interrupts.");
+		this.name = "KernelBusyError";
+	}
+}
 
 export interface CellError {
 	ename: string;
@@ -72,6 +85,11 @@ interface ActiveCell {
 	images: CellImage[];
 	result?: string;
 	error?: CellError;
+	/** Its tool call already returned (aborted); the Cell stays active until its `done`. */
+	settled: boolean;
+	/** Resolves when the Cell is no longer active. */
+	finished: Promise<void>;
+	markFinished: () => void;
 	resolve: (result: CellResult) => void;
 	reject: (error: Error) => void;
 }
@@ -122,7 +140,9 @@ export class KernelClient {
 
 	/** Raise KeyboardInterrupt in the running Cell. */
 	interrupt(): void {
-		this.write({ type: "interrupt" }).catch(() => undefined);
+		// Always target the Cell: an id-less interrupt with nothing running is parked for the next request.
+		const id = this.active?.id;
+		if (id) this.write({ type: "interrupt", id }).catch(() => undefined);
 	}
 
 	/** Stop the Kernel: graceful shutdown request, then SIGKILL after a grace period. */
@@ -261,7 +281,12 @@ export class KernelClient {
 			return;
 		}
 		const cell = this.active;
-		if (!cell || event.id !== cell.id) {
+		if (cell?.settled && event.id === cell.id && type === "done") {
+			// An interrupted Cell whose tool call already returned has finished: the Kernel is free.
+			this.clearActive();
+			return;
+		}
+		if (!cell || event.id !== cell.id || cell.settled) {
 			// Output without this Cell's id (threads, subprocesses, other Cells) is not credited to it:
 			// it is buffered and reported as background output with the next finished Cell.
 			// Keep the full text, just like owned stdout/stderr, so the tool can spill it losslessly.
@@ -280,21 +305,44 @@ export class KernelClient {
 				traceback: Array.isArray(event.traceback) ? event.traceback.filter((t) => typeof t === "string") : [],
 			};
 		} else if (type === "done") {
-			this.active = undefined;
-			const backgroundOutput = this.backgroundOutput;
-			const images = [...cell.images, ...this.backgroundImages];
-			this.backgroundOutput = "";
-			this.backgroundImages = [];
-			cell.resolve({
-				stdout: cell.stdout,
-				stderr: cell.stderr,
-				images,
-				backgroundOutput,
-				result: cell.result,
-				error: cell.error,
-				status: cell.signal?.aborted ? "aborted" : event.status === "ok" && !cell.error ? "ok" : "error",
-				durationMs: Date.now() - cell.started,
-			});
+			this.clearActive();
+			this.settle(cell, event.status === "ok" && !cell.error ? "ok" : "error");
+		}
+	}
+
+	/** Resolve the Cell's tool call with what it produced so far. */
+	private settle(cell: ActiveCell, status: CellResult["status"]): void {
+		cell.settled = true;
+		const backgroundOutput = this.backgroundOutput;
+		const images = [...cell.images, ...this.backgroundImages];
+		this.backgroundOutput = "";
+		this.backgroundImages = [];
+		cell.resolve({
+			stdout: cell.stdout,
+			stderr: cell.stderr,
+			images,
+			backgroundOutput,
+			result: cell.result,
+			error: cell.error,
+			status: cell.signal?.aborted ? "aborted" : status,
+			durationMs: Date.now() - cell.started,
+		});
+	}
+
+	private clearActive(): void {
+		const cell = this.active;
+		this.active = undefined;
+		cell?.markFinished();
+	}
+
+	/** Wait for an interrupted Cell to finish, re-interrupting it; throws KernelBusyError if it will not. */
+	private async waitUntilIdle(signal?: AbortSignal): Promise<void> {
+		const deadline = Date.now() + BUSY_WAIT_MS;
+		while (this.active && !signal?.aborted) {
+			const remaining = deadline - Date.now();
+			if (remaining <= 0) throw new KernelBusyError();
+			this.interrupt();
+			await Promise.race([this.active.finished, delay(Math.min(BUSY_INTERRUPT_INTERVAL_MS, remaining), signal)]);
 		}
 	}
 
@@ -304,14 +352,29 @@ export class KernelClient {
 		return run;
 	}
 
-	private send(code: string, signal?: AbortSignal): Promise<CellResult> {
+	private async send(code: string, signal?: AbortSignal): Promise<CellResult> {
+		await this.waitUntilIdle(signal);
 		if (signal?.aborted) {
-			return Promise.resolve({ stdout: "", stderr: "", images: [], backgroundOutput: "", status: "aborted", durationMs: 0 });
+			return { stdout: "", stderr: "", images: [], backgroundOutput: "", status: "aborted", durationMs: 0 };
 		}
-		if (!this.child) return Promise.reject(new Error("Kernel is not running"));
+		if (!this.child) throw new Error("Kernel is not running");
 		return new Promise<CellResult>((resolve, reject) => {
-			const onAbort = () => this.interrupt();
-			const cleanup = () => signal?.removeEventListener("abort", onAbort);
+			let abortTimer: ReturnType<typeof setTimeout> | undefined;
+			const onAbort = () => {
+				this.interrupt();
+				// A Cell that ignores the interrupt must not hang the turn: return without it, keeping it active.
+				abortTimer = setTimeout(() => {
+					if (this.active === cell && !cell.settled) this.settle(cell, "aborted");
+				}, ABORT_GRACE_MS);
+			};
+			const cleanup = () => {
+				clearTimeout(abortTimer);
+				signal?.removeEventListener("abort", onAbort);
+			};
+			let markFinished = () => {};
+			const finished = new Promise<void>((resolve) => {
+				markFinished = resolve;
+			});
 			const cell: ActiveCell = {
 				id: randomUUID().replaceAll("-", ""),
 				started: Date.now(),
@@ -319,6 +382,9 @@ export class KernelClient {
 				stdout: "",
 				stderr: "",
 				images: [],
+				settled: false,
+				finished,
+				markFinished,
 				resolve: (result) => {
 					cleanup();
 					resolve(result);
@@ -332,7 +398,7 @@ export class KernelClient {
 			signal?.addEventListener("abort", onAbort, { once: true });
 			this.write({ type: "execute", id: cell.id, code }).catch((error: Error) => {
 				if (this.active !== cell) return;
-				this.active = undefined;
+				this.clearActive();
 				cell.reject(error);
 			});
 		});
@@ -351,8 +417,8 @@ export class KernelClient {
 		this.ready?.reject(error);
 		this.ready = undefined;
 		const cell = this.active;
-		this.active = undefined;
-		cell?.reject(error);
+		this.clearActive();
+		if (cell && !cell.settled) cell.reject(error);
 	}
 
 	private write(request: Record<string, unknown>): Promise<void> {
@@ -389,6 +455,19 @@ function imagesFromDisplay(data: unknown): CellImage[] {
 
 function asString(value: unknown): string {
 	return typeof value === "string" ? value : "";
+}
+
+/** Resolves after `ms`, or early when `signal` aborts. */
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+	return new Promise((resolve) => {
+		const done = () => {
+			clearTimeout(timer);
+			signal?.removeEventListener("abort", done);
+			resolve();
+		};
+		const timer = setTimeout(done, ms);
+		signal?.addEventListener("abort", done, { once: true });
+	});
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number, onTimeout: () => Error): Promise<T> {

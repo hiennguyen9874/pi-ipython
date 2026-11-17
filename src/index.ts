@@ -39,10 +39,14 @@ export default function piIpython(pi: ExtensionAPI): void {
 	};
 
 	pi.registerTool(
-		createIpythonTool(
-			() => (kernel ??= createKernel()),
-			() => config.output,
-		),
+		createIpythonTool({
+			getKernel: () => (kernel ??= createKernel()),
+			killKernel: async () => {
+				await kernel?.shutdown();
+				kernel = undefined;
+			},
+			getOutputLimits: () => config.output,
+		}),
 	);
 
 	const forceExclusive = () => pi.setActiveTools([IPYTHON_TOOL_NAME]);
