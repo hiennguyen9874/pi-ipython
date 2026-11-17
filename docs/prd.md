@@ -71,6 +71,7 @@ Can ship in parallel with v1.1; it does not wait for #16.
 ### v4: MCP via the bridge (#14)
 
 - MCP servers callable from Python through the pi tool bridge and pi's own MCP support, not a separate Python MCP stack. pi's MCP tools (`codemode` exposure by default) are plain Pi tools to the bridge; the runtime's `rlm.mcp` API is not revived.
+- MCP resources need no API of their own: `builtin:mcp`'s `list_mcp_resources`, `list_mcp_resource_templates`, and `read_mcp_resource` do not declare `reachesTools`, so they are in the callable set and return their JSON payloads as dicts. pi registers them with the widest exposure of the non-`hidden` servers with resources (so `deferred` by default: not listed, but found by `pi.tools()` and `pi.search`), makes them wait for every ready server, and never lets them reach `hidden` servers. With no such server they are not registered.
 - Goals and autonomous continuation are not planned for core (#29).
 
 ## Open questions (decide before v2)

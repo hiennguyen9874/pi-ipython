@@ -3,7 +3,11 @@ import { existsSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { setTimeout as sleep } from "node:timers/promises";
 
-const gate = process.argv[2];
+// Arguments: an optional readiness gate file, and `--resources` to offer one resource.
+const args = process.argv.slice(2);
+const resources = args.includes("--resources");
+const gate = args.find((arg) => arg !== "--resources");
+const page = { uri: "docs://pages/intro", name: "intro", mimeType: "text/markdown" };
 const inputSchema = { type: "object", properties: { text: { type: "string" } }, required: ["text"] };
 
 for await (const line of createInterface({ input: process.stdin })) {
@@ -14,7 +18,7 @@ for await (const line of createInterface({ input: process.stdin })) {
 		case "initialize":
 			result = {
 				protocolVersion: request.params.protocolVersion,
-				capabilities: { tools: {} },
+				capabilities: { tools: {}, ...(resources ? { resources: {} } : {}) },
 				serverInfo: { name: "test-docs", version: "1.0.0" },
 				instructions: "Docs server.\nSearch before you look up a page.",
 			};
@@ -33,6 +37,12 @@ for await (const line of createInterface({ input: process.stdin })) {
 			result = request.params.arguments.text === "fail"
 				? { content: [{ type: "text", text: "docs: page not found" }], structuredContent: { code: 404 }, isError: true }
 				: { content: [{ type: "text", text: `docs: ${request.params.arguments.text}` }] };
+			break;
+		case "resources/list":
+			result = { resources: [page] };
+			break;
+		case "resources/read":
+			result = { contents: [{ uri: request.params.uri, mimeType: page.mimeType, text: `# Intro (${request.params.uri})` }] };
 			break;
 		default:
 			process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, error: { code: -32601, message: "Unknown method" } }) + "\n");

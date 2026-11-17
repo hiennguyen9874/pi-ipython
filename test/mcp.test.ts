@@ -96,6 +96,87 @@ test.each(["direct", "codemode", "deferred"])("builtin:mcp tools with %s exposur
 	});
 });
 
+test("MCP resource tools are found and callable from a Cell, and do not reach hidden servers", async () => {
+	h = await createHarness({
+		setup: ({ agentDir }) => writeFileSync(join(agentDir, "mcp.json"), JSON.stringify({
+			autoEnableCodemode: false,
+			mcpServers: {
+				// Default exposure (codemode), which MCP registers as deferred.
+				docs: { command: process.execPath, args: [server, "--resources"] },
+				secret: { command: process.execPath, args: [server, "--resources"], exposure: "hidden" },
+			},
+		})),
+		extensions: [{ name: "mcp", builtin: true, factory: createMcpExtension() }],
+	});
+	const descriptions: string[] = [];
+	h.setResponses([
+		(context: Context) => {
+			descriptions.push(getCurrentTools(context.messages).find((t) => t.name === "ipython")!.description);
+			return fauxAssistantMessage(fauxToolCall("ipython", { code: [
+				"import json",
+				"print(sorted(t['name'] for t in await pi.tools()))",
+				"print([t['name'] for t in await pi.search('read mcp resource', limit=1)])",
+				"listing = await pi.tool('list_mcp_resources', {})",
+				"print(json.dumps(listing, sort_keys=True))",
+				"page = await pi.tool('read_mcp_resource', {'server': 'docs', 'uri': listing['resources'][0]['uri']})",
+				"print(json.dumps(page, sort_keys=True))",
+				"try:",
+				"    await pi.tool('read_mcp_resource', {'server': 'secret', 'uri': 'docs://pages/intro'})",
+				"except pi.ToolError as e:",
+				"    print(e, e.result)",
+			].join("\n") }), { stopReason: "toolUse" });
+		},
+		fauxAssistantMessage("done"),
+	]);
+	await h.session.prompt("read MCP resources");
+	const result = h.session.messages.find((m) => m.role === "toolResult");
+	expect(result?.isError).toBe(false);
+	const lines = resultText(result!).split("\n");
+	expect(lines[0]).toBe("['list_mcp_resource_templates', 'list_mcp_resources', 'mcp__docs__echo', 'mcp__docs__guarded', 'mcp__docs__hidden', 'read_mcp_resource']");
+	expect(lines[1]).toBe("['read_mcp_resource']");
+	expect(JSON.parse(lines[2]!)).toEqual({
+		resources: [{ server: "docs", uri: "docs://pages/intro", name: "intro", mimeType: "text/markdown" }],
+	});
+	expect(JSON.parse(lines[3]!)).toEqual({
+		server: "docs",
+		uri: "docs://pages/intro",
+		contents: [{ uri: "docs://pages/intro", mimeType: "text/markdown", text: "# Intro (docs://pages/intro)" }],
+	});
+	expect(lines.slice(4)).toEqual(['MCP server "secret" has no resources. Servers with resources: docs None']);
+	// Deferred like their servers' tools, so the ipython description does not list them.
+	expect(descriptions[0]).not.toContain("mcp_resource");
+});
+
+test("MCP resource tools are absent when only a hidden server has resources", async () => {
+	h = await createHarness({
+		setup: ({ agentDir }) => writeFileSync(join(agentDir, "mcp.json"), JSON.stringify({
+			autoEnableCodemode: false,
+			mcpServers: {
+				docs: { command: process.execPath, args: [server] },
+				secret: { command: process.execPath, args: [server, "--resources"], exposure: "hidden" },
+			},
+		})),
+		extensions: [{ name: "mcp", builtin: true, factory: createMcpExtension() }],
+	});
+	h.setResponses([
+		fauxAssistantMessage(fauxToolCall("ipython", { code: [
+			"print(sorted(t['name'] for t in await pi.tools()))",
+			"try:",
+			"    await pi.tool('list_mcp_resources', {})",
+			"except pi.ToolError as e:",
+			"    print(e)",
+		].join("\n") }), { stopReason: "toolUse" }),
+		fauxAssistantMessage("done"),
+	]);
+	await h.session.prompt("read MCP resources");
+	const result = h.session.messages.find((m) => m.role === "toolResult");
+	expect(result?.isError).toBe(false);
+	expect(resultText(result!).split("\n")).toEqual([
+		"['mcp__docs__echo', 'mcp__docs__guarded', 'mcp__docs__hidden']",
+		"Tool list_mcp_resources not found",
+	]);
+});
+
 test.each(["direct", "codemode", "deferred"])("the pi prompt follows delayed %s MCP registration and the first Cell waits for readiness", async (exposure) => {
 	let gate: string;
 	let registeredBeforeCell = false;

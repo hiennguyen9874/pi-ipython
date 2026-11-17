@@ -58,7 +58,17 @@ The `ipython` description lists the callable Pi tools registered with `direct` o
 
 `pi.search(query, limit=8)` ranks every callable Pi tool, listed or not (including `deferred` MCP tools), with BM25 over names, descriptions, parameter schemas, and namespaces; a query that is exactly a tool's name ranks it first. Turn it off with `piTools.search: false`: calls then raise `pi.ToolError` and the system prompt does not mention it.
 
-MCP tools with `direct`, `codemode`, or `deferred` exposure are callable through `pi`; `hidden` tools stay unavailable. Cells wait for MCP registration before running. Neither `builtin:codemode` nor `builtin:tool-search` is needed for Python discovery. Run `pi mcp list` to diagnose connection failures, and `pi mcp login <server>` for servers that need authentication. Project `.pi/mcp.json` is read only in trusted projects.
+MCP tools with `direct`, `codemode`, or `deferred` exposure are callable through `pi`; `hidden` tools stay unavailable. MCP resources are reachable the same way, through pi's `list_mcp_resources`, `list_mcp_resource_templates`, and `read_mcp_resource` tools, which return dicts:
+
+```python
+listing = await pi.tool("list_mcp_resources", {})  # {"resources": [{"server", "uri", "name", ...}]}
+page = await pi.tool("read_mcp_resource", {"server": "docs", "uri": listing["resources"][0]["uri"]})
+page["contents"]                                    # [{"uri", "mimeType", "text" or "blob"}]
+```
+
+They exist only while a non-`hidden` server offers resources, never reach `hidden` servers, and take the widest exposure of those servers (so by default they are not listed in the description, but `pi.tools()` and `pi.search` find them).
+
+Cells wait for MCP registration before running. Neither `builtin:codemode` nor `builtin:tool-search` is needed for Python discovery. Run `pi mcp list` to diagnose connection failures, and `pi mcp login <server>` for servers that need authentication. Project `.pi/mcp.json` is read only in trusted projects.
 
 ## Configuration
 
