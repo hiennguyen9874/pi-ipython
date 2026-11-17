@@ -451,10 +451,20 @@ export class KernelClient {
 	}
 
 	private write(request: Record<string, unknown>): Promise<void> {
-		const stdin = this.child?.stdin;
-		if (!stdin || stdin.destroyed) return Promise.reject(new Error("Kernel stdin is not connected"));
-		return new Promise((resolve, reject) => {
+		const child = this.child;
+		if (!child) return Promise.reject(new Error("Kernel stdin is not connected"));
+		return new Promise<void>((resolve, reject) => {
+			const stdin = child.stdin;
+			if (!stdin || stdin.destroyed) {
+				reject(new Error("Kernel stdin is not connected"));
+				return;
+			}
 			stdin.write(`${JSON.stringify(request)}\n`, (error) => (error ? reject(error) : resolve()));
+		}).catch((error: Error) => {
+			// A write callback can fail before any stream error or process close event.
+			// Retire its owning Kernel now, so the next Cell cannot reuse a broken transport.
+			this.lose(child, error);
+			throw error;
 		});
 	}
 
