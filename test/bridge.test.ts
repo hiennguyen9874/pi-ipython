@@ -126,6 +126,36 @@ test("blocked, unknown, invalid, excluded, and throwing calls raise pi.ToolError
 	]);
 });
 
+test.each(["finished", "missing"])("a background call with a %s originating Cell cannot borrow a later Cell's context", async (origin) => {
+	const called: string[] = [];
+	const observeCalls: ExtensionFactory = (pi) => {
+		pi.on("tool_call", (event) => {
+			if (event.toolName === "echo") called.push(event.toolName);
+		});
+	};
+	h = await createHarness({ extensions: [...extensions, observeCalls] });
+	const [, stale, current] = await h.runCells(
+		[
+			"import contextvars",
+			"gate = asyncio.Event()",
+			"async def late():",
+			"    await gate.wait()",
+			"    try:",
+			"        return await pi.tool('echo', {'text': 'stale'})",
+			"    except pi.ToolError as e:",
+			"        return f'ToolError: {e}'",
+			`background = asyncio.create_task(late()${origin === "missing" ? ", context=contextvars.Context()" : ""})`,
+		].join("\n"),
+		"gate.set()\nprint(await background)",
+		"print(await asyncio.gather(pi.tool('echo', {'text': 'one'}), pi.tool('echo', {'text': 'two'})))",
+	);
+	expect(stale?.isError).toBe(false);
+	expect(resultText(stale!)).toBe("ToolError: Bridged calls are only allowed while their originating Cell runs");
+	expect(current?.isError).toBe(false);
+	expect(resultText(current!)).toBe("['echo: one', 'echo: two']");
+	expect(called).toEqual(["echo", "echo"]);
+});
+
 test("a result with images returns its text plus the omitted-images marker", async () => {
 	h = await createHarness({ extensions });
 	const [r] = await h.runCells("print(await pi.tool('snapshot'))");

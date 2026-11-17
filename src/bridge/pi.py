@@ -28,6 +28,10 @@ async def tool(name: str, args: dict[str, Any] | None = None) -> Any:
         raise TypeError("name must be a non-empty str")
     if args is not None and not isinstance(args, dict):
         raise TypeError(f"args must be a dict or None, got {type(args).__name__}")
+    # Detached tasks retain their originating Cell context, even while another Cell runs.
+    context = _repl.current_cell_completion_context()
+    if context is None or context[0].is_set():
+        raise ToolError("Bridged calls are only allowed while their originating Cell runs")
     reply = await _repl.host_request({"type": "pi.tool", "name": name, "args": args or {}})
     if reply.get("status") == "ok":
         return reply.get("result")

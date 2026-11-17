@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Bridged calls reject background tasks whose originating Cell has finished, and calls without a Cell context, with `pi.ToolError` before dispatch. They cannot borrow a later Cell's tool context or signal; concurrent calls from a live Cell remain supported. (#30)
+
 - Python-state notices are capped at 50 eligible names and 2,000 UTF-16 code units, report omissions and filtering, escape unusual names, and distinguish a failed listing from an empty one. Listing avoids invoking user-defined string-subclass methods; the Kernel still sends the full `list_names` response to the host. Runtime rebuilds refresh uv's cached local wheel so changed sources are installed. (#21)
 
 - Cell rendering clips expansion hints on narrow terminals, applies configured output limits before colouring, keeps large exception messages compact, and preserves warnings when saving full output fails. (#12)
