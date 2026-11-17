@@ -95,6 +95,20 @@ test("without a UI, /tree keeps the Kernel and notifies the model without prompt
 	expect(resultText(result)).toBe("42");
 });
 
+test("RPC /tree keeps the Kernel and notifies the model without prompting a bound UI", async () => {
+	const { prompts, ui } = withChoice("Restart Kernel");
+	h = await createHarness({ ui, mode: "rpc" });
+	await h.runCells("x = 41");
+
+	await navigateToStart(h);
+	expect(prompts).toEqual([]);
+
+	const { result, seen } = await runCellSeeing(h, "x + 1");
+	expect(seen).toContain(BRANCH_NOTICE);
+	expect(seen).not.toContain(STATE_LOST_NOTICE);
+	expect(resultText(result)).toBe("42");
+});
+
 test("/tree with no Kernel running neither prompts nor notifies", async () => {
 	const { prompts, ui } = withChoice("Restart Kernel");
 	h = await createHarness({ ui });

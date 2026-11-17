@@ -78,7 +78,7 @@ export default function piIpython(pi: ExtensionAPI): void {
 	// Python state follows the Kernel, not the conversation: on a branch switch the user decides whether it still fits.
 	pi.on("session_tree", async (_event, ctx) => {
 		if (!kernel?.isRunning) return;
-		const choice = ctx.hasUI
+		const choice = ctx.mode === "tui" && ctx.hasUI
 			? await ctx.ui.select("Branch switched. Python state may not match this branch.", [KEEP_KERNEL, RESTART_KERNEL])
 			: KEEP_KERNEL;
 		if (choice === RESTART_KERNEL) {

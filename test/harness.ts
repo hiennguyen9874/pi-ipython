@@ -13,6 +13,7 @@ import {
 	type AgentSession,
 	createAgentSession,
 	DefaultResourceLoader,
+	type ExtensionContext,
 	type ExtensionUIContext,
 	type FileEntry,
 	ModelRuntime,
@@ -26,6 +27,8 @@ export interface HarnessOptions {
 	setup?: (dirs: { cwd: string; agentDir: string }) => void | Promise<void>;
 	/** Bind a UI with these methods (the rest are no-ops); without it the session is headless. */
 	ui?: Partial<ExtensionUIContext>;
+	/** Defaults to TUI with a bound UI, otherwise print. */
+	mode?: ExtensionContext["mode"];
 	/** Use this agent dir (kept on dispose) instead of a fresh one. */
 	agentDir?: string;
 	/** Start the session from these entries (header first), e.g. a previous session's `fileEntries()`. */
@@ -113,9 +116,12 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 		sessionStartEvent: options.sessionStartEvent,
 	});
 	const ui = options.ui;
-	await session.bindExtensions(
-		ui ? { uiContext: new Proxy(ui, { get: (t, k) => t[k as keyof typeof t] ?? (() => undefined) }) as ExtensionUIContext } : {},
-	);
+	await session.bindExtensions({
+		uiContext: ui
+			? new Proxy(ui, { get: (t, k) => t[k as keyof typeof t] ?? (() => undefined) }) as ExtensionUIContext
+			: undefined,
+		mode: options.mode ?? (ui ? "tui" : "print"),
+	});
 
 	return {
 		session,
