@@ -187,6 +187,50 @@ test("pi.tools() lists the callable set live, with first description lines and n
 	expect(resultText(called!)).toBe("'late ran'");
 });
 
+test("a direct tool registered during a Cell is discoverable and callable immediately, with its declaration hidden", async () => {
+	const registerLate: ExtensionFactory = (pi) => {
+		pi.registerTool({
+			name: "register_late",
+			label: "register late",
+			description: "Register an initially inactive direct tool.",
+			exposure: "codemode",
+			parameters: Type.Object({}),
+			execute: async () => {
+				pi.registerTool({
+					name: "late_direct",
+					label: "late direct",
+					description: "Registered during a Cell.",
+					exposure: "direct",
+					defaultActive: false,
+					parameters: Type.Object({}),
+					execute: async () => ({ content: [{ type: "text", text: "late direct ran" }], details: {} }),
+				});
+				return { content: [{ type: "text", text: "registered" }], details: {} };
+			},
+		});
+	};
+	h = await createHarness({ extensions: [...extensions, registerLate] });
+	const declared: string[][] = [];
+	h.setResponses([
+		fauxAssistantMessage(fauxToolCall("ipython", {
+			code: [
+				"await pi.tool('register_late')",
+				"print([t['name'] for t in await pi.tools() if t['name'] == 'late_direct'])",
+				"print((await pi.describe('late_direct'))['description'])",
+				"print(await pi.tool('late_direct'))",
+			].join("\n"),
+		}), { stopReason: "toolUse" }),
+		(context: Context) => {
+			declared.push(getCurrentTools(context.messages).map((t) => t.name));
+			return fauxAssistantMessage("done");
+		},
+	]);
+	await h.session.prompt("register and call a tool in one Cell");
+	const result = h.session.messages.find((m) => m.role === "toolResult");
+	expect(result && resultText(result)).toBe("['late_direct']\nRegistered during a Cell.\nlate direct ran");
+	expect(declared).toEqual([["ipython"]]);
+});
+
 test("pi.describe() returns the full description and schema; unknown and excluded names raise pi.ToolError", async () => {
 	h = await createHarness({ extensions });
 	const [described, errors] = await h.runCells(

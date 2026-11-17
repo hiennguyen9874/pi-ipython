@@ -57,6 +57,14 @@ export default function piIpython(pi: ExtensionAPI): void {
 		});
 	};
 
+	// Keep live discovery and Bridged calls aligned; ipython's prepareLoadout hides direct declarations.
+	const forceExclusive = () => {
+		const callable = bridgedTools(pi.getAllTools(), IPYTHON_TOOL_NAME);
+		const direct = callable.filter((tool) => tool.exposure === "direct");
+		pi.setActiveTools([IPYTHON_TOOL_NAME, ...direct.map((tool) => tool.name)]);
+		return callable;
+	};
+
 	pi.registerTool(
 		createIpythonTool({
 			getKernel: () => (kernel ??= createKernel()),
@@ -73,16 +81,10 @@ export default function piIpython(pi: ExtensionAPI): void {
 				return cause;
 			},
 			answerHostRequest: (data, ctx, signal) => {
-				return answerHostRequest(data, bridgedTools(pi.getAllTools(), IPYTHON_TOOL_NAME), ctx, signal);
+				return answerHostRequest(data, forceExclusive(), ctx, signal);
 			},
 		}),
 	);
-
-	// Bridged `direct` tools must be active to be callable; ipython's prepareLoadout hides their declarations.
-	const forceExclusive = () => {
-		const direct = bridgedTools(pi.getAllTools(), IPYTHON_TOOL_NAME).filter((tool) => tool.exposure === "direct");
-		pi.setActiveTools([IPYTHON_TOOL_NAME, ...direct.map((tool) => tool.name)]);
-	};
 
 	pi.on("session_start", (event, ctx) => {
 		pendingStateNotice = undefined;

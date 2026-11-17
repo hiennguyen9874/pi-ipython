@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Pi tools registered during a Cell are activated before discovery or Bridged calls, including initially inactive `direct` tools. They can be called immediately while their declarations stay hidden from the model. (#31)
+
 - Bridged calls reject background tasks whose originating Cell has finished, and calls without a Cell context, with `pi.ToolError` before dispatch. They cannot borrow a later Cell's tool context or signal; concurrent calls from a live Cell remain supported. (#30)
 
 - Python-state notices are capped at 50 eligible names and 2,000 UTF-16 code units, report omissions and filtering, escape unusual names, and distinguish a failed listing from an empty one. Listing avoids invoking user-defined string-subclass methods; the Kernel still sends the full `list_names` response to the host. Runtime rebuilds refresh uv's cached local wheel so changed sources are installed. (#21)
