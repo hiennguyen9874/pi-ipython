@@ -118,7 +118,7 @@ setInterval(() => {}, 1000);
 	expect(await waitFor(() => !isAlive(kernel) && !isAlive(child))).toBe(true);
 });
 
-test.each(["resume", "fork", "startup"] as const)(
+test.each(["new", "reload", "resume", "fork", "startup"] as const)(
 	"after %s of a session with earlier Cells, the model is told Python state is gone before its next turn",
 	async (reason) => {
 		h = await createHarness();
@@ -140,7 +140,7 @@ test.each(["resume", "fork", "startup"] as const)(
 	},
 );
 
-test.each(["new", "resume", "fork"] as const)("an explicit %s session is notified even without earlier Cells", async (reason) => {
+test.each(["resume", "fork"] as const)("an explicit %s session is notified even without earlier Cells", async (reason) => {
 	h = await createHarness({ sessionStartEvent: { type: "session_start", reason } });
 	let seen = "";
 	h.setResponses([(context) => {
@@ -149,6 +149,18 @@ test.each(["new", "resume", "fork"] as const)("an explicit %s session is notifie
 	}]);
 	await h.session.prompt("continue");
 	expect(seen).toContain(SEEN_STATE_LOST);
+});
+
+test.each(["new", "reload"] as const)("a %s session without earlier Cells gets no State-loss notice", async (reason) => {
+	h = await createHarness({ sessionStartEvent: { type: "session_start", reason } });
+	let seen = "";
+	h.setResponses([(context) => {
+		seen = JSON.stringify(context.messages);
+		return fauxAssistantMessage("noted");
+	}]);
+	await h.session.prompt("continue");
+	expect(seen).not.toContain(SEEN_STATE_LOST);
+	expect(h.session.messages.some((message) => message.role === "custom" && message.customType === "ipython_state_lost")).toBe(false);
 });
 
 test("a live host with an unknown recorded identity keeps its Kernel", async () => {

@@ -115,7 +115,7 @@ export default function piIpython(pi: ExtensionAPI): void {
 		if (config.python.source === "uv") ensureKernelPython({ pythonVersion: config.python.version }).catch(() => undefined);
 
 		// Every session starts with a fresh Kernel: Cells already in the conversation ran in one that is gone.
-		if (["new", "resume", "fork"].includes(event.reason) || hasEarlierCells(ctx.sessionManager.getBranch())) {
+		if (["resume", "fork"].includes(event.reason) || hasEarlierCells(ctx.sessionManager.getBranch())) {
 			pi.sendMessage({ customType: STATE_LOST_TYPE, content: STATE_LOST_NOTICE, display: true }, { deliverAs: "nextTurn" });
 		}
 		forceExclusive();

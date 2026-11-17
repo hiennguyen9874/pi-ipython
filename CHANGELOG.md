@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- A clean `/new` session no longer sends or displays a State-loss notice when its branch has no earlier Cells. Sessions with earlier Cells and explicit resume/fork sessions still receive the notice. (#41)
+
 - Pi tool bridge review fixes: successful structured `null` results remain Python `None` instead of falling back to text, and failed calls attach only dicts to `pi.ToolError.result` (other JSON values become `None`). A real-session regression covers null, boolean, number, string, array, and object results. (#37)
 - Prompt discovery tests now execute a Cell through the real Kernel before accepting the describe-before-use guidance. The v3 PRD also cross-references the existing MCP resource behavior. (#36, #38, #40)
 

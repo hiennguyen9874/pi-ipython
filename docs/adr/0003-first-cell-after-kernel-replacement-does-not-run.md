@@ -4,5 +4,5 @@ When the Kernel is replaced without the model already knowing (it died while idl
 
 ## Consequences
 
-- When the notice was already delivered, nothing is blocked: either the Cell that was running when the Kernel died returned it, or a session-level message arrived at the start of a turn (new/resume/fork session, `/tree` restart).
+- When the notice was already delivered, nothing is blocked: either the Cell that was running when the Kernel died returned it, or a session-level message arrived at the start of a turn (a session with earlier Cells, resume/fork session, `/tree` restart).
 - This replaces the earlier busy-kill behaviour, where the pending Cell ran in the new Kernel with `KERNEL_RESTART_NOTICE` added at the start of its result.
