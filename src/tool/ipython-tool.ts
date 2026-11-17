@@ -15,6 +15,7 @@ import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import { formatSize, type ToolDefinition, type TruncationOptions, truncateTail } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { type CellResult, type KernelClient, KernelBusyError } from "../kernel/client.ts";
+import { renderCellCall, renderCellResult } from "../render/cell-renderer.ts";
 
 export const IPYTHON_TOOL_NAME = "ipython";
 
@@ -137,6 +138,8 @@ export function createIpythonTool({
 		parameters: ipythonSchema,
 		// One Kernel runs one Cell at a time.
 		executionMode: "sequential",
+		renderCall: renderCellCall,
+		renderResult: renderCellResult,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			if (getConfirmEachCell()) {
 				if (!ctx.hasUI) throw new Error(CONFIRM_NO_UI_ERROR);
