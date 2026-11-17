@@ -43,27 +43,33 @@ People who already run pi and want to try a Python-REPL-first agent on their own
 16. **TUI.** A simple renderer: highlighted Python code and truncated output.
 17. **Config.** `~/.pi/agent/pi-ipython.json` (global) merged with `.pi/pi-ipython.json` (project); project values win. Keys: `confirmEachCell`, `python.source` (`uv` | `project`), `python.version`, output limits.
 
-### v2: Survive restarts, background work
+### v1.1: Harden the Kernel contract (#16)
 
-- `dill` snapshot/restore of Python state on resume and restart, with per-variable (16 MiB) and total (256 MiB) caps, and pruning of oversized names at compaction. Default caps follow Unharnessed.
-- `bash()` handles that run in the background, and a wake-up message that starts a new turn when a handle finishes.
-- Python skills: a skill with a `pyproject.toml` is installed into the Kernel venv and pre-imported.
+- A State-loss notice on every Kernel replacement, including crashes; bounded host memory for output; a minimal bootstrap namespace; a bounded Python-state notice; compaction-summary guidance; live output streaming; a documented system prompt customization contract. No new model-facing abstractions.
+
+### v2: Survive restarts, background work (#13)
+
+- `dill` snapshot/restore of Python state on resume and restart, per session. Caps (Unharnessed: 16 MiB per name, 256 MiB total) only limit what is saved; compaction never removes live Python state (ADR 0002).
+- `bash()` handles that run in the background, and an opt-in notice that starts a new turn when a handle finishes.
+- Python skills: deferred until a concrete need appears.
 - A full Cell renderer, ported from `ipython-cell.ts`.
 
-### v3: MCP and goals
-
-- MCP servers callable from Python (`mcp.search_tools`, `mcp.call_tool`), via the runtime's `mcp` module and `host_request`.
-- Goal and autonomous continuation, following Unharnessed's semantics.
-
-### v4: Pi bridge
+### v3: Pi bridge (#15)
 
 - Python can call pi tools, for example `await pi.tool("subagent", {...})`, through `host_request`, subject to pi's tool hooks.
+
+### v4: MCP via the bridge (#14)
+
+- MCP servers callable from Python through the pi bridge and pi's own MCP support, not a separate Python MCP stack.
+- Goals and autonomous continuation are not planned for core (#29).
 
 ## Open questions (decide before v2)
 
 - Snapshot semantics across branches, resume, and Kernel crash.
 - The wording of the wake-up message, and the guard against wake-up loops.
 - Whether to keep Unharnessed's 16 MiB/256 MiB caps.
+
+These are tracked as open questions on #25 and #26.
 
 ## Success criteria for v1
 

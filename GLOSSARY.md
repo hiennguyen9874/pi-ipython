@@ -23,3 +23,7 @@ _Avoid_: Kernel memory, variables, notebook state
 **Python-state notice**:
 The message telling the model which Python state survived after a compaction.
 _Avoid_: State summary, kernel report
+
+**State-loss notice**:
+The message telling the model its Kernel was replaced and all earlier Python state is gone.
+_Avoid_: Restart notice, kernel reset

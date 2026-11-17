@@ -56,9 +56,10 @@ test/                   # vitest integration tests (real Kernel)
 
 ## Later releases (one parent ticket each, broken down when they start)
 
-- **v2:** snapshot/restore and pruning, `bash()` wake-ups, Python skills, full renderer. Starts with a grilling session on the open questions in the PRD.
-- **v3:** MCP in the Kernel, goals and autonomous mode.
-- **v4:** pi tool bridge through `host_request`.
+- **v1.1 (#16):** harden the Kernel contract before new features.
+- **v2 (#13):** snapshot/restore (no live pruning, ADR 0002), opt-in background-command notices, full renderer; Python skills deferred.
+- **v3 (#15):** pi tool bridge through `host_request`.
+- **v4 (#14):** MCP through the bridge. Goals and autonomous mode are not planned (#29).
 
 ## Testing
 
