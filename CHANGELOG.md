@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Cell rendering clips expansion hints on narrow terminals, applies configured output limits before colouring, keeps large exception messages compact, and preserves warnings when saving full output fails. (#12)
+
 - Compaction namespace listings preserve buffered background text and images for the next Cell. Python-state notices reach the immediate continuation or overflow retry without extra model turns or duplicate notices. Real-session tests cover mid-run threshold/overflow delivery and failed, timed-out, and busy-Kernel listings. (#10)
 
 - Killing a busy Kernel reports the loss of Python state even if replacement startup or execution fails. Interrupt tests use a deterministic interrupt-ignoring Cell and distinguish POSIX synchronous interrupts from cross-platform async interrupts. (#9)

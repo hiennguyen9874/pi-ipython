@@ -56,6 +56,10 @@ const ipythonSchema = Type.Object({
 export interface IpythonToolDetails extends CellResult {
 	/** Set when the text was truncated: the temp file holding the full text. */
 	fullOutputPath?: string;
+	/** Truncation notice, including a failed attempt to save the full output. */
+	outputWarning?: string;
+	/** Raw-text limits shared by model output and the TUI renderer. */
+	outputLimits?: TruncationOptions;
 	/** True when the user killed a busy Kernel before this Cell ran. */
 	kernelRestarted?: boolean;
 }
@@ -89,7 +93,7 @@ export function truncateCellText(
 	text: string,
 	limits: TruncationOptions,
 	backgroundOutput = "",
-): { text: string; fullOutputPath?: string } {
+): { text: string; fullOutputPath?: string; outputWarning?: string } {
 	const t = truncateTail(text, limits);
 	if (!t.truncated) return { text };
 	let content = t.content;
@@ -113,14 +117,11 @@ export function truncateCellText(
 		writeFileSync(fullOutputPath, text, { mode: 0o600, flag: "wx" });
 	} catch (error) {
 		const reason = error instanceof Error ? error.message : String(error);
-		return {
-			text: `${content}\n\n[Output truncated (${formatSize(t.totalBytes)} total): showing ${shown}. Full output could not be saved: ${reason}]`,
-		};
+		const outputWarning = `[Output truncated (${formatSize(t.totalBytes)} total): showing ${shown}. Full output could not be saved: ${reason}]`;
+		return { text: `${content}\n\n${outputWarning}`, outputWarning };
 	}
-	return {
-		text: `${content}\n\n[Output truncated (${formatSize(t.totalBytes)} total): showing ${shown}. Full output: ${fullOutputPath}]`,
-		fullOutputPath,
-	};
+	const outputWarning = `[Output truncated (${formatSize(t.totalBytes)} total): showing ${shown}. Full output: ${fullOutputPath}]`;
+	return { text: `${content}\n\n${outputWarning}`, fullOutputPath, outputWarning };
 }
 
 export function createIpythonTool({
@@ -169,14 +170,15 @@ export function createIpythonTool({
 					kernelRestarted = true;
 				}
 			}
-			const truncated = truncateCellText(formatCellResult(r), getOutputLimits(), r.backgroundOutput);
+			const outputLimits = getOutputLimits();
+			const truncated = truncateCellText(formatCellResult(r), outputLimits, r.backgroundOutput);
 			// Prepended after truncation, so a long output cannot cut the notice off.
 			const text = kernelRestarted ? `${KERNEL_RESTART_NOTICE}\n\n${truncated.text}` : truncated.text;
 			const images: ImageContent[] = r.images.map((i) => ({ type: "image", ...i }));
 			const content: (TextContent | ImageContent)[] = [{ type: "text", text }, ...images];
 			return {
 				content,
-				details: { ...r, fullOutputPath: truncated.fullOutputPath, kernelRestarted },
+				details: { ...r, fullOutputPath: truncated.fullOutputPath, outputWarning: truncated.outputWarning, outputLimits, kernelRestarted },
 				isError: r.status !== "ok",
 			};
 		},

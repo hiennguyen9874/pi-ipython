@@ -10,7 +10,7 @@ import {
 	truncateTail,
 	truncateToVisualLines,
 } from "@earendil-works/pi-coding-agent";
-import { type Component, Container, getCapabilities, getImageDimensions, imageFallback, Text } from "@earendil-works/pi-tui";
+import { type Component, Container, getCapabilities, getImageDimensions, imageFallback, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import type { IpythonToolDetails } from "../tool/ipython-tool.ts";
 
 const CODE_PREVIEW_LINES = 10;
@@ -54,24 +54,42 @@ export function renderCellResult(
 		add(theme.fg("error", result.content.map((b) => (b.type === "text" ? b.text : "")).join("\n")));
 	} else {
 		if (d.kernelRestarted) add(theme.fg("warning", "Kernel killed and restarted: earlier Python state is gone."));
-		const parts: string[] = [];
-		if (d.stdout) parts.push(fgLines(theme, "toolOutput", d.stdout));
-		if (d.stderr) parts.push(fgLines(theme, "warning", d.stderr));
-		if (d.result !== undefined) parts.push(fgLines(theme, "toolOutput", d.result));
-		if (d.backgroundOutput) parts.push(fgLines(theme, "muted", `[background output]\n${d.backgroundOutput}`));
+		const lines: { text: string; color: Parameters<Theme["fg"]>[0] }[] = [];
+		const append = (text: string, color: Parameters<Theme["fg"]>[0]) => {
+			for (const line of trimNewline(text).split("\n")) lines.push({ text: line, color });
+		};
+		if (d.stdout) append(d.stdout, "toolOutput");
+		if (d.stderr) append(d.stderr, "warning");
+		if (d.result !== undefined) append(d.result, "toolOutput");
+		if (d.backgroundOutput) append(`[background output]\n${d.backgroundOutput}`, "muted");
 		const errorLine = d.error && (d.error.evalue ? `${d.error.ename}: ${d.error.evalue}` : d.error.ename);
 		if (d.error && expanded) {
 			// The traceback ends with the error line, which is drawn highlighted below.
 			let traceback = trimNewline(d.error.traceback.join(""));
 			if (errorLine && traceback.endsWith(errorLine)) traceback = traceback.slice(0, -errorLine.length).trimEnd();
-			if (traceback) parts.push(fgLines(theme, "toolOutput", traceback));
+			if (traceback) append(traceback, "toolOutput");
 		}
-		// Details hold the untruncated output: draw at most pi's default limits.
-		const body = truncateTail(parts.join("\n")).content;
-		if (body) container.addChild(expanded ? new Text(body, 0, 0) : new TailPreview(body, theme, context));
-		if (d.error) add(theme.fg("error", theme.bold(d.error.ename) + (d.error.evalue ? `: ${d.error.evalue}` : "")));
+		// Limit raw text, not ANSI styling, using the same limits as the model-facing result.
+		const raw = lines.map((line) => line.text).join("\n");
+		const body = truncateTail(raw, d.outputLimits).content;
+		if (body) {
+			const kept = body.split("\n");
+			// Locate the raw tail, including partial lines and a discarded final newline.
+			const firstLine = raw.slice(0, raw.lastIndexOf(body)).split("\n").length - 1;
+			const colors = lines.slice(firstLine);
+			const styled = kept.map((line, i) => theme.fg(colors[i]!.color, line)).join("\n");
+			container.addChild(expanded ? new Text(styled, 0, 0) : new TailPreview(styled, theme, context));
+		}
+		if (d.error) {
+			const message = truncateTail(d.error.evalue, d.outputLimits).content;
+			const text = (theme.bold(d.error.ename) + (message ? `: ${message}` : ""))
+				.split("\n").map((line) => theme.fg("error", line)).join("\n");
+			const heading = theme.fg("error", theme.bold(d.error.ename));
+			container.addChild(expanded ? new Text(text, 0, 0) : new TailPreview(text, theme, context, heading));
+		}
 		if (d.status === "aborted") add(theme.fg("warning", "Cell aborted"));
-		if (d.fullOutputPath) add(theme.fg("warning", `[Output truncated. Full output: ${d.fullOutputPath}]`));
+		if (d.outputWarning) add(theme.fg("warning", d.outputWarning));
+		else if (d.fullOutputPath) add(theme.fg("warning", `[Output truncated. Full output: ${d.fullOutputPath}]`));
 	}
 	// Images the terminal draws itself need no placeholder.
 	if (!getCapabilities().images || !context.showImages) {
@@ -85,11 +103,6 @@ export function renderCellResult(
 
 const trimNewline = (s: string) => s.replace(/\n$/, "");
 
-/** Colour each line on its own, so cutting or wrapping lines never drops the opening colour code. */
-function fgLines(theme: Theme, color: Parameters<Theme["fg"]>[0], text: string): string {
-	return trimNewline(text).split("\n").map((line) => theme.fg(color, line)).join("\n");
-}
-
 function expandHint(what: string, theme: Theme, context: Context): string {
 	return `${theme.fg("muted", `... (${what},`)} ${context.keyHint("app.tools.expand", "to expand")}${theme.fg("muted", ")")}`;
 }
@@ -97,13 +110,23 @@ function expandHint(what: string, theme: Theme, context: Context): string {
 /** The last visual lines of the output at the width it is drawn, after a hint to expand. */
 class TailPreview implements Component {
 	private cache?: { width: number; lines: string[] };
-	constructor(private readonly text: string, private readonly theme: Theme, private readonly context: Context) {}
+	constructor(
+		private readonly text: string,
+		private readonly theme: Theme,
+		private readonly context: Context,
+		private readonly heading?: string,
+	) {}
 
 	render(width: number): string[] {
 		if (this.cache?.width === width) return this.cache.lines;
 		const { visualLines, skippedCount } = truncateToVisualLines(this.text, OUTPUT_PREVIEW_LINES, width, 0, "end");
 		const lines = skippedCount > 0
-			? [expandHint(`${skippedCount} earlier lines`, this.theme, this.context), ...visualLines]
+			? [
+				// Error names stay visible when their message's first lines are hidden.
+				...(this.heading ? new Text(this.heading, 0, 0).render(width) : []),
+				truncateToWidth(expandHint(`${skippedCount} earlier lines`, this.theme, this.context), width, "..."),
+				...visualLines,
+			]
 			: visualLines;
 		this.cache = { width, lines };
 		return lines;
