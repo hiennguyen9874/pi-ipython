@@ -96,7 +96,7 @@ test.each(["direct", "codemode", "deferred"] as const)("the prompt explains pi d
 	const piSection = prompt.slice(prompt.indexOf("- `pi`:"), prompt.indexOf("## Rules"));
 	expect(piSection).toContain("await pi.describe_namespace(name)");
 	expect(prompt.split("describe_namespace")).toHaveLength(2);
-	expect(piSection).toContain("await pi.search(query: str, limit: int = 8)");
+	expect(piSection).toContain("await pi.search(query: str, limit: int = 8, namespace: str | None = None)");
 	expect(prompt.split("pi.search")).toHaveLength(2);
 	expect(prompt).not.toContain("frobnicate");
 });

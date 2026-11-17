@@ -406,6 +406,64 @@ test("pi.search() ranks a full tool name above a higher-scoring namespace suffix
 	expect(resultText(r!)).toBe("['echo', 'mcp__docs__echo']\n['echo']\n['mcp__docs__echo']");
 });
 
+test("pi.search(namespace=) ranks only that namespace's tools, by name or alias, then applies limit", async () => {
+	const twoServers: ExtensionFactory = (pi) => {
+		for (const [server, alias, tools] of [["mcp__docs", "docs", ["fetch", "fetch_page"]], ["mcp__web", "web", ["fetch", "fetch_url"]]] as const) {
+			for (const tool of tools) {
+				pi.registerTool({
+					name: `${server}__${tool}`,
+					label: tool,
+					description: "Fetch a document.",
+					exposure: "deferred",
+					namespace: { name: server, aliases: [alias] },
+					parameters: Type.Object({}),
+					execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
+				});
+			}
+		}
+		pi.registerTool({
+			name: "fetch",
+			label: "fetch",
+			description: "Fetch a document.",
+			parameters: Type.Object({}),
+			execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
+		});
+	};
+	h = await createHarness({ extensions: [twoServers] });
+	const [r] = await h.runCells([
+		"names = lambda ts: sorted(t['name'] for t in ts)",
+		"print(names(await pi.search('fetch document')))",
+		"print(names(await pi.search('fetch document', namespace='mcp__docs')))",
+		"print(names(await pi.search('fetch document', namespace='web')))",
+		"print(len(await pi.search('fetch document', limit=1, namespace='mcp__web')), (await pi.search('fetch', limit=1, namespace='web'))[0]['namespace'])",
+		"print(await pi.search('zzz', namespace='docs'))",
+		"for ns in ['nope', 'mcp__docs__fetch', '']:",
+		"    try:",
+		"        await pi.search('fetch', namespace=ns)",
+		"        print(repr(ns), 'no error')",
+		"    except pi.ToolError as e:",
+		"        print('ToolError', e)",
+		"    except (TypeError, ValueError) as e:",
+		"        print(type(e).__name__, e)",
+		"try:",
+		"    await pi.search('fetch', namespace=3)",
+		"except TypeError as e:",
+		"    print('TypeError', e)",
+	].join("\n"));
+	expect(r?.isError).toBe(false);
+	expect(resultText(r!).split("\n")).toEqual([
+		"['fetch', 'mcp__docs__fetch', 'mcp__docs__fetch_page', 'mcp__web__fetch', 'mcp__web__fetch_url']",
+		"['mcp__docs__fetch', 'mcp__docs__fetch_page']",
+		"['mcp__web__fetch', 'mcp__web__fetch_url']",
+		"1 mcp__web",
+		"[]",
+		"ToolError Namespace nope not found",
+		"ToolError Namespace mcp__docs__fetch not found",
+		"TypeError namespace must be a non-empty str or None",
+		"TypeError namespace must be a non-empty str or None, got int",
+	]);
+});
+
 test("pi.search() raises pi.ToolError when piTools.search is false", async () => {
 	h = await createHarness({
 		setup: ({ cwd }) => {

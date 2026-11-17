@@ -49,11 +49,12 @@ async def tools() -> list[dict[str, Any]]:
     return await _request({"type": "pi.tools"})
 
 
-async def search(query: str, limit: int = 8) -> list[dict[str, Any]]:
+async def search(query: str, limit: int = 8, namespace: str | None = None) -> list[dict[str, Any]]:
     """Rank the Pi tools a Cell can call against ``query`` (BM25 over names, descriptions, schemas, and namespaces).
 
-    Returns at most ``limit`` entries shaped like ``tools()``, best match first. Raises ToolError
-    when search is turned off (``piTools.search: false``).
+    With ``namespace`` (a name or alias, as in ``describe_namespace``), only that namespace's tools
+    are ranked. Returns at most ``limit`` entries shaped like ``tools()``, best match first. Raises
+    ToolError when search is turned off (``piTools.search: false``) or no callable tool is in ``namespace``.
     """
     if not isinstance(query, str) or not query.strip():
         raise TypeError("query must be a non-empty str")
@@ -61,7 +62,11 @@ async def search(query: str, limit: int = 8) -> list[dict[str, Any]]:
         raise TypeError(f"limit must be an int, got {type(limit).__name__}")
     if limit <= 0:
         raise ValueError("limit must be positive")
-    return await _request({"type": "pi.search", "query": query, "limit": limit})
+    if namespace is not None and not isinstance(namespace, str):
+        raise TypeError(f"namespace must be a non-empty str or None, got {type(namespace).__name__}")
+    if namespace == "":
+        raise TypeError("namespace must be a non-empty str or None")
+    return await _request({"type": "pi.search", "query": query, "limit": limit, "namespace": namespace})
 
 
 async def describe(name: str) -> dict[str, Any]:

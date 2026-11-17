@@ -21,7 +21,7 @@ const CORE_PROMPT = `You have one tool, \`ipython\`: a persistent CPython REPL w
 const PI_TOOLS_HEAD = `- \`pi\`: the session's other tools (extension tools such as subagents or MCP servers), callable from Python; all of it is async
   - \`await pi.tools()\`: list the callable tools as dicts with \`name\`, \`description\` (first line), and \`namespace\``;
 
-const PI_SEARCH_PROMPT = `  - \`await pi.search(query: str, limit: int = 8)\`: the callable tools that best match \`query\` (words or a tool name), best first, as entries like \`pi.tools()\``;
+const PI_SEARCH_PROMPT = `  - \`await pi.search(query: str, limit: int = 8, namespace: str | None = None)\`: the callable tools that best match \`query\` (words or a tool name), best first, as entries like \`pi.tools()\`; \`namespace\` searches only that namespace's tools`;
 
 const PI_TOOLS_TAIL = `  - \`await pi.describe(name)\`: a tool's full \`description\`, \`parameters\` JSON schema, usage \`guidelines\`, and \`returns\` (output schema, or \`"str"\`)
   - \`await pi.describe_namespace(name)\`: a namespace's (for example an MCP server's) \`description\` and \`instructions\`

@@ -43,19 +43,24 @@ export async function answerHostRequest(
 	if (data.type === PI_TOOLS_REQUEST) return callable.map(toolEntry);
 	if (data.type === PI_SEARCH_REQUEST) {
 		if (!search) throw new Error("pi.search is turned off (piTools.search: false)");
-		const { query, limit } = data;
+		const { query, limit, namespace } = data;
 		if (typeof query !== "string" || query.trim() === "") throw new Error("query must be a non-empty string");
 		if (!Number.isInteger(limit) || (limit as number) <= 0) throw new Error("limit must be a positive integer");
-		const matches = new Bm25Ranker().rank(query, callable.map(createToolSearchDocument), limit as number);
-		return matches.map((match) => toolEntry(callable.find((tool) => tool.name === match.name)!));
+		let tools = callable;
+		if (namespace !== undefined && namespace !== null) {
+			if (typeof namespace !== "string") throw new Error("namespace must be a string");
+			// Filter first, so BM25 statistics and the limit apply within the namespace.
+			const found = findNamespace(callable, namespace);
+			if (!found) throw new Error(`Namespace ${namespace} not found`);
+			tools = callable.filter((tool) => tool.namespace?.name === found.name);
+		}
+		const matches = new Bm25Ranker().rank(query, tools.map(createToolSearchDocument), limit as number);
+		return matches.map((match) => toolEntry(tools.find((tool) => tool.name === match.name)!));
 	}
 	if (data.type === PI_DESCRIBE_NAMESPACE_REQUEST) {
 		const { name } = data;
 		if (typeof name !== "string") throw new Error(`${data.type} name must be a string`);
-		// Only namespaces of callable tools, matched by name or alias as codemode's describeNamespace().
-		const namespace = callable
-			.map((tool) => tool.namespace)
-			.find((candidate) => candidate && (candidate.name === name || candidate.aliases?.includes(name)));
+		const namespace = findNamespace(callable, name);
 		if (!namespace) throw new Error(`Namespace ${name} not found`);
 		return {
 			name: namespace.name,
@@ -84,6 +89,13 @@ export async function answerHostRequest(
 	}
 	const outcome = await ctx.executeTool(name, args ?? {}, { signal });
 	return toPythonValue(name, outcome, outputSchema(ctx, name) !== undefined);
+}
+
+/** Only namespaces of callable tools, matched by name or alias as codemode's describeNamespace(). */
+function findNamespace(callable: readonly ToolInfo[], name: string) {
+	return callable
+		.map((tool) => tool.namespace)
+		.find((candidate) => candidate && (candidate.name === name || candidate.aliases?.includes(name)));
 }
 
 /** A `pi.tools()` entry: name, first description line, and namespace name or null. */
