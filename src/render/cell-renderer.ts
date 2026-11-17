@@ -49,11 +49,11 @@ export function renderCellResult(
 	}
 	const d = result.details;
 	// A thrown error leaves no Cell result (pi sets details to {}).
-	if (!d?.status) {
-		// The Cell did not run (refused, busy Kernel, Kernel failure): the reason is the content.
+	if (!d?.status || d.stateLost) {
+		// The Cell did not run or its Kernel died (refused, busy Kernel, Kernel failure): the reason is the content.
+		if (d?.stateLost) add(theme.fg("warning", "Kernel replaced: earlier Python state is gone."));
 		add(theme.fg("error", result.content.map((b) => (b.type === "text" ? b.text : "")).join("\n")));
 	} else {
-		if (d.kernelRestarted) add(theme.fg("warning", "Kernel killed and restarted: earlier Python state is gone."));
 		const lines: { text: string; color: Parameters<Theme["fg"]>[0] }[] = [];
 		const append = (text: string, color: Parameters<Theme["fg"]>[0]) => {
 			for (const line of trimNewline(text).split("\n")) lines.push({ text: line, color });

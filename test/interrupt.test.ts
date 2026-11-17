@@ -2,7 +2,7 @@ import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall, type ToolResultMessage } from "@earendil-works/pi-ai";
 import { afterEach, expect, test } from "vitest";
-import { KERNEL_RESTART_NOTICE } from "../src/tool/ipython-tool.ts";
+import { STATE_LOST_NOTICE } from "../src/tool/ipython-tool.ts";
 import { createHarness, type Harness, kernelPids, resultText } from "./harness.ts";
 
 let h: Harness | undefined;
@@ -76,27 +76,7 @@ test("aborting an await-suspended Cell raises KeyboardInterrupt and keeps Python
 	expect(resultText(next!)).toBe("42");
 });
 
-test("Kill still tells the model state was lost when the replacement Kernel dies", async () => {
-	const { prompts, ui } = withChoice(() => "Kill kernel and restart");
-	h = await createHarness({ ui });
-	const [first] = await h.runCells("x = 41\nimport os; os.getpid()");
-	const pid = Number(resultText(first!));
-	await runAndAbort(h, stubbornCell(h.cwd), join(h.cwd, "started"));
-
-	const [failed] = await h.runCells("import os; os._exit(17)");
-	expect(prompts).toHaveLength(1);
-	expect(failed?.isError).toBe(true);
-	expect(resultText(failed!)).toContain(KERNEL_RESTART_NOTICE);
-	expect(resultText(failed!)).toContain("Kernel exited");
-	expect(kernelPids()).not.toContain(pid);
-
-	const [next] = await h.runCells("globals().get('x', 'state gone')");
-	expect(next?.isError).toBe(false);
-	expect(resultText(next!)).toBe("'state gone'");
-	expect(resultText(next!)).not.toContain(KERNEL_RESTART_NOTICE);
-}, 60_000);
-
-test("a Cell ignoring the interrupt leads to a wait/kill choice; Kill restarts the Kernel and tells the model", async () => {
+test("a Cell ignoring the interrupt leads to a wait/kill choice; Kill does not run the Cell and returns the State-loss notice", async () => {
 	const { prompts, ui } = withChoice(() => "Kill kernel and restart");
 	h = await createHarness({ ui });
 	const [first] = await h.runCells("x = 41\nimport os; os.getpid()");
@@ -104,13 +84,19 @@ test("a Cell ignoring the interrupt leads to a wait/kill choice; Kill restarts t
 	const aborted = await runAndAbort(h, stubbornCell(h.cwd), join(h.cwd, "started"));
 	expect(aborted.isError).toBe(true);
 
-	const [next] = await h.runCells("x");
+	const [blocked] = await h.runCells("open('ran', 'w').close()\nx");
 	expect(prompts).toHaveLength(1);
 	expect(prompts[0]!.options).toEqual(["Wait and preserve state", "Kill kernel and restart"]);
-	const text = resultText(next!);
-	expect(text).toContain(KERNEL_RESTART_NOTICE);
-	expect(text).toContain("NameError");
+	expect(blocked?.isError).toBe(true);
+	const text = resultText(blocked!);
+	expect(text.startsWith(STATE_LOST_NOTICE)).toBe(true);
+	expect(text).toContain("Cell not run");
+	expect(existsSync(join(h.cwd, "ran"))).toBe(false);
 	expect(kernelPids()).not.toContain(pid);
+
+	const [next] = await h.runCells("globals().get('x', 'state gone')");
+	expect(next?.isError).toBe(false);
+	expect(resultText(next!)).toBe("'state gone'");
 }, 60_000);
 
 test("choosing Wait keeps Python state once the interrupted Cell finishes", async () => {

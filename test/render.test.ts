@@ -176,6 +176,14 @@ test("a Cell refused before running shows the reason as an error", async () => {
 	expect(plain(renderRow(h, r!))).toContain("there is no UI to ask the user for approval");
 });
 
+test("a Cell whose Kernel died shows the replacement warning and the exit reason", async () => {
+	h = await createHarness();
+	const [r] = await h.runCells("import os; os._exit(17)");
+	const text = plain(renderRow(h, r!)).replace(/\s+/g, " ");
+	expect(text).toContain("Kernel replaced: earlier Python state is gone.");
+	expect(text).toContain("Kernel exited (exit code 17)");
+});
+
 test("an image the terminal does not draw is shown as a placeholder", async () => {
 	h = await createHarness();
 	const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";

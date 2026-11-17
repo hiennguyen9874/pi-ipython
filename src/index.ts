@@ -6,7 +6,9 @@ import { ensureKernelPython, resolveProjectPython, RUNTIME_SRC_DIR } from "./ker
 import { KernelClient } from "./kernel/client.ts";
 import { hostJournalPath, reapDeadHosts } from "./kernel/orphans.ts";
 import { buildSystemPrompt } from "./prompt/system-prompt.ts";
-import { createIpythonTool, IPYTHON_TOOL_NAME, KERNEL_BOOTSTRAP_CODE } from "./tool/ipython-tool.ts";
+import { createIpythonTool, IPYTHON_TOOL_NAME, KERNEL_BOOTSTRAP_CODE, STATE_LOST_NOTICE } from "./tool/ipython-tool.ts";
+
+export { STATE_LOST_NOTICE };
 
 /**
  * pi-ipython extension entry. Loading it means exclusive mode: the model sees only the
@@ -18,6 +20,18 @@ export default function piIpython(pi: ExtensionAPI): void {
 	let config: PiIpythonConfig = loadConfig(cwd).config;
 	let journalPath: string | undefined;
 	let pendingStateNotice: { content: string; id: string; timestamp: number } | undefined;
+	/** Cause of a Kernel replacement the model has not been told about. */
+	let unannouncedStateLoss: string | undefined;
+	/** Python-state notices already queued when their Kernel was replaced: dropped from context. */
+	const voidedStateNotices = new Set<string>();
+	const voidPendingStateNotice = () => {
+		if (pendingStateNotice) voidedStateNotices.add(pendingStateNotice.id);
+		pendingStateNotice = undefined;
+	};
+	const onLost = (error: Error) => {
+		unannouncedStateLoss = error.message;
+		voidPendingStateNotice();
+	};
 
 	const createKernel = (): KernelClient => {
 		const { source, version } = config.python;
@@ -30,6 +44,7 @@ export default function piIpython(pi: ExtensionAPI): void {
 				bootstrapCode: KERNEL_BOOTSTRAP_CODE,
 				env: { PYTHONPATH: pythonPath },
 				journalPath,
+				onLost,
 			});
 		}
 		return new KernelClient({
@@ -37,6 +52,7 @@ export default function piIpython(pi: ExtensionAPI): void {
 			resolvePython: () => ensureKernelPython({ pythonVersion: version }),
 			bootstrapCode: KERNEL_BOOTSTRAP_CODE,
 			journalPath,
+			onLost,
 		});
 	};
 
@@ -44,12 +60,17 @@ export default function piIpython(pi: ExtensionAPI): void {
 		createIpythonTool({
 			getKernel: () => (kernel ??= createKernel()),
 			killKernel: async () => {
-				pendingStateNotice = undefined;
+				voidPendingStateNotice();
 				await kernel?.shutdown();
 				kernel = undefined;
 			},
 			getOutputLimits: () => config.output,
 			getConfirmEachCell: () => config.confirmEachCell,
+			takeStateLoss: () => {
+				const cause = unannouncedStateLoss;
+				unannouncedStateLoss = undefined;
+				return cause;
+			},
 		}),
 	);
 
@@ -57,6 +78,8 @@ export default function piIpython(pi: ExtensionAPI): void {
 
 	pi.on("session_start", (event, ctx) => {
 		pendingStateNotice = undefined;
+		// A new session's Kernel is fresh; any loss is announced below, before its first turn.
+		unannouncedStateLoss = undefined;
 		cwd = ctx.cwd;
 		const loaded = loadConfig(cwd);
 		config = loaded.config;
@@ -86,7 +109,7 @@ export default function piIpython(pi: ExtensionAPI): void {
 	});
 	// Python state follows the Kernel, not the conversation: on a branch switch the user decides whether it still fits.
 	pi.on("session_tree", async (_event, ctx) => {
-		pendingStateNotice = undefined;
+		voidPendingStateNotice();
 		if (!kernel?.isRunning) return;
 		const choice = ctx.mode === "tui" && ctx.hasUI
 			? await ctx.ui.select("Branch switched. Python state may not match this branch.", [KEEP_KERNEL, RESTART_KERNEL])
@@ -114,15 +137,20 @@ export default function piIpython(pi: ExtensionAPI): void {
 		);
 	});
 	pi.on("context", (event) => {
+		const noticeId = (m: (typeof event.messages)[number]) => m.role === "custom" && m.customType === PYTHON_STATE_TYPE
+			? (m.details as { noticeId?: string } | undefined)?.noticeId
+			: undefined;
+		// A notice its Kernel did not outlive must not claim that Python state persisted.
+		const messages = voidedStateNotices.size === 0
+			? event.messages
+			: event.messages.filter((m) => !voidedStateNotices.has(noticeId(m) ?? ""));
 		const notice = pendingStateNotice;
-		if (!notice) return;
-		if (event.messages.some((m) => m.role === "custom" && m.customType === PYTHON_STATE_TYPE
-			&& (m.details as { noticeId?: string } | undefined)?.noticeId === notice.id)) {
+		if (!notice || messages.some((m) => noticeId(m) === notice.id)) {
 			pendingStateNotice = undefined;
-			return;
+			return messages === event.messages ? undefined : { messages };
 		}
 		// Make the deferred notice visible to continuations and overflow retries without steering another turn.
-		return { messages: [...event.messages, {
+		return { messages: [...messages, {
 			role: "custom" as const,
 			customType: PYTHON_STATE_TYPE,
 			content: notice.content,
@@ -139,8 +167,6 @@ export default function piIpython(pi: ExtensionAPI): void {
 }
 
 export const STATE_LOST_TYPE = "ipython_state_lost";
-export const STATE_LOST_NOTICE =
-	"The Python Kernel was restarted, so all Python state from earlier Cells in this conversation is gone: variables, functions, and imports no longer exist. Recreate what you need before using it.";
 
 export const BRANCH_NOTICE_TYPE = "ipython_branch_switch";
 export const BRANCH_NOTICE =

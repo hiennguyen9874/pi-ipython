@@ -8,6 +8,9 @@ import { afterEach, expect, test } from "vitest";
 import { STATE_LOST_NOTICE } from "../src/index.ts";
 import { createHarness, type Harness, kernelPids, resultText } from "./harness.ts";
 
+/** The State-loss notice as it appears in a JSON-stringified context. */
+const SEEN_STATE_LOST = JSON.stringify(STATE_LOST_NOTICE).slice(1, -1);
+
 let h: Harness | undefined;
 const cleanups: (() => void)[] = [];
 afterEach(async () => {
@@ -133,7 +136,7 @@ test.each(["resume", "fork", "startup"] as const)(
 			},
 		]);
 		await h.session.prompt("continue");
-		expect(seen).toContain(STATE_LOST_NOTICE);
+		expect(seen).toContain(SEEN_STATE_LOST);
 	},
 );
 
@@ -145,7 +148,7 @@ test.each(["new", "resume", "fork"] as const)("an explicit %s session is notifie
 		return fauxAssistantMessage("noted");
 	}]);
 	await h.session.prompt("continue");
-	expect(seen).toContain(STATE_LOST_NOTICE);
+	expect(seen).toContain(SEEN_STATE_LOST);
 });
 
 test("a live host with an unknown recorded identity keeps its Kernel", async () => {
@@ -242,5 +245,5 @@ test("a fresh startup without earlier Cells gets no state-lost notice", async ()
 		fauxAssistantMessage("done"),
 	]);
 	await h.session.prompt("go");
-	expect(seen).not.toContain(STATE_LOST_NOTICE);
+	expect(seen).not.toContain(SEEN_STATE_LOST);
 });

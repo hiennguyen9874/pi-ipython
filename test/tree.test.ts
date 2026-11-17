@@ -3,6 +3,9 @@ import { afterEach, expect, test } from "vitest";
 import { BRANCH_NOTICE, STATE_LOST_NOTICE } from "../src/index.ts";
 import { createHarness, type Harness, kernelPids, resultText } from "./harness.ts";
 
+/** The State-loss notice as it appears in a JSON-stringified context. */
+const SEEN_STATE_LOST = JSON.stringify(STATE_LOST_NOTICE).slice(1, -1);
+
 let h: Harness | undefined;
 afterEach(async () => {
 	await h?.dispose();
@@ -55,7 +58,7 @@ test("Restart Kernel on /tree loses Python state and tells the model", async () 
 	expect(kernelPids()).not.toContain(pid);
 
 	const { result, seen } = await runCellSeeing(h, "x + 1");
-	expect(seen).toContain(STATE_LOST_NOTICE);
+	expect(seen).toContain(SEEN_STATE_LOST);
 	expect(seen).not.toContain(BRANCH_NOTICE);
 	expect(resultText(result)).toContain("NameError");
 });
@@ -70,7 +73,7 @@ test("Keep Kernel on /tree preserves Python state and warns it may not match the
 
 	const { result, seen } = await runCellSeeing(h, "x + 1");
 	expect(seen).toContain(BRANCH_NOTICE);
-	expect(seen).not.toContain(STATE_LOST_NOTICE);
+	expect(seen).not.toContain(SEEN_STATE_LOST);
 	expect(resultText(result)).toBe("42");
 });
 
@@ -105,7 +108,7 @@ test("RPC /tree keeps the Kernel and notifies the model without prompting a boun
 
 	const { result, seen } = await runCellSeeing(h, "x + 1");
 	expect(seen).toContain(BRANCH_NOTICE);
-	expect(seen).not.toContain(STATE_LOST_NOTICE);
+	expect(seen).not.toContain(SEEN_STATE_LOST);
 	expect(resultText(result)).toBe("42");
 });
 
@@ -119,5 +122,5 @@ test("/tree with no Kernel running neither prompts nor notifies", async () => {
 	expect(prompts).toEqual([]);
 	const { seen } = await runCellSeeing(h, "1");
 	expect(seen).not.toContain(BRANCH_NOTICE);
-	expect(seen).not.toContain(STATE_LOST_NOTICE);
+	expect(seen).not.toContain(SEEN_STATE_LOST);
 });

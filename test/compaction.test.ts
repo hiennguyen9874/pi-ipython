@@ -234,6 +234,37 @@ test.skipIf(process.platform === "win32")("a busy interrupted Cell gets a no-nam
 	expect(resultText(result)).toBe("42");
 });
 
+test("a Kernel that dies after compaction during a run leaves the State-loss notice as the latest word", async () => {
+	h = await createHarness();
+	await h.runCells("a = 1");
+	h.session.settingsManager.applyOverrides({ compaction: { enabled: true, keepRecentTokens: 1 } });
+	const isMain = (context: Context) =>
+		context.messages.some((m) => m.role === "system" && typeof m.content === "string" && m.content.includes("persistent CPython"));
+	const main = [
+		() => {
+			// Cross the threshold only after this request starts, forcing compaction between Cells.
+			h!.session.settingsManager.applyOverrides({ compaction: { reserveTokens: h!.session.model!.contextWindow - 1 } });
+			return fauxAssistantMessage(fauxToolCall("ipython", { code: "b = 2" }), { stopReason: "toolUse" });
+		},
+		() => {
+			h!.session.settingsManager.applyOverrides({ compaction: { enabled: false } });
+			return fauxAssistantMessage(fauxToolCall("ipython", { code: "import os; os._exit(17)" }), { stopReason: "toolUse" });
+		},
+	];
+	let seen = "";
+	const reply = (context: Context) => {
+		if (!isMain(context)) return fauxAssistantMessage("Summary.");
+		const next = main.shift();
+		if (next) return next();
+		seen = JSON.stringify(context.messages);
+		return fauxAssistantMessage("done");
+	};
+	h.setResponses([reply, reply, reply, reply, reply, reply]);
+	await h.session.prompt("continue");
+	expect(seen).toContain("ipython_state_lost");
+	expect(seen.lastIndexOf("[python-state]")).toBeLessThan(seen.lastIndexOf("ipython_state_lost"));
+});
+
 test("an empty namespace is reported as such", async () => {
 	h = await createHarness();
 	await h.runCells("1 + 1");

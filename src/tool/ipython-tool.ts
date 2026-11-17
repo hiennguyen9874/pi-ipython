@@ -38,11 +38,15 @@ const BUSY_KERNEL_PROMPT = [
 	"An interrupt was sent, but the previous cell has not stopped yet. A new command cannot start until it finishes.",
 	"Waiting preserves the current kernel state. Killing restarts the kernel and loses in-memory variables, imports, and running tasks.",
 ].join("\n");
-export const KERNEL_RESTART_NOTICE = [
-	"<ipython_kernel_reset>",
-	"The previous Python kernel was killed because an interrupted cell kept running. Variables, imports, async tasks, and open resources from that kernel are no longer available; recreate them before using them.",
-	"</ipython_kernel_reset>",
+const KERNEL_KILLED_CAUSE = "The user killed the previous Kernel because an interrupted Cell kept running.";
+
+/** The State-loss notice: one text for every Kernel replacement. Its cause follows it as plain text. */
+export const STATE_LOST_NOTICE = [
+	"<ipython_state_lost>",
+	"The Python Kernel was replaced, so all Python state from earlier Cells is gone: variables, functions, imports, async tasks, and open resources no longer exist. Recreate what you need before using it.",
+	"</ipython_state_lost>",
 ].join("\n");
+export const CELL_NOT_RUN_AFTER_STATE_LOSS = "Cell not run: resubmit it once the state it needs exists.";
 
 export const CELL_REJECTED_ERROR = "Cell rejected by user: it did not run.";
 export const CONFIRM_NO_UI_ERROR =
@@ -59,8 +63,8 @@ export interface IpythonToolDetails extends CellResult {
 	outputWarning?: string;
 	/** Raw-text limits shared by model output and the TUI renderer. */
 	outputLimits?: TruncationOptions;
-	/** True when the user killed a busy Kernel before this Cell ran. */
-	kernelRestarted?: boolean;
+	/** True when this result carries the State-loss notice. */
+	stateLost?: boolean;
 }
 
 export interface IpythonToolOptions {
@@ -70,6 +74,23 @@ export interface IpythonToolOptions {
 	getOutputLimits?: () => TruncationOptions;
 	/** When true, the user approves each Cell's code before it runs. */
 	getConfirmEachCell?: () => boolean;
+	/** The cause of a Kernel replacement the model was not told about yet, consuming it. */
+	takeStateLoss?: () => string | undefined;
+}
+
+/** The State-loss notice as a Cell's error result; a Cell that did not run says so. */
+function stateLostResult(cause: string, cellRan = false) {
+	const text = [STATE_LOST_NOTICE, cause, ...(cellRan ? [] : [CELL_NOT_RUN_AFTER_STATE_LOSS])].join("\n\n");
+	const details: IpythonToolDetails = {
+		stdout: "",
+		stderr: "",
+		images: [],
+		backgroundOutput: "",
+		status: "error",
+		durationMs: 0,
+		stateLost: true,
+	};
+	return { content: [{ type: "text" as const, text }], details, isError: true };
 }
 
 /** Model-facing text: stdout, then stderr (labelled), then the trailing expression's repr, then the traceback. */
@@ -128,6 +149,7 @@ export function createIpythonTool({
 	killKernel,
 	getOutputLimits = () => ({}),
 	getConfirmEachCell = () => false,
+	takeStateLoss = () => undefined,
 }: IpythonToolOptions): ToolDefinition<typeof ipythonSchema, IpythonToolDetails> {
 	return {
 		name: IPYTHON_TOOL_NAME,
@@ -141,11 +163,13 @@ export function createIpythonTool({
 		renderCall: renderCellCall,
 		renderResult: renderCellResult,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			// Never run a Cell written against Python state that is already gone (ADR 0003).
+			const lostCause = takeStateLoss();
+			if (lostCause !== undefined) return stateLostResult(lostCause);
 			if (getConfirmEachCell()) {
 				if (!ctx.hasUI) throw new Error(CONFIRM_NO_UI_ERROR);
 				if (!(await ctx.ui.confirm("Run this Python Cell?", params.code, { signal }))) throw new Error(CELL_REJECTED_ERROR);
 			}
-			let kernelRestarted = false;
 			let r: CellResult;
 			for (;;) {
 				try {
@@ -153,10 +177,9 @@ export function createIpythonTool({
 					break;
 				} catch (error) {
 					if (!(error instanceof KernelBusyError) || signal?.aborted) {
-						if (kernelRestarted) {
-							const reason = error instanceof Error ? error.message : String(error);
-							throw new Error(`${KERNEL_RESTART_NOTICE}\n\n${reason}`, { cause: error });
-						}
+						// This Cell's Kernel died under it: its own error tells the model. Never replay it.
+						const cause = takeStateLoss();
+						if (cause !== undefined) return stateLostResult(cause, true);
 						throw error;
 					}
 					// Like the branch-switch choice, only the TUI prompts; elsewhere the model gets the busy error.
@@ -166,18 +189,17 @@ export function createIpythonTool({
 					if (choice === BUSY_KERNEL_WAIT_CHOICE) continue;
 					if (choice !== BUSY_KERNEL_KILL_CHOICE) throw error;
 					await killKernel();
-					kernelRestarted = true;
+					// The Cell was written for the killed Kernel's state (ADR 0003).
+					return stateLostResult(KERNEL_KILLED_CAUSE);
 				}
 			}
 			const outputLimits = getOutputLimits();
 			const truncated = truncateCellText(formatCellResult(r), outputLimits, r.backgroundOutput);
-			// Prepended after truncation, so a long output cannot cut the notice off.
-			const text = kernelRestarted ? `${KERNEL_RESTART_NOTICE}\n\n${truncated.text}` : truncated.text;
 			const images: ImageContent[] = r.images.map((i) => ({ type: "image", ...i }));
-			const content: (TextContent | ImageContent)[] = [{ type: "text", text }, ...images];
+			const content: (TextContent | ImageContent)[] = [{ type: "text", text: truncated.text }, ...images];
 			return {
 				content,
-				details: { ...r, fullOutputPath: truncated.fullOutputPath, outputWarning: truncated.outputWarning, outputLimits, kernelRestarted },
+				details: { ...r, fullOutputPath: truncated.fullOutputPath, outputWarning: truncated.outputWarning, outputLimits },
 				isError: r.status !== "ok",
 			};
 		},

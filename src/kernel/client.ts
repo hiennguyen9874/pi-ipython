@@ -76,6 +76,8 @@ export interface KernelClientOptions {
 	env?: Record<string, string>;
 	/** This host's orphan journal (see orphans.ts), so a Kernel left by a crashed host is reaped later. */
 	journalPath?: string;
+	/** A ready Kernel process died or broke the protocol (not a shutdown, not a failed start). */
+	onLost?: (error: Error) => void;
 }
 
 /** Requests that run in order and end with a `done` frame. */
@@ -115,6 +117,8 @@ export class KernelClient {
 	private backgroundImages: CellImage[] = [];
 	/** Bumped by every shutdown so a stale in-flight start never keeps its process. */
 	private generation = 0;
+	/** The process that finished starting; losing any other one is a failed start. */
+	private readyChild?: ChildProcess;
 
 	constructor(private readonly options: KernelClientOptions) {}
 
@@ -172,6 +176,7 @@ export class KernelClient {
 		this.generation++;
 		const child = this.child;
 		this.child = undefined;
+		this.readyChild = undefined;
 		this.starting = undefined;
 		this.failPending(new Error("Kernel was shut down"));
 		if (!child || child.exitCode !== null || child.signalCode !== null) return;
@@ -239,6 +244,7 @@ export class KernelClient {
 			throw error;
 		}
 		if (generation !== this.generation) throw new Error("Kernel was shut down during startup");
+		this.readyChild = child;
 	}
 
 	private wire(child: ChildProcess): void {
@@ -440,6 +446,10 @@ export class KernelClient {
 		this.starting = undefined;
 		this.failPending(error);
 		if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+		if (this.readyChild === child) {
+			this.readyChild = undefined;
+			this.options.onLost?.(error);
+		}
 	}
 
 	private failPending(error: Error): void {
