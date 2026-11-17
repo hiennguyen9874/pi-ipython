@@ -1,3 +1,5 @@
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { type Context, fauxAssistantMessage, fauxToolCall, type ToolResultMessage } from "@earendil-works/pi-ai";
 import { afterEach, expect, test } from "vitest";
 import { PYTHON_STATE_TYPE } from "../src/index.ts";
@@ -112,6 +114,124 @@ test("back-to-back compactions each produce a fresh notice", async () => {
 	expect(seen).toContain("These names are still defined: a, b.");
 	await compact(h);
 	expect(noticeEntries(h).at(-1)?.content).toContain("These names are still defined: a, b, c.");
+});
+
+test("compaction preserves background text and images for the next Cell", async () => {
+	h = await createHarness();
+	const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+	await h.runCells(`import threading\nfrom rlm.repl import emit\ndef later():\n    print('late output')\n    emit({'image/png': '${png}'})\nthreading.Timer(0.1, later).start()`);
+	await new Promise((resolve) => setTimeout(resolve, 300));
+
+	await compact(h);
+	const { result } = await runCellSeeing(h, "1");
+	expect(resultText(result)).toBe("1\n[background output]\nlate output");
+	expect(result.content.filter((b) => b.type === "image")).toEqual([{ type: "image", mimeType: "image/png", data: png }]);
+	const [next] = await h.runCells("2");
+	expect(resultText(next!)).toBe("2");
+	expect(next!.content.some((b) => b.type === "image")).toBe(false);
+});
+
+test.each(["threshold", "overflow"] as const)("%s compaction during a run reaches the immediate next request once", async (reason) => {
+	h = await createHarness();
+	await h.runCells("a = 1");
+	h.session.settingsManager.applyOverrides({ compaction: { enabled: true, keepRecentTokens: 1 } });
+	let seen = "";
+	let requests = 0;
+	const reasons: string[] = [];
+	h.session.subscribe((event) => {
+		if (event.type === "compaction_start") reasons.push(event.reason);
+	});
+	// Summary count depends on whether the cut splits the turn; identify requests by their system prompt.
+	const reply = (context: Context) => {
+		if (!context.messages.some((m) => m.role === "system" && typeof m.content === "string" && m.content.includes("persistent CPython"))) {
+			return fauxAssistantMessage("Summary.");
+		}
+		requests++;
+		seen = JSON.stringify(context.messages);
+		h!.session.settingsManager.applyOverrides({ compaction: { enabled: false } });
+		return fauxAssistantMessage("done");
+	};
+	// Both summary requests and the continuation use the same scripted provider.
+	h.setResponses([
+		() => {
+			requests++;
+			if (reason === "overflow") return fauxAssistantMessage("", { stopReason: "error", errorMessage: "context window exceeded" });
+			// Cross the threshold only after this request starts, forcing compaction between Cells.
+			h!.session.settingsManager.applyOverrides({ compaction: { reserveTokens: h!.session.model!.contextWindow - 1 } });
+			return fauxAssistantMessage(fauxToolCall("ipython", { code: "b = 2" }), { stopReason: "toolUse" });
+		},
+		reply, reply, reply, reply,
+	]);
+	await h.session.prompt("continue");
+	expect(reasons).toContain(reason);
+	expect(seen).toContain(reason === "threshold" ? "These names are still defined: a, b." : "These names are still defined: a.");
+	expect(seen.match(/\[python-state\]/g)).toHaveLength(1);
+	expect(requests).toBe(2);
+	expect(noticeEntries(h)).toHaveLength(1);
+	const { seen: later } = await runCellSeeing(h, "a + 1");
+	expect(later.match(/\[python-state\]/g)).toHaveLength(1);
+});
+
+test.each(["error", "timeout"] as const)("a listing %s sends a no-names notice and keeps Python state", async (failure) => {
+	h = await createHarness();
+	await h.runCells([
+		"a = 41",
+		"import rlm.repl as repl",
+		"_original_list_names = repl._list_names",
+		"def _listing(ns):",
+		"    repl._list_names = _original_list_names",
+		failure === "error" ? "    raise RuntimeError('listing failed')" : "    __import__('time').sleep(5.2)",
+		"    return _original_list_names(ns)",
+		"repl._list_names = _listing",
+	].join("\n"));
+	const started = Date.now();
+	await compact(h);
+	expect(Date.now() - started).toBeLessThan(8_000);
+	const notice = noticeEntries(h).at(-1)!;
+	expect(notice.content).toContain("Your Python kernel persisted through compaction");
+	expect(notice.content).not.toContain("These names");
+	expect(notice.content).not.toContain("You have not defined");
+	const { result } = await runCellSeeing(h, "a + 1");
+	expect(resultText(result)).toBe("42");
+	await compact(h);
+	expect(noticeEntries(h).at(-1)?.content).toContain("These names are still defined: a, repl.");
+});
+
+test("no notice is sent when the Kernel dies during listing", async () => {
+	h = await createHarness();
+	await h.runCells("import rlm.repl as repl\nrepl._list_names = lambda ns: __import__('os')._exit(17)");
+	await compact(h);
+	expect(noticeEntries(h)).toEqual([]);
+});
+
+test.skipIf(process.platform === "win32")("a busy interrupted Cell gets a no-names notice without another interrupt", async () => {
+	h = await createHarness();
+	await h.runCells("a = 41");
+	const started = join(h.cwd, "started");
+	const release = join(h.cwd, "release");
+	h.setResponses([fauxAssistantMessage(fauxToolCall("ipython", { code: [
+		"import os, signal, time",
+		"signal.signal(signal.SIGINT, lambda *_: open('interrupts', 'a').write('x'))",
+		`open(${JSON.stringify(started)}, 'w').close()`,
+		`while not os.path.exists(${JSON.stringify(release)}): time.sleep(0.02)`,
+	].join("\n") }), { stopReason: "toolUse" })]);
+	const run = h.session.prompt("run");
+	try {
+		await expect.poll(() => existsSync(started)).toBe(true);
+		await h.session.abort();
+		await run;
+		const interrupts = readFileSync(join(h.cwd, "interrupts"), "utf8");
+		const before = Date.now();
+		await compact(h);
+		expect(readFileSync(join(h.cwd, "interrupts"), "utf8")).toBe(interrupts);
+		expect(Date.now() - before).toBeLessThan(2_000);
+		expect(noticeEntries(h).at(-1)?.content).toContain("Your Python kernel persisted through compaction");
+		expect(noticeEntries(h).at(-1)?.content).not.toContain("These names");
+	} finally {
+		writeFileSync(release, "");
+	}
+	const { result } = await runCellSeeing(h, "a + 1");
+	expect(resultText(result)).toBe("42");
 });
 
 test("an empty namespace is reported as such", async () => {

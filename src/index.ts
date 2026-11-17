@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { type ExtensionAPI, getAgentDir, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { loadConfig, type PiIpythonConfig } from "./config.ts";
@@ -16,6 +17,7 @@ export default function piIpython(pi: ExtensionAPI): void {
 	let cwd = process.cwd();
 	let config: PiIpythonConfig = loadConfig(cwd).config;
 	let journalPath: string | undefined;
+	let pendingStateNotice: { content: string; id: string; timestamp: number } | undefined;
 
 	const createKernel = (): KernelClient => {
 		const { source, version } = config.python;
@@ -42,6 +44,7 @@ export default function piIpython(pi: ExtensionAPI): void {
 		createIpythonTool({
 			getKernel: () => (kernel ??= createKernel()),
 			killKernel: async () => {
+				pendingStateNotice = undefined;
 				await kernel?.shutdown();
 				kernel = undefined;
 			},
@@ -52,6 +55,7 @@ export default function piIpython(pi: ExtensionAPI): void {
 	const forceExclusive = () => pi.setActiveTools([IPYTHON_TOOL_NAME]);
 
 	pi.on("session_start", (event, ctx) => {
+		pendingStateNotice = undefined;
 		cwd = ctx.cwd;
 		const loaded = loadConfig(cwd);
 		config = loaded.config;
@@ -81,6 +85,7 @@ export default function piIpython(pi: ExtensionAPI): void {
 	});
 	// Python state follows the Kernel, not the conversation: on a branch switch the user decides whether it still fits.
 	pi.on("session_tree", async (_event, ctx) => {
+		pendingStateNotice = undefined;
 		if (!kernel?.isRunning) return;
 		const choice = ctx.mode === "tui" && ctx.hasUI
 			? await ctx.ui.select("Branch switched. Python state may not match this branch.", [KEEP_KERNEL, RESTART_KERNEL])
@@ -100,14 +105,33 @@ export default function piIpython(pi: ExtensionAPI): void {
 		const names = await current.listNames(AbortSignal.timeout(STATE_LISTING_TIMEOUT_MS));
 		// A failed listing still gets a notice, unless the Kernel stopped meanwhile.
 		if (names === null && !(kernel === current && current.isRunning)) return;
-		// Appended right away when idle, so a back-to-back /compact has something new to compact;
-		// during a run it waits for the turn's end instead of steering an extra turn.
+		pendingStateNotice = { content: pythonStateNotice(names), id: randomUUID(), timestamp: Date.now() };
+		// Persist immediately when idle; during a run pi defers this until turn-end.
 		pi.sendMessage(
-			{ customType: PYTHON_STATE_TYPE, content: pythonStateNotice(names), display: false },
+			{ customType: PYTHON_STATE_TYPE, content: pendingStateNotice.content, display: false, details: { noticeId: pendingStateNotice.id } },
 			{ triggerTurn: false },
 		);
 	});
+	pi.on("context", (event) => {
+		const notice = pendingStateNotice;
+		if (!notice) return;
+		if (event.messages.some((m) => m.role === "custom" && m.customType === PYTHON_STATE_TYPE
+			&& (m.details as { noticeId?: string } | undefined)?.noticeId === notice.id)) {
+			pendingStateNotice = undefined;
+			return;
+		}
+		// Make the deferred notice visible to continuations and overflow retries without steering another turn.
+		return { messages: [...event.messages, {
+			role: "custom" as const,
+			customType: PYTHON_STATE_TYPE,
+			content: notice.content,
+			display: false,
+			details: { noticeId: notice.id },
+			timestamp: notice.timestamp,
+		}] };
+	});
 	pi.on("session_shutdown", async () => {
+		pendingStateNotice = undefined;
 		await kernel?.shutdown();
 		kernel = undefined;
 	});

@@ -83,6 +83,7 @@ type KernelRequest = { type: "execute"; code: string } | { type: "list_names" };
 
 interface ActiveCell {
 	id: string;
+	requestType: KernelRequest["type"];
 	started: number;
 	signal?: AbortSignal;
 	stdout: string;
@@ -335,10 +336,14 @@ export class KernelClient {
 	/** Resolve the Cell's tool call with what it produced so far. */
 	private settle(cell: ActiveCell, status: CellResult["status"]): void {
 		cell.settled = true;
-		const backgroundOutput = this.backgroundOutput;
-		const images = [...cell.images, ...this.backgroundImages];
-		this.backgroundOutput = "";
-		this.backgroundImages = [];
+		// Namespace inspection must leave background output for the next model-visible Cell.
+		const isCell = cell.requestType === "execute";
+		const backgroundOutput = isCell ? this.backgroundOutput : "";
+		const images = isCell ? [...cell.images, ...this.backgroundImages] : cell.images;
+		if (isCell) {
+			this.backgroundOutput = "";
+			this.backgroundImages = [];
+		}
 		cell.resolve({
 			stdout: cell.stdout,
 			stderr: cell.stderr,
@@ -400,6 +405,7 @@ export class KernelClient {
 			});
 			const cell: ActiveCell = {
 				id: randomUUID().replaceAll("-", ""),
+				requestType: request.type,
 				started: Date.now(),
 				signal,
 				stdout: "",
