@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Pi tool search ranks a full tool-name match above namespace-suffix matches, even when a namespaced tool has a higher BM25 score. Searching `echo` with `limit=1` now returns `echo` rather than `mcp__docs__echo`; a real-session regression covers this collision. (#35)
+
 - Richer tool discovery's no-callable-tools prompt regression test now checks exact equality against the pre-#33 baseline, substituting only the date and temporary working directory. (#33)
 
 - The system prompt includes the `pi` discovery and call instructions only when a Pi tool is callable. The condition uses the bridge's filtered tool set and is refreshed before every model request, including after late MCP registration or tools becoming hidden. The `pi` module and Cell-level MCP readiness remain unchanged; pending servers with no registered callable tools do not add prompt instructions.

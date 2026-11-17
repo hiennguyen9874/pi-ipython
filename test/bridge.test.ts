@@ -341,6 +341,29 @@ test("pi.search() ranks callable tools by description words and name, capped by 
 	]);
 });
 
+test("pi.search() ranks a full tool name above a higher-scoring namespace suffix, even with limit=1", async () => {
+	const competingTools: ExtensionFactory = (pi) => {
+		for (const name of ["echo", "mcp__docs__echo"]) {
+			pi.registerTool({
+				name,
+				label: name,
+				description: "Echo text back.",
+				namespace: name === "echo" ? undefined : { name: "mcp__docs", description: "echo" },
+				parameters: Type.Object({}),
+				execute: async () => ({ content: [{ type: "text", text: "echo" }], details: {} }),
+			});
+		}
+	};
+	h = await createHarness({ extensions: [competingTools] });
+	const [r] = await h.runCells([
+		"print([t['name'] for t in await pi.search('echo')])",
+		"print([t['name'] for t in await pi.search('echo', limit=1)])",
+		"print([t['name'] for t in await pi.search('mcp__docs__echo', limit=1)])",
+	].join("\n"));
+	expect(r?.isError).toBe(false);
+	expect(resultText(r!)).toBe("['echo', 'mcp__docs__echo']\n['echo']\n['mcp__docs__echo']");
+});
+
 test("pi.search() raises pi.ToolError when piTools.search is false", async () => {
 	h = await createHarness({
 		setup: ({ cwd }) => {

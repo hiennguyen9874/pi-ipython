@@ -117,10 +117,11 @@ function normalizeName(name: string): string {
 	return name.trim().toLowerCase().replace(/[^a-z0-9_$]/g, "_");
 }
 
-/** Whether the whole query is the tool's name: its full name or a suffix after a `__` separator. */
-function isExactNameQuery(query: string, name: string): boolean {
+/** Full-name matches outrank namespace suffix matches, which outrank other matches. */
+function nameMatchPriority(query: string, name: string): number {
 	const normalized = normalizeName(name);
-	return normalized === query || normalized.endsWith(`__${query}`);
+	if (normalized === query) return 2;
+	return normalized.endsWith(`__${query}`) ? 1 : 0;
 }
 
 function indexDocument(document: ToolSearchDocument) {
@@ -162,7 +163,7 @@ export class Bm25Ranker {
 		}));
 		const fullNameBonus = [...idf.values()].reduce((sum, value) => sum + value, 0);
 		const exactQuery = normalizeName(query);
-		const matches: { name: string; score: number; covered: number; exact: boolean }[] = [];
+		const matches: { name: string; score: number; covered: number; namePriority: number }[] = [];
 		for (const document of indexed) {
 			const norm = this.k1 * (1 - this.b + (this.b * document.textLength) / averageLength);
 			let score = 0;
@@ -178,10 +179,10 @@ export class Bm25Ranker {
 			if (score === 0) continue;
 			const local = document.localNameTerms;
 			if (local.length > 0 && local.every((term) => queryTerms.has(term))) score += fullNameBonus;
-			matches.push({ name: document.name, score, covered, exact: isExactNameQuery(exactQuery, document.name) });
+			matches.push({ name: document.name, score, covered, namePriority: nameMatchPriority(exactQuery, document.name) });
 		}
 		return matches
-			.sort((a, b) => Number(b.exact) - Number(a.exact) || b.covered - a.covered || b.score - a.score)
+			.sort((a, b) => b.namePriority - a.namePriority || b.covered - a.covered || b.score - a.score)
 			.slice(0, limit)
 			.map(({ name, score }) => ({ name, score }));
 	}
