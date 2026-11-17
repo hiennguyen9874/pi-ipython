@@ -1,7 +1,13 @@
 import { mkdirSync, writeFileSync } from "node:fs";
+import { setTimeout as sleep } from "node:timers/promises";
 import { join } from "node:path";
 import { type Context, fauxAssistantMessage, fauxToolCall, getCurrentTools } from "@earendil-works/pi-ai";
-import { createCodemodeExtension, type ExtensionAPI, type ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import {
+	createCodemodeExtension,
+	type ExtensionAPI,
+	type ExtensionFactory,
+	type ExtensionUIContext,
+} from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { afterEach, expect, test } from "vitest";
 import { DEFAULT_PYTHON_VERSION, kernelVenvDir, venvPython } from "../src/kernel/bootstrap.ts";
@@ -312,4 +318,111 @@ test("pi is left out of the Python-state notice", async () => {
 	]);
 	await h.session.prompt("continue");
 	expect(seen).toContain("These names are still defined: a.");
+});
+
+/** A Pi tool that waits `ms` (or until aborted) and records each run: started, then how it ended. */
+function slowTool() {
+	const runs: { text: string; ended?: "done" | "aborted" }[] = [];
+	let notifyStarted: () => void = () => undefined;
+	const started = new Promise<void>((resolve) => (notifyStarted = resolve));
+	const factory: ExtensionFactory = (pi) => {
+		pi.registerTool({
+			name: "slow",
+			label: "slow",
+			description: "Wait, then echo.",
+			parameters: Type.Object({ text: Type.String(), ms: Type.Number() }),
+			execute: async (_id, { text, ms }, signal) => {
+				const run: (typeof runs)[number] = { text };
+				runs.push(run);
+				notifyStarted();
+				try {
+					await sleep(ms, undefined, { signal });
+				} catch (error) {
+					run.ended = "aborted";
+					throw error;
+				}
+				run.ended = "done";
+				return { content: [{ type: "text", text: `slow: ${text}` }], details: {} };
+			},
+		});
+	};
+	return { runs, started, factory };
+}
+
+test("aborting a Cell blocked on a slow Pi tool aborts the tool, and the Kernel keeps Python state", async () => {
+	const slow = slowTool();
+	h = await createHarness({ extensions: [...extensions, slow.factory] });
+	await h.runCells("x = 41");
+	h.setResponses([
+		fauxAssistantMessage(fauxToolCall("ipython", { code: "await pi.tool('slow', {'text': 'never', 'ms': 3600000})" }), { stopReason: "toolUse" }),
+		fauxAssistantMessage("done"),
+	]);
+	const before = h.session.messages.length;
+	const run = h.session.prompt("call the slow tool");
+	await slow.started;
+	await h.session.abort();
+	await run;
+	const aborted = h.session.messages.slice(before).find((m) => m.role === "toolResult");
+	expect(slow.runs).toEqual([{ text: "never", ended: "aborted" }]);
+	expect(aborted?.isError).toBe(true);
+	expect(aborted && resultText(aborted)).toContain("KeyboardInterrupt");
+
+	const [next] = await h.runCells("x + 1");
+	expect(next?.isError).toBe(false);
+	expect(resultText(next!)).toBe("42");
+});
+
+test("a background task calling pi.tool after its Cell returned gets pi.ToolError and the tool never runs", async () => {
+	const slow = slowTool();
+	h = await createHarness({ extensions: [...extensions, slow.factory] });
+	const [first] = await h.runCells(
+		[
+			"async def late():",
+			"    await asyncio.sleep(0.2)",
+			"    try:",
+			"        return await pi.tool('slow', {'text': 'late', 'ms': 0})",
+			"    except pi.ToolError as e:",
+			"        return f'ToolError: {e}'",
+			"background = asyncio.create_task(late())",
+		].join("\n"),
+	);
+	expect(first?.isError).toBe(false);
+	// No Cell is in flight while the task makes its call.
+	await sleep(500);
+	const [later] = await h.runCells("print(background.done(), await background)");
+	expect(resultText(later!)).toBe("True ToolError: Bridged calls are only allowed while their originating Cell runs");
+	expect(slow.runs).toEqual([]);
+});
+
+test("concurrent Bridged calls in one Cell each return their own result, even when they finish out of order", async () => {
+	const slow = slowTool();
+	h = await createHarness({ extensions: [...extensions, slow.factory] });
+	const [r] = await h.runCells(
+		"print(await asyncio.gather(pi.tool('slow', {'text': 'first', 'ms': 300}), pi.tool('slow', {'text': 'second', 'ms': 0}), pi.tool('echo', {'text': 'third'})))",
+	);
+	expect(r?.isError).toBe(false);
+	expect(resultText(r!)).toBe("['slow: first', 'slow: second', 'echo: third']");
+	expect(slow.runs.map((run) => run.text)).toEqual(["first", "second"]);
+});
+
+test("with confirmEachCell on, a Cell making Bridged calls asks once, not per call", async () => {
+	const prompts: string[] = [];
+	const ui: Partial<ExtensionUIContext> = {
+		confirm: async (_title, message) => {
+			prompts.push(message);
+			return true;
+		},
+	};
+	h = await createHarness({
+		extensions,
+		ui,
+		setup: ({ cwd }) => {
+			mkdirSync(join(cwd, ".pi"));
+			writeFileSync(join(cwd, ".pi", "pi-ipython.json"), JSON.stringify({ confirmEachCell: true }));
+		},
+	});
+	const code = "(await pi.tool('echo', {'text': 'a'}), await pi.tool('stats'), await asyncio.gather(pi.tool('echo', {'text': 'b'}), pi.tool('echo', {'text': 'c'})))";
+	const [r] = await h.runCells(code);
+	expect(resultText(r!)).toBe("('echo: a', {'count': 2, 'names': ['a', 'b']}, ['echo: b', 'echo: c'])");
+	expect(prompts).toEqual([code]);
 });
