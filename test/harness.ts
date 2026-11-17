@@ -14,9 +14,9 @@ import {
 	createAgentSession,
 	DefaultResourceLoader,
 	type ExtensionContext,
-	type ExtensionFactory,
 	type ExtensionUIContext,
 	type FileEntry,
+	type InlineExtension,
 	ModelRuntime,
 	SessionManager,
 	SettingsManager,
@@ -37,7 +37,7 @@ export interface HarnessOptions {
 	/** Defaults to `{ type: "session_start", reason: "startup" }`. */
 	sessionStartEvent?: { type: "session_start"; reason: "startup" | "reload" | "new" | "resume" | "fork" };
 	/** Other extensions loaded next to pi-ipython, e.g. ones registering Pi tools. */
-	extensions?: ExtensionFactory[];
+	extensions?: InlineExtension[];
 }
 
 export interface Harness {
@@ -105,7 +105,9 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 		settingsManager,
 		extensionFactories: [
 			{ name: "pi-ipython", factory: piIpython },
-			...(options.extensions ?? []).map((factory, i) => ({ name: `test-extension-${i}`, factory })),
+			...(options.extensions ?? []).map((extension, i) => typeof extension === "function"
+				? { name: `test-extension-${i}`, factory: extension }
+				: extension),
 		],
 	});
 	await resourceLoader.reload();

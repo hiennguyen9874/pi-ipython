@@ -33,6 +33,25 @@ Loading the extension means ipython mode: `ipython` becomes the only active tool
 
 The Kernel venv is prepared in the background when a session starts. The Kernel itself starts on the first Cell and is killed when you quit, reload, or switch sessions.
 
+## MCP and other Pi tools
+
+Load other extensions alongside pi-ipython. Their tools are available through Python, not as separate model-facing tools:
+
+```python
+await pi.tools()                         # names, descriptions, namespaces
+await pi.describe("tool_name")           # full description and parameter schema
+await pi.tool("tool_name", {"arg": "value"})
+```
+
+For MCP, load pi's built-in MCP extension (explicitly if using `--no-extensions`):
+
+```bash
+pi --no-extensions --no-skills -e src/index.ts -e builtin:mcp \
+  -p 'Use ipython to run print(await pi.tools())'
+```
+
+MCP tools with `direct`, `codemode`, or `deferred` exposure are callable through `pi`; `hidden` tools stay unavailable. Cells wait for MCP registration before running. Neither `builtin:codemode` nor `builtin:tool-search` is needed for Python discovery. Run `pi mcp list` to diagnose connection failures, and `pi mcp login <server>` for servers that need authentication. Project `.pi/mcp.json` is read only in trusted projects.
+
 ## Configuration
 
 Global config lives in `~/.pi/agent/pi-ipython.json`. Project config lives in `.pi/pi-ipython.json` and wins per key. Invalid files, values, and unknown keys are reported and skipped, so the remaining values and defaults apply.

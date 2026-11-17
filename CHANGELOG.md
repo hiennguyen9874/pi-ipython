@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- MCP tools registered by `builtin:mcp` are discoverable and callable from Cells instead of being excluded with pi's built-in file/shell tools. Cells declare that they reach Pi tools so MCP connections finish registration before Python discovery runs. Hidden tools stay unavailable and Bridged calls keep pi's permission hooks.
+
 - Pi tools registered during a Cell are activated before discovery or Bridged calls, including initially inactive `direct` tools. They can be called immediately while their declarations stay hidden from the model. (#31)
 
 - Bridged calls reject background tasks whose originating Cell has finished, and calls without a Cell context, with `pi.ToolError` before dispatch. They cannot borrow a later Cell's tool context or signal; concurrent calls from a live Cell remain supported. (#30)

@@ -178,6 +178,8 @@ export function createIpythonTool({
 		parameters: ipythonSchema,
 		// One Kernel runs one Cell at a time.
 		executionMode: "sequential",
+		// Cells can discover/call any Pi tool: let MCP finish registration before Python runs.
+		reachesTools: () => "all",
 		// Other active tools are there only for Bridged calls: the model sees only ipython.
 		prepareLoadout: (loadout) => ({
 			hiddenDeclarations: loadout.declared.map((tool) => tool.name).filter((name) => name !== IPYTHON_TOOL_NAME),

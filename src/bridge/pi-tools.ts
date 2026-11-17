@@ -12,7 +12,7 @@ type ToolOutcome = Awaited<ReturnType<ExtensionToolContext["executeTool"]>>;
 /**
  * Pi tools a Cell may call: every registered tool except `ipython`, `hidden` and `model-only` ones
  * (pi never lets tools call those), tools that reach other tools (`codemode`, `tool_search`), and pi's
- * built-ins, which Python replaces.
+ * built-in file/shell tools, which Python replaces. Tools from `builtin:mcp` remain callable.
  */
 export function bridgedTools(tools: readonly ToolInfo[], ipythonName: string): ToolInfo[] {
 	return tools.filter((tool) =>
@@ -20,7 +20,7 @@ export function bridgedTools(tools: readonly ToolInfo[], ipythonName: string): T
 		&& tool.exposure !== "hidden"
 		&& tool.exposure !== "model-only"
 		&& !tool.reachesTools
-		&& tool.sourceInfo.source !== "builtin"
+		&& (tool.sourceInfo.source !== "builtin" || tool.sourceInfo.path === "builtin:mcp")
 	);
 }
 
