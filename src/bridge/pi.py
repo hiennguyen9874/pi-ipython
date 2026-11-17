@@ -11,7 +11,7 @@ from typing import Any
 
 from rlm import repl as _repl
 
-__all__ = ["ToolError", "describe", "describe_namespace", "tool", "tools"]
+__all__ = ["ToolError", "describe", "describe_namespace", "search", "tool", "tools"]
 
 
 class ToolError(RuntimeError):
@@ -38,6 +38,21 @@ async def tools() -> list[dict[str, Any]]:
     description, and the namespace name or None.
     """
     return await _request({"type": "pi.tools"})
+
+
+async def search(query: str, limit: int = 8) -> list[dict[str, Any]]:
+    """Rank the Pi tools a Cell can call against ``query`` (BM25 over names, descriptions, schemas, and namespaces).
+
+    Returns at most ``limit`` entries shaped like ``tools()``, best match first. Raises ToolError
+    when search is turned off (``piTools.search: false``).
+    """
+    if not isinstance(query, str) or not query.strip():
+        raise TypeError("query must be a non-empty str")
+    if isinstance(limit, bool) or not isinstance(limit, int):
+        raise TypeError(f"limit must be an int, got {type(limit).__name__}")
+    if limit <= 0:
+        raise ValueError("limit must be positive")
+    return await _request({"type": "pi.search", "query": query, "limit": limit})
 
 
 async def describe(name: str) -> dict[str, Any]:

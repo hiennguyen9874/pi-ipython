@@ -84,7 +84,7 @@ export default function piIpython(pi: ExtensionAPI): void {
 				return cause;
 			},
 			answerHostRequest: (data, ctx, signal) => {
-				return answerHostRequest(data, forceExclusive(), ctx, signal);
+				return answerHostRequest(data, forceExclusive(), ctx, signal, config.piTools.search);
 			},
 			describePiTools: (loadout) => config.piTools.list
 				? listPiTools(loadout, new Set(bridgedTools(pi.getAllTools(), IPYTHON_TOOL_NAME).map((tool) => tool.name)))
@@ -134,7 +134,10 @@ export default function piIpython(pi: ExtensionAPI): void {
 		const current = getCurrentSystemMessage(event.messages);
 		const head = {
 			role: "system" as const,
-			content: buildSystemPrompt(promptOptions, bridgedTools(pi.getAllTools(), IPYTHON_TOOL_NAME).length > 0),
+			content: buildSystemPrompt(
+				promptOptions,
+				bridgedTools(pi.getAllTools(), IPYTHON_TOOL_NAME).length > 0 ? { search: config.piTools.search } : undefined,
+			),
 			...(current?.toolsAdded ? { toolsAdded: current.toolsAdded } : {}),
 			timestamp: current?.timestamp ?? Date.now(),
 		};

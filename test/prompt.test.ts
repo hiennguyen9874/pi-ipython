@@ -96,7 +96,36 @@ test.each(["direct", "codemode", "deferred"] as const)("the prompt explains pi d
 	const piSection = prompt.slice(prompt.indexOf("- `pi`:"), prompt.indexOf("## Rules"));
 	expect(piSection).toContain("await pi.describe_namespace(name)");
 	expect(prompt.split("describe_namespace")).toHaveLength(2);
+	expect(piSection).toContain("await pi.search(query: str, limit: int = 8)");
+	expect(prompt.split("pi.search")).toHaveLength(2);
 	expect(prompt).not.toContain("frobnicate");
+});
+
+test("piTools.search false leaves pi.search out of the prompt and keeps the rest of the pi section", async () => {
+	const frobnicate = (pi: ExtensionAPI) => pi.registerTool({
+		name: "frobnicate",
+		label: "frobnicate",
+		description: "Frobnicate a widget.",
+		parameters: Type.Object({}),
+		execute: async () => ({ content: [], details: {} }),
+	});
+	h = await createHarness({ extensions: [frobnicate] });
+	const on = await providerSystemPrompt(h);
+	await h.dispose();
+	h = await createHarness({
+		setup: ({ cwd }) => {
+			mkdirSync(join(cwd, ".pi"), { recursive: true });
+			writeFileSync(join(cwd, ".pi", "pi-ipython.json"), JSON.stringify({ piTools: { search: false } }));
+		},
+		extensions: [frobnicate],
+	});
+	const off = await providerSystemPrompt(h);
+	expect(off).not.toContain("search(");
+	expect(off).toContain("await pi.tools()");
+	const searchLine = on.split("\n").find((line) => line.includes("pi.search"))!;
+	// Same prompt otherwise; only the temporary cwd differs.
+	const cwdLine = (prompt: string) => prompt.replace(/Working directory: .*/, "");
+	expect(cwdLine(on).replace(`${searchLine}\n`, "")).toBe(cwdLine(off));
 });
 
 test("excluded tools do not enable the pi section", async () => {

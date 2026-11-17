@@ -1,11 +1,13 @@
 // Host side of Bridged calls: which Pi tools a Cell may call, and how a call's outcome reaches Python
-// (`src/bridge/pi.py` sends the `pi.tool`, `pi.tools`, `pi.describe`, and `pi.describe_namespace` host requests
-// answered here).
+// (`src/bridge/pi.py` sends the `pi.tool`, `pi.tools`, `pi.search`, `pi.describe`, and `pi.describe_namespace`
+// host requests answered here).
 
 import type { ExtensionToolContext, ToolInfo } from "@earendil-works/pi-coding-agent";
+import { Bm25Ranker, createToolSearchDocument } from "./tool-search.ts";
 
 export const PI_TOOL_REQUEST = "pi.tool";
 export const PI_TOOLS_REQUEST = "pi.tools";
+export const PI_SEARCH_REQUEST = "pi.search";
 export const PI_DESCRIBE_REQUEST = "pi.describe";
 export const PI_DESCRIBE_NAMESPACE_REQUEST = "pi.describe_namespace";
 
@@ -28,20 +30,23 @@ export function bridgedTools(tools: readonly ToolInfo[], ipythonName: string): T
 
 /**
  * Answer one host request of a running Cell. Resolves with the value Python receives; rejects with the
- * error text `pi.ToolError` carries.
+ * error text `pi.ToolError` carries. `search` is whether `pi.search` is on (`piTools.search`).
  */
 export async function answerHostRequest(
 	data: Record<string, unknown>,
 	callable: readonly ToolInfo[],
 	ctx: ExtensionToolContext,
 	signal: AbortSignal | undefined,
+	search: boolean,
 ): Promise<unknown> {
-	if (data.type === PI_TOOLS_REQUEST) {
-		return callable.map((tool) => ({
-			name: tool.name,
-			description: tool.description.trim().split("\n")[0] ?? "",
-			namespace: tool.namespace?.name ?? null,
-		}));
+	if (data.type === PI_TOOLS_REQUEST) return callable.map(toolEntry);
+	if (data.type === PI_SEARCH_REQUEST) {
+		if (!search) throw new Error("pi.search is turned off (piTools.search: false)");
+		const { query, limit } = data;
+		if (typeof query !== "string" || query.trim() === "") throw new Error("query must be a non-empty string");
+		if (!Number.isInteger(limit) || (limit as number) <= 0) throw new Error("limit must be a positive integer");
+		const matches = new Bm25Ranker().rank(query, callable.map(createToolSearchDocument), limit as number);
+		return matches.map((match) => toolEntry(callable.find((tool) => tool.name === match.name)!));
 	}
 	if (data.type === PI_DESCRIBE_NAMESPACE_REQUEST) {
 		const { name } = data;
@@ -78,6 +83,15 @@ export async function answerHostRequest(
 	}
 	const outcome = await ctx.executeTool(name, args ?? {}, { signal });
 	return toPythonValue(name, outcome, outputSchema(ctx, name) !== undefined);
+}
+
+/** A `pi.tools()` entry: name, first description line, and namespace name or null. */
+function toolEntry(tool: ToolInfo) {
+	return {
+		name: tool.name,
+		description: tool.description.trim().split("\n")[0] ?? "",
+		namespace: tool.namespace?.name ?? null,
+	};
 }
 
 function outputSchema(ctx: ExtensionToolContext, name: string): unknown {

@@ -39,6 +39,7 @@ Load other extensions alongside pi-ipython. Their tools are available through Py
 
 ```python
 await pi.tools()                         # names, descriptions, namespaces
+await pi.search("screenshot", limit=8)   # best-matching tools first, same entries as pi.tools()
 await pi.describe("tool_name")           # full description, parameter schema, guidelines, returns
 await pi.describe_namespace("mcp__docs") # namespace description and instructions (e.g. an MCP server's)
 await pi.tool("tool_name", {"arg": "value"})
@@ -53,6 +54,8 @@ pi --no-extensions --no-skills -e src/index.ts -e builtin:mcp \
 
 The `ipython` description lists the callable Pi tools registered with `direct` or `codemode` exposure (name and first description line, grouped by namespace, up to about 3000 tokens; a namespace that does not fit is marked `(some tools not listed)` or `(tools not listed)`). `deferred` tools are never listed, and MCP registers its `codemode` and `deferred` servers' tools as `deferred`, so only MCP tools with `direct` exposure are listed and connecting servers do not change the description otherwise. Turn the list off with `piTools.list: false`.
 
+`pi.search(query, limit=8)` ranks every callable Pi tool, listed or not (including `deferred` MCP tools), with BM25 over names, descriptions, parameter schemas, and namespaces; a query that is exactly a tool's name ranks it first. Turn it off with `piTools.search: false`: calls then raise `pi.ToolError` and the system prompt does not mention it.
+
 MCP tools with `direct`, `codemode`, or `deferred` exposure are callable through `pi`; `hidden` tools stay unavailable. Cells wait for MCP registration before running. Neither `builtin:codemode` nor `builtin:tool-search` is needed for Python discovery. Run `pi mcp list` to diagnose connection failures, and `pi mcp login <server>` for servers that need authentication. Project `.pi/mcp.json` is read only in trusted projects.
 
 ## Configuration
@@ -64,7 +67,7 @@ Global config lives in `~/.pi/agent/pi-ipython.json`. Project config lives in `.
   "confirmEachCell": false,
   "python": { "source": "uv", "version": "3.13" },
   "output": { "maxBytes": 51200, "maxLines": 2000 },
-  "piTools": { "list": true }
+  "piTools": { "list": true, "search": true }
 }
 ```
 
@@ -75,6 +78,7 @@ Global config lives in `~/.pi/agent/pi-ipython.json`. Project config lives in `.
 | `python.version` | `"3.13"` | Python version for the managed venv (3.11 or newer). |
 | `output.maxBytes` / `output.maxLines` | 50KB / 2000 | Cell output beyond these limits is truncated to its tail. The full output is saved to a temp file whose path is in the result. |
 | `piTools.list` | `true` | List callable `direct`/`codemode` Pi tools in the `ipython` description (see [MCP and other Pi tools](#mcp-and-other-pi-tools)). `false` leaves the description without the list. |
+| `piTools.search` | `true` | Enable `pi.search(query, limit=8)` over callable Pi tools. `false` makes it raise `pi.ToolError` and leaves it out of the system prompt. |
 
 ## License
 

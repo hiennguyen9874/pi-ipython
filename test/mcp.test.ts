@@ -47,6 +47,7 @@ test.each(["direct", "codemode", "deferred"])("builtin:mcp tools with %s exposur
 				"print((await pi.describe('mcp__docs__echo'))['parameters']['required'])",
 				"print(json.dumps(await pi.describe_namespace('mcp__docs'), sort_keys=True))",
 				"print((await pi.tool('mcp__docs__echo', {'text': 'hi'}))['content'][0]['text'])",
+				"print([t['name'] for t in await pi.search('mcp__docs__echo')][0], [t['name'] for t in await pi.search('hidden')])",
 				"for name in ['mcp__docs__hidden', 'read', 'codemode', 'mcp__docs__guarded']:",
 				"    try:",
 				"        await pi.tool(name, {'text': 'no'})",
@@ -76,6 +77,8 @@ test.each(["direct", "codemode", "deferred"])("builtin:mcp tools with %s exposur
 	expect([lines[1], ...lines.slice(3)]).toEqual([
 		"['text']",
 		"docs: hi",
+		// Found by name; the hidden tool is not callable, so it is never ranked.
+		"mcp__docs__echo []",
 		"mcp__docs__hidden -> Tool mcp__docs__hidden not found",
 		"read -> Tool read not found",
 		"codemode -> Tool codemode not found",

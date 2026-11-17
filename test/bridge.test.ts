@@ -305,6 +305,60 @@ test("pi.describe_namespace() describes a callable tool's namespace by name or a
 	]);
 });
 
+test("pi.search() ranks callable tools by description words and name, capped by limit; bad queries raise", async () => {
+	h = await createHarness({ extensions });
+	const [r] = await h.runCells([
+		"import json",
+		"print(json.dumps(await pi.search('screenshots')))",
+		"print([t['name'] for t in await pi.search('page slug markdown')])",
+		"print([t['name'] for t in await pi.search('lookup')])",
+		"print(len(await pi.search('echo count screenshots fails blocked', limit=2)))",
+		"print(await pi.search('zzz unmatched'))",
+		"print([t['name'] for t in await pi.search('read file')])",
+		"for args in [('',), ('   ',), (None,), (3,), ('echo', 0), ('echo', True)]:",
+		"    try:",
+		"        await pi.search(*args)",
+		"        print(args, 'no error')",
+		"    except (TypeError, ValueError) as e:",
+		"        print(type(e).__name__, e)",
+	].join("\n"));
+	expect(r?.isError).toBe(false);
+	const [first, ...lines] = resultText(r!).split("\n");
+	expect(JSON.parse(first!)).toEqual([{ name: "snapshot", description: "Take screenshots.", namespace: null }]);
+	expect(lines).toEqual([
+		"['mcp__docs__lookup']",
+		"['mcp__docs__lookup']",
+		"2",
+		"[]",
+		// Excluded tools (pi's built-in read) are never ranked.
+		"[]",
+		"TypeError query must be a non-empty str",
+		"TypeError query must be a non-empty str",
+		"TypeError query must be a non-empty str",
+		"TypeError query must be a non-empty str",
+		"ValueError limit must be positive",
+		"TypeError limit must be an int, got bool",
+	]);
+});
+
+test("pi.search() raises pi.ToolError when piTools.search is false", async () => {
+	h = await createHarness({
+		setup: ({ cwd }) => {
+			mkdirSync(join(cwd, ".pi"), { recursive: true });
+			writeFileSync(join(cwd, ".pi", "pi-ipython.json"), JSON.stringify({ piTools: { search: false } }));
+		},
+		extensions,
+	});
+	const [r] = await h.runCells([
+		"try:",
+		"    await pi.search('echo')",
+		"except pi.ToolError as e:",
+		"    print('ToolError:', e)",
+		"print(len(await pi.tools()) > 0)",
+	].join("\n"));
+	expect(resultText(r!)).toBe("ToolError: pi.search is turned off (piTools.search: false)\nTrue");
+});
+
 test("a result with images returns its text plus the omitted-images marker", async () => {
 	h = await createHarness({ extensions });
 	const [r] = await h.runCells("print(await pi.tool('snapshot'))");

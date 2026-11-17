@@ -18,9 +18,12 @@ const CORE_PROMPT = `You have one tool, \`ipython\`: a persistent CPython REPL w
   - \`BashHandle\`: \`.pid\`, \`.running\`, \`.command\`, \`.tail(n=50)\`, \`.output()\`, \`.poll() -> BashResult | None\`, \`.kill(sig=SIGTERM, grace=5.0)\`, and \`await handle -> BashResult\`
   - \`BashResult\`: \`.exit_code\`, \`.output\`, \`.duration\``;
 
-const PI_TOOLS_PROMPT = `- \`pi\`: the session's other tools (extension tools such as subagents or MCP servers), callable from Python; all of it is async
-  - \`await pi.tools()\`: list the callable tools as dicts with \`name\`, \`description\` (first line), and \`namespace\`
-  - \`await pi.describe(name)\`: a tool's full \`description\`, \`parameters\` JSON schema, usage \`guidelines\`, and \`returns\` (output schema, or \`"str"\`)
+const PI_TOOLS_HEAD = `- \`pi\`: the session's other tools (extension tools such as subagents or MCP servers), callable from Python; all of it is async
+  - \`await pi.tools()\`: list the callable tools as dicts with \`name\`, \`description\` (first line), and \`namespace\``;
+
+const PI_SEARCH_PROMPT = `  - \`await pi.search(query: str, limit: int = 8)\`: the callable tools that best match \`query\` (words or a tool name), best first, as entries like \`pi.tools()\``;
+
+const PI_TOOLS_TAIL = `  - \`await pi.describe(name)\`: a tool's full \`description\`, \`parameters\` JSON schema, usage \`guidelines\`, and \`returns\` (output schema, or \`"str"\`)
   - \`await pi.describe_namespace(name)\`: a namespace's (for example an MCP server's) \`description\` and \`instructions\`
   - \`await pi.tool(name, args: dict | None = None)\`: call a tool; returns a dict for tools with an output schema, otherwise text, and raises \`pi.ToolError\` on failure`;
 
@@ -43,11 +46,14 @@ function today(): string {
 	return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
+/** `piTools` is set when a Pi tool is callable; `search` is whether `pi.search` is on. */
 export function buildSystemPrompt(
 	options: Pick<BuildSystemPromptOptions, "cwd" | "contextFiles" | "skills">,
-	hasPiTools: boolean,
+	piTools: { search: boolean } | undefined,
 ): string {
-	const functions = hasPiTools ? `${CORE_PROMPT}\n${PI_TOOLS_PROMPT}` : CORE_PROMPT;
+	const functions = piTools
+		? [CORE_PROMPT, PI_TOOLS_HEAD, ...(piTools.search ? [PI_SEARCH_PROMPT] : []), PI_TOOLS_TAIL].join("\n")
+		: CORE_PROMPT;
 	const parts = [functions, RULES_PROMPT];
 
 	const contextFiles = options.contextFiles ?? [];
