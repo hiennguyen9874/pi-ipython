@@ -60,6 +60,8 @@ export interface CellResult {
 	/** repr of the trailing expression, when it is not None. */
 	result?: string;
 	error?: CellError;
+	/** Live names, from a `list_names` request (not a Cell). */
+	names?: string[];
 	status: "ok" | "error" | "aborted";
 	durationMs: number;
 }
@@ -76,6 +78,9 @@ export interface KernelClientOptions {
 	journalPath?: string;
 }
 
+/** Requests that run in order and end with a `done` frame. */
+type KernelRequest = { type: "execute"; code: string } | { type: "list_names" };
+
 interface ActiveCell {
 	id: string;
 	started: number;
@@ -85,6 +90,7 @@ interface ActiveCell {
 	images: CellImage[];
 	result?: string;
 	error?: CellError;
+	names?: string[];
 	/** Its tool call already returned (aborted); the Cell stays active until its `done`. */
 	settled: boolean;
 	/** Resolves when the Cell is no longer active. */
@@ -135,7 +141,22 @@ export class KernelClient {
 	/** Run one Cell, starting the Kernel first if needed. */
 	async execute(code: string, signal?: AbortSignal): Promise<CellResult> {
 		await this.start();
-		return this.request(code, signal);
+		return this.request({ type: "execute", code }, signal);
+	}
+
+	/**
+	 * Live user-defined top-level names, or null when no Kernel is running, it is still busy with
+	 * an interrupted Cell, or the listing fails. Never starts a Kernel or interrupts a Cell.
+	 */
+	async listNames(signal?: AbortSignal): Promise<string[] | null> {
+		if (!this.child || this.active) return null;
+		try {
+			await this.starting;
+			const result = await this.request({ type: "list_names" }, signal);
+			return result.status === "ok" ? (result.names ?? []) : null;
+		} catch {
+			return null;
+		}
 	}
 
 	/** Raise KeyboardInterrupt in the running Cell. */
@@ -206,7 +227,7 @@ export class KernelClient {
 				throw new Error(`Kernel runtime speaks protocol ${protocol}, expected ${REPL_PROTOCOL_VERSION}`);
 			}
 			if (this.options.bootstrapCode) {
-				const result = await this.request(this.options.bootstrapCode);
+				const result = await this.request({ type: "execute", code: this.options.bootstrapCode });
 				if (result.status !== "ok") {
 					const details = [result.stderr, result.error?.traceback.join("")].filter(Boolean).join("\n");
 					throw new Error(`Failed to initialize the Kernel runtime:\n${details}`);
@@ -305,6 +326,7 @@ export class KernelClient {
 				traceback: Array.isArray(event.traceback) ? event.traceback.filter((t) => typeof t === "string") : [],
 			};
 		} else if (type === "done") {
+			if (Array.isArray(event.names)) cell.names = event.names.filter((n) => typeof n === "string");
 			this.clearActive();
 			this.settle(cell, event.status === "ok" && !cell.error ? "ok" : "error");
 		}
@@ -324,6 +346,7 @@ export class KernelClient {
 			backgroundOutput,
 			result: cell.result,
 			error: cell.error,
+			names: cell.names,
 			status: cell.signal?.aborted ? "aborted" : status,
 			durationMs: Date.now() - cell.started,
 		});
@@ -346,13 +369,13 @@ export class KernelClient {
 		}
 	}
 
-	private request(code: string, signal?: AbortSignal): Promise<CellResult> {
-		const run = this.queue.then(() => this.send(code, signal));
+	private request(request: KernelRequest, signal?: AbortSignal): Promise<CellResult> {
+		const run = this.queue.then(() => this.send(request, signal));
 		this.queue = run.catch(() => undefined);
 		return run;
 	}
 
-	private async send(code: string, signal?: AbortSignal): Promise<CellResult> {
+	private async send(request: KernelRequest, signal?: AbortSignal): Promise<CellResult> {
 		await this.waitUntilIdle(signal);
 		if (signal?.aborted) {
 			return { stdout: "", stderr: "", images: [], backgroundOutput: "", status: "aborted", durationMs: 0 };
@@ -396,7 +419,7 @@ export class KernelClient {
 			};
 			this.active = cell;
 			signal?.addEventListener("abort", onAbort, { once: true });
-			this.write({ type: "execute", id: cell.id, code }).catch((error: Error) => {
+			this.write({ ...request, id: cell.id }).catch((error: Error) => {
 				if (this.active !== cell) return;
 				this.clearActive();
 				cell.reject(error);

@@ -93,6 +93,20 @@ export default function piIpython(pi: ExtensionAPI): void {
 			pi.sendMessage({ customType: BRANCH_NOTICE_TYPE, content: BRANCH_NOTICE, display: true }, { deliverAs: "nextTurn" });
 		}
 	});
+	// Compaction summarises the conversation, but the Kernel keeps its namespace: tell the model what survived.
+	pi.on("session_compact", async () => {
+		const current = kernel;
+		if (!current?.isRunning) return;
+		const names = await current.listNames(AbortSignal.timeout(STATE_LISTING_TIMEOUT_MS));
+		// A failed listing still gets a notice, unless the Kernel stopped meanwhile.
+		if (names === null && !(kernel === current && current.isRunning)) return;
+		// Appended right away when idle, so a back-to-back /compact has something new to compact;
+		// during a run it waits for the turn's end instead of steering an extra turn.
+		pi.sendMessage(
+			{ customType: PYTHON_STATE_TYPE, content: pythonStateNotice(names), display: false },
+			{ triggerTurn: false },
+		);
+	});
 	pi.on("session_shutdown", async () => {
 		await kernel?.shutdown();
 		kernel = undefined;
@@ -106,6 +120,20 @@ export const STATE_LOST_NOTICE =
 export const BRANCH_NOTICE_TYPE = "ipython_branch_switch";
 export const BRANCH_NOTICE =
 	"The conversation switched to another branch, but the Python Kernel kept running: its variables, functions, and imports may come from Cells that are not on this branch, and Cells on this branch may not have run in it. Check Python state before relying on it.";
+export const PYTHON_STATE_TYPE = "ipython_state";
+// A stuck Kernel degrades the notice to no names instead of holding up compaction.
+const STATE_LISTING_TIMEOUT_MS = 5_000;
+
+/** The Python-state notice; `names` is null when the listing failed. Wording from Unharnessed's ipython_state. */
+function pythonStateNotice(names: string[] | null): string {
+	const detail = names === null
+		? ""
+		: names.length > 0
+			? ` These names are still defined: ${names.join(", ")}.`
+			: " You have not defined any names yet.";
+	return `[python-state]\n\nYour Python kernel persisted through compaction; its remaining variables, imports, and helpers are still available.${detail}`;
+}
+
 const KEEP_KERNEL = "Keep Kernel";
 const RESTART_KERNEL = "Restart Kernel";
 
