@@ -75,6 +75,20 @@ export default function piIpython(pi: ExtensionAPI): void {
 		forceExclusive();
 		return { systemPrompt: buildSystemPrompt(event.systemPromptOptions) };
 	});
+	// Python state follows the Kernel, not the conversation: on a branch switch the user decides whether it still fits.
+	pi.on("session_tree", async (_event, ctx) => {
+		if (!kernel?.isRunning) return;
+		const choice = ctx.hasUI
+			? await ctx.ui.select("Branch switched. Python state may not match this branch.", [KEEP_KERNEL, RESTART_KERNEL])
+			: KEEP_KERNEL;
+		if (choice === RESTART_KERNEL) {
+			await kernel.shutdown();
+			kernel = undefined;
+			pi.sendMessage({ customType: STATE_LOST_TYPE, content: STATE_LOST_NOTICE, display: true }, { deliverAs: "nextTurn" });
+		} else {
+			pi.sendMessage({ customType: BRANCH_NOTICE_TYPE, content: BRANCH_NOTICE, display: true }, { deliverAs: "nextTurn" });
+		}
+	});
 	pi.on("session_shutdown", async () => {
 		await kernel?.shutdown();
 		kernel = undefined;
@@ -84,6 +98,12 @@ export default function piIpython(pi: ExtensionAPI): void {
 export const STATE_LOST_TYPE = "ipython_state_lost";
 export const STATE_LOST_NOTICE =
 	"The Python Kernel was restarted, so all Python state from earlier Cells in this conversation is gone: variables, functions, and imports no longer exist. Recreate what you need before using it.";
+
+export const BRANCH_NOTICE_TYPE = "ipython_branch_switch";
+export const BRANCH_NOTICE =
+	"The conversation switched to another branch, but the Python Kernel kept running: its variables, functions, and imports may come from Cells that are not on this branch, and Cells on this branch may not have run in it. Check Python state before relying on it.";
+const KEEP_KERNEL = "Keep Kernel";
+const RESTART_KERNEL = "Restart Kernel";
 
 function hasEarlierCells(branch: SessionEntry[]): boolean {
 	return branch.some(
