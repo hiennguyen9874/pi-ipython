@@ -11,15 +11,25 @@ import { randomUUID } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
-import { formatSize, type ToolDefinition, type TruncationOptions, truncateTail } from "@earendil-works/pi-coding-agent";
+import {
+	type ExtensionToolContext,
+	formatSize,
+	type ToolDefinition,
+	type TruncationOptions,
+	truncateTail,
+} from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { type CellResult, type KernelClient, KernelBusyError } from "../kernel/client.ts";
 import { renderCellCall, renderCellResult } from "../render/cell-renderer.ts";
 
 export const IPYTHON_TOOL_NAME = "ipython";
 
-/** Run once in every new Kernel: binds `bash` and `asyncio` into the namespace. */
+/** The repo-owned `pi` module (Bridged calls), loaded from its file so the vendored runtime stays unchanged. */
+const PI_MODULE_PATH = fileURLToPath(new URL("../bridge/pi.py", import.meta.url));
+
+/** Run once in every new Kernel: binds `bash`, `asyncio`, and `pi` into the namespace. */
 export const KERNEL_BOOTSTRAP_CODE = `
 import asyncio
 import os as _pi_ipython_os
@@ -28,6 +38,11 @@ _pi_ipython_os.environ["NO_COLOR"] = "1"
 
 import rlm as _pi_ipython_rlm
 bash = _pi_ipython_rlm.bash
+
+import importlib.util as _pi_ipython_importlib_util
+_pi_ipython_spec = _pi_ipython_importlib_util.spec_from_file_location("pi", ${JSON.stringify(PI_MODULE_PATH)})
+pi = _pi_ipython_importlib_util.module_from_spec(_pi_ipython_spec)
+_pi_ipython_spec.loader.exec_module(pi)
 `.trim();
 
 // Busy-Kernel choice, from Unharnessed's pre-Rust host (core/tools/ipython.ts).
@@ -76,6 +91,8 @@ export interface IpythonToolOptions {
 	getConfirmEachCell?: () => boolean;
 	/** The cause of a Kernel replacement the model was not told about yet, consuming it. */
 	takeStateLoss?: () => string | undefined;
+	/** Answers the running Cell's host requests (Bridged calls) with this call's context and signal. */
+	answerHostRequest?: (data: Record<string, unknown>, ctx: ExtensionToolContext, signal: AbortSignal | undefined) => Promise<unknown>;
 }
 
 /** The State-loss notice as a Cell's error result; a Cell that did not run says so. */
@@ -150,6 +167,7 @@ export function createIpythonTool({
 	getOutputLimits = () => ({}),
 	getConfirmEachCell = () => false,
 	takeStateLoss = () => undefined,
+	answerHostRequest,
 }: IpythonToolOptions): ToolDefinition<typeof ipythonSchema, IpythonToolDetails> {
 	return {
 		name: IPYTHON_TOOL_NAME,
@@ -160,6 +178,10 @@ export function createIpythonTool({
 		parameters: ipythonSchema,
 		// One Kernel runs one Cell at a time.
 		executionMode: "sequential",
+		// Other active tools are there only for Bridged calls: the model sees only ipython.
+		prepareLoadout: (loadout) => ({
+			hiddenDeclarations: loadout.declared.map((tool) => tool.name).filter((name) => name !== IPYTHON_TOOL_NAME),
+		}),
 		renderCall: renderCellCall,
 		renderResult: renderCellResult,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
@@ -176,7 +198,11 @@ export function createIpythonTool({
 				const cause = takeStateLoss();
 				if (cause !== undefined) return stateLostResult(cause);
 				try {
-					r = await getKernel().execute(params.code, signal);
+					r = await getKernel().execute(
+						params.code,
+						signal,
+						answerHostRequest && ((data) => answerHostRequest(data, ctx, signal)),
+					);
 					break;
 				} catch (error) {
 					if (!(error instanceof KernelBusyError) || signal?.aborted) {

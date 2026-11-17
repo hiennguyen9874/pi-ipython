@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { type ExtensionAPI, getAgentDir, type SessionEntry } from "@earendil-works/pi-coding-agent";
+import { answerHostRequest, bridgedTools } from "./bridge/pi-tools.ts";
 import { loadConfig, type PiIpythonConfig } from "./config.ts";
 import { ensureKernelPython, resolveProjectPython, RUNTIME_SRC_DIR } from "./kernel/bootstrap.ts";
 import { KernelClient } from "./kernel/client.ts";
@@ -71,10 +72,18 @@ export default function piIpython(pi: ExtensionAPI): void {
 				unannouncedStateLoss = undefined;
 				return cause;
 			},
+			answerHostRequest: (data, ctx, signal) => {
+				const callable = new Set(bridgedTools(pi.getAllTools(), IPYTHON_TOOL_NAME).map((tool) => tool.name));
+				return answerHostRequest(data, callable, ctx, signal);
+			},
 		}),
 	);
 
-	const forceExclusive = () => pi.setActiveTools([IPYTHON_TOOL_NAME]);
+	// Bridged `direct` tools must be active to be callable; ipython's prepareLoadout hides their declarations.
+	const forceExclusive = () => {
+		const direct = bridgedTools(pi.getAllTools(), IPYTHON_TOOL_NAME).filter((tool) => tool.exposure === "direct");
+		pi.setActiveTools([IPYTHON_TOOL_NAME, ...direct.map((tool) => tool.name)]);
+	};
 
 	pi.on("session_start", (event, ctx) => {
 		pendingStateNotice = undefined;
@@ -127,7 +136,9 @@ export default function piIpython(pi: ExtensionAPI): void {
 	pi.on("session_compact", async () => {
 		const current = kernel;
 		if (!current?.isRunning) return;
-		const names = await current.listNames(AbortSignal.timeout(STATE_LISTING_TIMEOUT_MS));
+		// `pi` is re-created by the bootstrap, like `bash`, which the runtime already leaves out.
+		const listed = await current.listNames(AbortSignal.timeout(STATE_LISTING_TIMEOUT_MS));
+		const names = listed?.filter((name) => name !== "pi") ?? null;
 		// A failed listing still gets a notice, unless the Kernel stopped meanwhile.
 		if (names === null && !(kernel === current && current.isRunning)) return;
 		pendingStateNotice = { content: pythonStateNotice(names), id: randomUUID(), timestamp: Date.now() };

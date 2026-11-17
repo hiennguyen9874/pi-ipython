@@ -80,6 +80,9 @@ export interface KernelClientOptions {
 	onLost?: (error: Error) => void;
 }
 
+/** Answers one `host_request` of the running Cell: resolves with the reply's result, rejects with its error. */
+export type HostRequestHandler = (data: Record<string, unknown>) => Promise<unknown>;
+
 /** Requests that run in order and end with a `done` frame. */
 type KernelRequest = { type: "execute"; code: string } | { type: "list_names" };
 
@@ -88,6 +91,7 @@ interface ActiveCell {
 	requestType: KernelRequest["type"];
 	started: number;
 	signal?: AbortSignal;
+	onHostRequest?: HostRequestHandler;
 	stdout: string;
 	stderr: string;
 	images: CellImage[];
@@ -143,10 +147,10 @@ export class KernelClient {
 		return this.starting;
 	}
 
-	/** Run one Cell, starting the Kernel first if needed. */
-	async execute(code: string, signal?: AbortSignal): Promise<CellResult> {
+	/** Run one Cell, starting the Kernel first if needed. `onHostRequest` answers its host requests while it runs. */
+	async execute(code: string, signal?: AbortSignal, onHostRequest?: HostRequestHandler): Promise<CellResult> {
 		await this.start();
-		return this.request({ type: "execute", code }, signal);
+		return this.request({ type: "execute", code }, signal, onHostRequest);
 	}
 
 	/**
@@ -300,12 +304,7 @@ export class KernelClient {
 			return;
 		}
 		if (type === "host_request") {
-			// No host handlers yet (v4): answer so the awaiting Cell fails instead of hanging.
-			this.write({
-				type: "host_reply",
-				id: event.id,
-				data: { status: "error", error: "host requests are not supported by pi-ipython" },
-			}).catch(() => undefined);
+			this.answerHostRequest(event.id as string, event.data);
 			return;
 		}
 		const cell = this.active;
@@ -337,6 +336,30 @@ export class KernelClient {
 			this.clearActive();
 			this.settle(cell, event.status === "ok" && !cell.error ? "ok" : "error");
 		}
+	}
+
+	/**
+	 * Route a host request to the running Cell's handler and reply. Every request gets a reply, so the
+	 * awaiting Python fails instead of hanging; requests arrive without a Cell id, so they go to the
+	 * Cell running now, and none is answered while no Cell's tool call is running.
+	 */
+	private answerHostRequest(id: string, data: unknown): void {
+		const child = this.child;
+		const cell = this.active;
+		const handler = cell && !cell.settled ? cell.onHostRequest : undefined;
+		const reply = (data: Record<string, unknown>) => {
+			// A reply must never reach a replacement Kernel.
+			if (this.child === child) this.write({ type: "host_reply", id, data }).catch(() => undefined);
+		};
+		const answer = async () => {
+			if (!handler) throw new Error("host requests are only answered while a Cell runs");
+			if (typeof data !== "object" || data === null || Array.isArray(data)) throw new Error("host request data must be an object");
+			return handler(data as Record<string, unknown>);
+		};
+		answer().then(
+			(result) => reply({ status: "ok", result: result ?? null }),
+			(error: unknown) => reply({ status: "error", error: error instanceof Error ? error.message : String(error) }),
+		);
 	}
 
 	/** Resolve the Cell's tool call with what it produced so far. */
@@ -380,13 +403,13 @@ export class KernelClient {
 		}
 	}
 
-	private request(request: KernelRequest, signal?: AbortSignal): Promise<CellResult> {
-		const run = this.queue.then(() => this.send(request, signal));
+	private request(request: KernelRequest, signal?: AbortSignal, onHostRequest?: HostRequestHandler): Promise<CellResult> {
+		const run = this.queue.then(() => this.send(request, signal, onHostRequest));
 		this.queue = run.catch(() => undefined);
 		return run;
 	}
 
-	private async send(request: KernelRequest, signal?: AbortSignal): Promise<CellResult> {
+	private async send(request: KernelRequest, signal?: AbortSignal, onHostRequest?: HostRequestHandler): Promise<CellResult> {
 		await this.waitUntilIdle(signal);
 		if (signal?.aborted) {
 			return { stdout: "", stderr: "", images: [], backgroundOutput: "", status: "aborted", durationMs: 0 };
@@ -414,6 +437,7 @@ export class KernelClient {
 				requestType: request.type,
 				started: Date.now(),
 				signal,
+				onHostRequest,
 				stdout: "",
 				stderr: "",
 				images: [],
