@@ -33,7 +33,7 @@ People who already run pi and want to try a Python-REPL-first agent on their own
 6. **Session lifecycle.** The Kernel is killed at `session_shutdown`. A new, resumed, or forked session gets a fresh Kernel, and the model is told that earlier Python state is gone.
 7. **Branch switch (`/tree`).** The user is asked "Keep Kernel" or "Restart Kernel". With no UI, the Kernel is kept and the model gets a notice that Python state may not match the branch.
 8. **Interrupt.** User abort sends an interrupt. If the Kernel is still busy when the next Cell arrives, the user chooses between waiting and killing the Kernel (which loses Python state).
-9. **Python-state notice.** After every compaction while a Kernel is running, a `[python-state]` message lists the live names, taken from `list_names`.
+9. **Python-state notice.** After every compaction while a Kernel is running, a `[python-state]` message lists up to 50 eligible live names from `list_names`, within 2,000 UTF-16 code units overall. It identifies omitted names and filtering, or reports when listing fails.
 10. **Output limits.** Pi's standard 50KB / 2000-line truncation. When output is cut, the full text is saved to a temp file and the result gives its path.
 11. **Images.** `emit({"image/png": ...})` and other model-accepted image MIME types are returned as image content in the tool result.
 12. **Background output.** Output not attributed to any Cell (asyncio tasks, threads, subprocesses) is buffered and attached to the next Cell's result under "background output".

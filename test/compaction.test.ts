@@ -190,7 +190,7 @@ test.each(["error", "timeout"] as const)("a listing %s sends a no-names notice a
 	const notice = noticeEntries(h).at(-1)!;
 	expect(notice.content).toContain("Your Python kernel persisted through compaction");
 	expect(notice.content).not.toContain("These names");
-	expect(notice.content).not.toContain("You have not defined");
+	expect(notice.content).toContain("Could not list Python names; inspect `globals()`");
 	const { result } = await runCellSeeing(h, "a + 1");
 	expect(resultText(result)).toBe("42");
 	await compact(h);
@@ -265,10 +265,101 @@ test("a Kernel that dies after compaction during a run leaves the State-loss not
 	expect(seen.lastIndexOf("[python-state]")).toBeLessThan(seen.lastIndexOf("ipython_state_lost"));
 });
 
+test.each([50, 51])("notice caps the count with %i eligible names", async (count) => {
+	h = await createHarness();
+	await h.runCells(`for _i in range(${count}): globals()[f"name_{_i:03}"] = _i\n_private = 1\nopen = 2`);
+	await compact(h);
+	const content = noticeEntries(h).at(-1)!.content as string;
+	expect(content.length).toBeLessThanOrEqual(2_000);
+	expect(content).toContain("These names are still defined: name_000, name_001");
+	expect(content).toContain("name_049");
+	expect(content).not.toContain("name_050");
+	expect(content).toContain("Private and bootstrap names are not listed");
+	if (count === 51) expect(content).toContain("1 more omitted; inspect `globals()`");
+	else expect(content).not.toContain("more omitted");
+});
+
+test("character cap omits a long name and all later names without truncating names", async () => {
+	h = await createHarness();
+	await h.runCells("a = 1\nglobals()['b' * 2000] = 2\nz = 3");
+	await compact(h);
+	const content = noticeEntries(h).at(-1)!.content as string;
+	expect(content.length).toBeLessThanOrEqual(2_000);
+	expect(content).toContain("These names are still defined: a.");
+	expect(content).toContain("2 more omitted; inspect `globals()`");
+	expect(content).not.toContain("b".repeat(20));
+});
+
+test("the character limit includes all notice wording", async () => {
+	h = await createHarness();
+	await h.runCells("a = 1");
+	await compact(h);
+	const initial = noticeEntries(h).at(-1)!.content as string;
+	const nameLength = 2_000 - initial.length + 1;
+	await h.runCells(`del a\nglobals()['b' * ${nameLength}] = 1`);
+	await compact(h);
+	const exact = noticeEntries(h).at(-1)!.content as string;
+	expect(exact.length).toBe(2_000);
+	expect(exact).not.toContain("more omitted");
+	await h.runCells(`del globals()['b' * ${nameLength}]\nglobals()['b' * ${nameLength + 1}] = 1`);
+	await compact(h);
+	const over = noticeEntries(h).at(-1)!.content as string;
+	expect(over.length).toBeLessThanOrEqual(2_000);
+	expect(over).toContain("1 more omitted; inspect `globals()`");
+});
+
+test("an oversized first name is counted without a misleading empty namespace", async () => {
+	h = await createHarness();
+	await h.runCells("globals()['a' * 3000] = 1");
+	await compact(h);
+	const content = noticeEntries(h).at(-1)!.content as string;
+	expect(content.length).toBeLessThanOrEqual(2_000);
+	expect(content).toContain("1 more omitted; inspect `globals()`");
+	expect(content).not.toContain("No eligible names");
+});
+
+test("unusual names are escaped and objects are not inspected", async () => {
+	h = await createHarness();
+	await h.runCells([
+		"class _NoRepr:",
+		"    def __repr__(self): raise RuntimeError('repr must not run')",
+		"safe = _NoRepr()",
+		"globals()['a, b\\nspoof'] = safe",
+		"globals()['é'] = safe",
+	].join("\n"));
+	await compact(h);
+	const content = noticeEntries(h).at(-1)!.content as string;
+	expect(content).toContain(JSON.stringify("a, b\nspoof"));
+	expect(content).toContain('"é"');
+	expect(content).toContain("safe");
+	expect(content).not.toContain("repr must not run");
+});
+
+test("listing string-subclass keys does not invoke their user-defined methods", async () => {
+	h = await createHarness();
+	await h.runCells([
+		"class _Key(str):",
+		"    def startswith(self, *_args): raise RuntimeError('user startswith ran')",
+		"    def __lt__(self, _other): raise RuntimeError('user comparison ran')",
+		"    def __str__(self): raise RuntimeError('user str ran')",
+		"    def __repr__(self): raise RuntimeError('user repr ran')",
+		"globals()[_Key('custom')] = 1",
+		"class _NonString:",
+		"    @property",
+		"    def __class__(self): raise RuntimeError('user class property ran')",
+		"globals()[_NonString()] = 3",
+		"z = 2",
+	].join("\n"));
+	await compact(h);
+	const content = noticeEntries(h).at(-1)!.content as string;
+	expect(content).toContain("These names are still defined: custom, z.");
+	expect(content).not.toContain("Could not list");
+});
+
 test("an empty namespace is reported as such", async () => {
 	h = await createHarness();
 	await h.runCells("1 + 1");
 
 	await compact(h);
-	expect(noticeEntries(h).at(-1)?.content).toContain("You have not defined any names yet.");
+	expect(noticeEntries(h).at(-1)?.content).toContain("No eligible names to list.");
 });

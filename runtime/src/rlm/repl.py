@@ -1364,10 +1364,10 @@ def _flush_final_snapshot(ns: dict[str, Any]) -> None:
 
 def _list_names(ns: dict[str, Any]) -> list[str]:
     """User-defined top-level names, filtered like the snapshot."""
-    # Non-string keys (globals()[1] = 1) are not user-listable names.
-    return sorted(
-        name for name in ns if isinstance(name, str) and not name.startswith("_") and name not in _ALWAYS_SKIP
-    )
+    # Non-string keys are not names. Normalize str subclasses without calling their
+    # overrides: filtering and sorting must not execute user-defined methods.
+    names = (str.__str__(name) for name in ns if issubclass(type(name), str))
+    return sorted(name for name in names if not name.startswith("_") and name not in _ALWAYS_SKIP)
 
 
 async def _handle_list_names(req: dict[str, Any], ns: dict[str, Any]) -> None:

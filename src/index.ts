@@ -176,14 +176,31 @@ export const PYTHON_STATE_TYPE = "ipython_state";
 // A stuck Kernel degrades the notice to no names instead of holding up compaction.
 const STATE_LISTING_TIMEOUT_MS = 5_000;
 
-/** The Python-state notice; `names` is null when the listing failed. Wording from Unharnessed's ipython_state. */
+const STATE_NOTICE_MAX_NAMES = 50;
+// Includes all wording and escaped names; JavaScript string length counts UTF-16 code units.
+const STATE_NOTICE_MAX_CHARS = 2_000;
+
+/** The Python-state notice; `names` is null when the listing failed. */
 function pythonStateNotice(names: string[] | null): string {
-	const detail = names === null
-		? ""
-		: names.length > 0
-			? ` These names are still defined: ${names.join(", ")}.`
-			: " You have not defined any names yet.";
-	return `[python-state]\n\nYour Python kernel persisted through compaction; its remaining variables, imports, and helpers are still available.${detail}`;
+	const base = "[python-state]\n\nYour Python kernel persisted through compaction; its remaining variables, imports, and helpers are still available.";
+	if (names === null) return `${base} Could not list Python names; inspect \`globals()\`.`;
+
+	const filtered = " Private and bootstrap names are not listed.";
+	if (names.length === 0) return `${base}${filtered} No eligible names to list.`;
+
+	const omittedText = (count: number) => count > 0 ? ` ${count} more omitted; inspect \`globals()\`.` : "";
+	const listed: string[] = [];
+	for (const name of names) {
+		if (listed.length === STATE_NOTICE_MAX_NAMES) break;
+		// Arbitrary globals() keys can contain separators and newlines; keep ordinary names readable.
+		const rendered = /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ? name : JSON.stringify(name);
+		const candidate = [...listed, rendered];
+		const text = `${base}${filtered} These names are still defined: ${candidate.join(", ")}.${omittedText(names.length - candidate.length)}`;
+		if (text.length > STATE_NOTICE_MAX_CHARS) break;
+		listed.push(rendered);
+	}
+	const detail = listed.length > 0 ? ` These names are still defined: ${listed.join(", ")}.` : "";
+	return `${base}${filtered}${detail}${omittedText(names.length - listed.length)}`;
 }
 
 const KEEP_KERNEL = "Keep Kernel";

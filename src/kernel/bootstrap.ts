@@ -86,9 +86,9 @@ async function ensureUncached(venv: string, version: string): Promise<string> {
 		if (await isReady(venv, python, identity)) return python;
 		await rm(venv, { recursive: true, force: true });
 		const uv = await findUv();
-		// uv sync installs the runtime and its locked dependencies into the venv,
-		// downloading a managed Python when the requested version is missing.
-		await run(uv, ["sync", "--project", RUNTIME_DIR, "--frozen", "--no-dev", "--no-editable", "--python", version], {
+		// Refresh the local runtime wheel: uv's cache may otherwise reuse a wheel
+		// built from older sources even after runtimeIdentity requires a rebuild.
+		await run(uv, ["sync", "--project", RUNTIME_DIR, "--frozen", "--no-dev", "--no-editable", "--refresh-package", "pi-ipython-runtime", "--python", version], {
 			UV_PROJECT_ENVIRONMENT: venv,
 		});
 		await writeFile(path.join(venv, MARKER_FILE), `${JSON.stringify({ identity })}\n`);
