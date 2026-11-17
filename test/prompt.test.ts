@@ -94,6 +94,7 @@ test.each(["direct", "codemode", "deferred"] as const)("the prompt explains pi d
 	expect(prompt).toContain("await pi.describe(");
 	// Only inside the pi section, which ends where the rules begin.
 	const piSection = prompt.slice(prompt.indexOf("- `pi`:"), prompt.indexOf("## Rules"));
+	expect(piSection).toContain("Before first using a tool, call `await pi.describe(name)` to read its schema, guidelines, and returns.");
 	expect(piSection).toContain("await pi.describe_namespace(name)");
 	expect(prompt.split("describe_namespace")).toHaveLength(2);
 	expect(piSection).toContain("await pi.search(query: str, limit: int = 8, namespace: str | None = None)");

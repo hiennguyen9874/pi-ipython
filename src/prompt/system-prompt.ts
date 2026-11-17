@@ -25,7 +25,8 @@ const PI_SEARCH_PROMPT = `  - \`await pi.search(query: str, limit: int = 8, name
 
 const PI_TOOLS_TAIL = `  - \`await pi.describe(name)\`: a tool's full \`description\`, \`parameters\` JSON schema, usage \`guidelines\`, and \`returns\` (output schema, or \`"str"\`)
   - \`await pi.describe_namespace(name)\`: a namespace's (for example an MCP server's) \`description\` and \`instructions\`
-  - \`await pi.tool(name, args: dict | None = None)\`: call a tool; returns a dict for tools with an output schema, otherwise text, and raises \`pi.ToolError\` on failure`;
+  - \`await pi.tool(name, args: dict | None = None)\`: call a tool; returns a dict for tools with an output schema, otherwise text, and raises \`pi.ToolError\` on failure
+  - Before first using a tool, call \`await pi.describe(name)\` to read its schema, guidelines, and returns.`;
 
 const RULES_PROMPT = `## Rules
 
