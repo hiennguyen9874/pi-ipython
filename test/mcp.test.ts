@@ -45,6 +45,7 @@ test.each(["direct", "codemode", "deferred"])("builtin:mcp tools with %s exposur
 				"import json",
 				"print(json.dumps(await pi.tools(), sort_keys=True))",
 				"print((await pi.describe('mcp__docs__echo'))['parameters']['required'])",
+				"print(json.dumps(await pi.describe_namespace('mcp__docs'), sort_keys=True))",
 				"print((await pi.tool('mcp__docs__echo', {'text': 'hi'}))['content'][0]['text'])",
 				"for name in ['mcp__docs__hidden', 'read', 'codemode', 'mcp__docs__guarded']:",
 				"    try:",
@@ -66,7 +67,13 @@ test.each(["direct", "codemode", "deferred"])("builtin:mcp tools with %s exposur
 		{ name: "mcp__docs__echo", description: "Docs echo.", namespace: "mcp__docs" },
 		{ name: "mcp__docs__guarded", description: "Docs guarded.", namespace: "mcp__docs" },
 	]);
-	expect(lines.slice(1)).toEqual([
+	expect(JSON.parse(lines[2]!)).toEqual({
+		name: "mcp__docs",
+		// pi's MCP extension sets a namespace description only from the server's configured description.
+		description: null,
+		instructions: "Docs server.\nSearch before you look up a page.",
+	});
+	expect([lines[1], ...lines.slice(3)]).toEqual([
 		"['text']",
 		"docs: hi",
 		"mcp__docs__hidden -> Tool mcp__docs__hidden not found",

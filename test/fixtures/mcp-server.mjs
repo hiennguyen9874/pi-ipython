@@ -16,6 +16,7 @@ for await (const line of createInterface({ input: process.stdin })) {
 				protocolVersion: request.params.protocolVersion,
 				capabilities: { tools: {} },
 				serverInfo: { name: "test-docs", version: "1.0.0" },
+				instructions: "Docs server.\nSearch before you look up a page.",
 			};
 			break;
 		case "tools/list":

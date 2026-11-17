@@ -39,7 +39,8 @@ Load other extensions alongside pi-ipython. Their tools are available through Py
 
 ```python
 await pi.tools()                         # names, descriptions, namespaces
-await pi.describe("tool_name")           # full description and parameter schema
+await pi.describe("tool_name")           # full description, parameter schema, guidelines, returns
+await pi.describe_namespace("mcp__docs") # namespace description and instructions (e.g. an MCP server's)
 await pi.tool("tool_name", {"arg": "value"})
 ```
 

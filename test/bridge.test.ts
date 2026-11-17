@@ -35,6 +35,7 @@ const piTools: ExtensionFactory = (pi) => {
 		label: "stats",
 		description: "Count items.",
 		exposure: "codemode",
+		promptGuidelines: ["Call stats before listing items."],
 		parameters: Type.Object({}),
 		outputSchema: Type.Object({ count: Type.Number(), names: Type.Array(Type.String()) }),
 		execute: async () => ({
@@ -79,7 +80,7 @@ const piTools: ExtensionFactory = (pi) => {
 		label: "lookup",
 		description: "Look up a doc page.\nPass the page slug; returns markdown.",
 		exposure: "codemode",
-		namespace: { name: "mcp__docs", description: "Docs server." },
+		namespace: { name: "mcp__docs", aliases: ["docs"], description: "Docs server.", instructions: "Pass slugs, not titles." },
 		parameters: Type.Object({ slug: Type.String({ description: "Page slug" }) }),
 		execute: async (_id, { slug }) => ({ content: [{ type: "text", text: `# ${slug}` }], details: {} }),
 	});
@@ -259,12 +260,48 @@ test("pi.describe() returns the full description and schema; unknown and exclude
 			properties: { slug: { type: "string", description: "Page slug" } },
 			required: ["slug"],
 		},
+		guidelines: [],
+		returns: "str",
 	});
 	expect(resultText(errors!).split("\n")).toEqual([
 		"nope -> Tool nope not found",
 		"read -> Tool read not found",
 		"codemode -> Tool codemode not found",
 		"ipython -> Tool ipython not found",
+	]);
+});
+
+test("pi.describe() returns a tool's guidelines and output schema", async () => {
+	h = await createHarness({ extensions });
+	const [r] = await h.runCells("import json\nd = await pi.describe('stats')\nprint(json.dumps([d['guidelines'], d['returns']]))");
+	const [guidelines, returns] = JSON.parse(resultText(r!));
+	expect(guidelines).toEqual(["Call stats before listing items."]);
+	expect(returns).toMatchObject({
+		type: "object",
+		properties: { count: { type: "number" }, names: { type: "array", items: { type: "string" } } },
+		required: ["count", "names"],
+	});
+});
+
+test("pi.describe_namespace() describes a callable tool's namespace by name or alias; unknown names raise pi.ToolError", async () => {
+	h = await createHarness({ extensions });
+	const [r] = await h.runCells([
+		"import json",
+		"print(json.dumps(await pi.describe_namespace('mcp__docs'), sort_keys=True))",
+		"print((await pi.describe_namespace('docs'))['name'])",
+		"for name in ['nope', 'mcp__docs__lookup']:",
+		"    try:",
+		"        await pi.describe_namespace(name)",
+		"        print(name, 'no error')",
+		"    except pi.ToolError as e:",
+		"        print(name, '->', e)",
+	].join("\n"));
+	const lines = resultText(r!).split("\n");
+	expect(JSON.parse(lines[0]!)).toEqual({ name: "mcp__docs", description: "Docs server.", instructions: "Pass slugs, not titles." });
+	expect(lines.slice(1)).toEqual([
+		"mcp__docs",
+		"nope -> Namespace nope not found",
+		"mcp__docs__lookup -> Namespace mcp__docs__lookup not found",
 	]);
 });
 

@@ -20,7 +20,8 @@ const CORE_PROMPT = `You have one tool, \`ipython\`: a persistent CPython REPL w
 
 const PI_TOOLS_PROMPT = `- \`pi\`: the session's other tools (extension tools such as subagents or MCP servers), callable from Python; all of it is async
   - \`await pi.tools()\`: list the callable tools as dicts with \`name\`, \`description\` (first line), and \`namespace\`
-  - \`await pi.describe(name)\`: a tool's full \`description\` and its \`parameters\` JSON schema
+  - \`await pi.describe(name)\`: a tool's full \`description\`, \`parameters\` JSON schema, usage \`guidelines\`, and \`returns\` (output schema, or \`"str"\`)
+  - \`await pi.describe_namespace(name)\`: a namespace's (for example an MCP server's) \`description\` and \`instructions\`
   - \`await pi.tool(name, args: dict | None = None)\`: call a tool; returns a dict for tools with an output schema, otherwise text, and raises \`pi.ToolError\` on failure`;
 
 const RULES_PROMPT = `## Rules

@@ -11,7 +11,7 @@ from typing import Any
 
 from rlm import repl as _repl
 
-__all__ = ["ToolError", "describe", "tool", "tools"]
+__all__ = ["ToolError", "describe", "describe_namespace", "tool", "tools"]
 
 
 class ToolError(RuntimeError):
@@ -41,14 +41,26 @@ async def tools() -> list[dict[str, Any]]:
 
 
 async def describe(name: str) -> dict[str, Any]:
-    """Describe the Pi tool ``name``: ``{"name", "description", "namespace", "parameters"}``.
+    """Describe the Pi tool ``name``: ``{"name", "description", "namespace", "parameters", "guidelines", "returns"}``.
 
-    ``description`` is the full text and ``parameters`` the arguments' JSON schema.
-    Raises ToolError when ``name`` is not a tool a Cell can call.
+    ``description`` is the full text, ``parameters`` the arguments' JSON schema, ``guidelines``
+    the tool's prompt guidelines (a list of str), and ``returns`` its output schema, or ``"str"``
+    when it has none. Raises ToolError when ``name`` is not a tool a Cell can call.
     """
     if not isinstance(name, str) or not name:
         raise TypeError("name must be a non-empty str")
     return await _request({"type": "pi.describe", "name": name})
+
+
+async def describe_namespace(name: str) -> dict[str, Any]:
+    """Describe the namespace ``name`` of callable Pi tools, such as an MCP server.
+
+    Returns ``{"name", "description", "instructions"}``; absent fields are None.
+    Raises ToolError when no callable tool is in that namespace.
+    """
+    if not isinstance(name, str) or not name:
+        raise TypeError("name must be a non-empty str")
+    return await _request({"type": "pi.describe_namespace", "name": name})
 
 
 async def _request(data: dict[str, Any]) -> Any:

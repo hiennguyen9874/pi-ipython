@@ -65,6 +65,7 @@ test("the prompt names no tool other than ipython and warns against magics and !
 	expect(prompt).toContain("!cmd");
 	expect(prompt).not.toContain("`pi`");
 	expect(prompt).not.toContain("await pi.");
+	expect(prompt).not.toContain("describe_namespace");
 	expect(prompt).toContain("`bash(command:");
 	expect(prompt).toContain("## Rules");
 });
@@ -87,6 +88,10 @@ test.each(["direct", "codemode", "deferred"] as const)("the prompt explains pi d
 	expect(prompt).toContain("await pi.tool(");
 	expect(prompt).toContain("await pi.tools()");
 	expect(prompt).toContain("await pi.describe(");
+	// Only inside the pi section, which ends where the rules begin.
+	const piSection = prompt.slice(prompt.indexOf("- `pi`:"), prompt.indexOf("## Rules"));
+	expect(piSection).toContain("await pi.describe_namespace(name)");
+	expect(prompt.split("describe_namespace")).toHaveLength(2);
 	expect(prompt).not.toContain("frobnicate");
 });
 
