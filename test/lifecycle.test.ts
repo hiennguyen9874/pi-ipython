@@ -137,6 +137,8 @@ test.each(["new", "reload", "resume", "fork", "startup"] as const)(
 		]);
 		await h.session.prompt("continue");
 		expect(seen).toContain(SEEN_STATE_LOST);
+		const notice = h.session.messages.find((message) => message.role === "custom" && message.customType === "ipython_state_lost");
+		expect(notice).toMatchObject({ display: false });
 	},
 );
 
@@ -161,6 +163,23 @@ test.each(["new", "reload"] as const)("a %s session without earlier Cells gets n
 	await h.session.prompt("continue");
 	expect(seen).not.toContain(SEEN_STATE_LOST);
 	expect(h.session.messages.some((message) => message.role === "custom" && message.customType === "ipython_state_lost")).toBe(false);
+});
+
+test("reload warns when a branch summary carries Python state from another branch", async () => {
+	h = await createHarness();
+	await h.runCells("x = 41");
+	h.session.sessionManager.branchWithSummary(null, "Earlier Python Cell set x = 41; use x in the next Cell.");
+	const entries = h.fileEntries();
+	await h.dispose();
+	h = await createHarness({ entries, sessionStartEvent: { type: "session_start", reason: "reload" } });
+	let seen = "";
+	h.setResponses([(context) => {
+		seen = JSON.stringify(context.messages);
+		return fauxAssistantMessage("noted");
+	}]);
+	await h.session.prompt("continue");
+	expect(seen).toContain("Earlier Python Cell set x = 41");
+	expect(seen).toContain(SEEN_STATE_LOST);
 });
 
 test("a live host with an unknown recorded identity keeps its Kernel", async () => {

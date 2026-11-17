@@ -21,6 +21,7 @@ test("a Kernel that dies between Cells: the next Cell does not run and returns t
 
 	const [blocked] = await h.runCells("open('ran', 'w').close()");
 	expect(blocked?.isError).toBe(true);
+	expect(resultText(blocked!)).toContain("Files, subprocesses, and other external effects may still exist");
 	expect(resultText(blocked!)).toContain(STATE_LOST_NOTICE);
 	expect(resultText(blocked!)).toContain("Cell not run");
 	expect(resultText(blocked!)).toContain("Kernel exited");

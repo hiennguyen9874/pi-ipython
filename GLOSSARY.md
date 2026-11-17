@@ -37,5 +37,5 @@ The message telling the model which Python state survived after a compaction.
 _Avoid_: State summary, kernel report
 
 **State-loss notice**:
-The message telling the model its Kernel was replaced and all earlier Python state is gone.
+The message warning the model that earlier Python state is unavailable and that external effects may still exist.
 _Avoid_: Restart notice, kernel reset

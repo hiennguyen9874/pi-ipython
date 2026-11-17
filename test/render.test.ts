@@ -178,10 +178,15 @@ test("a Cell refused before running shows the reason as an error", async () => {
 
 test("a Cell whose Kernel died shows the replacement warning and the exit reason", async () => {
 	h = await createHarness();
-	const [r] = await h.runCells("import os; os._exit(17)");
+	const [r] = await h.runCells("import os, sys; print('crash diagnostic', file=sys.stderr, flush=True); os._exit(17)");
 	const text = plain(renderRow(h, r!)).replace(/\s+/g, " ");
 	expect(text).toContain("Kernel replaced: earlier Python state is gone.");
 	expect(text).toContain("Kernel exited (exit code 17)");
+	expect(text).toContain("crash diagnostic");
+	expect(text).toContain("Cell may have run");
+	expect(text).not.toContain("<ipython_state_lost>");
+	const expanded = plain(renderRow(h, r!, { expanded: true }));
+	expect(expanded).toContain("<ipython_state_lost>");
 });
 
 test("an image the terminal does not draw is shown as a placeholder", async () => {

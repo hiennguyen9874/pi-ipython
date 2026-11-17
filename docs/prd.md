@@ -30,7 +30,7 @@ People who already run pi and want to try a Python-REPL-first agent on their own
 3. **Persistent Kernel.** One Kernel per pi session, running `python -m rlm.repl`. The namespace is shared across Cells and top-level `await` works. The working directory is the session cwd.
 4. **Lazy start.** The uv-managed venv is prepared in the background at `session_start`. The Kernel starts on the first Cell.
 5. **Python environment.** A dedicated venv managed with uv, pinned to Python 3.13 by default and configurable. Optionally, the project's `.venv` can be used instead.
-6. **Session lifecycle.** The Kernel is killed at `session_shutdown`. A new, resumed, or forked session gets a fresh Kernel, and the model is told that earlier Python state is gone.
+6. **Session lifecycle.** The Kernel is killed at `session_shutdown` and starts lazily in the next session. Resume and fork always send the model a hidden State-loss notice; other starts do so when the branch has earlier Cell results or summaries. A clean `/new` sends no notice. Summaries are treated conservatively because they can refer to state from another branch.
 7. **Branch switch (`/tree`).** The user is asked "Keep Kernel" or "Restart Kernel". With no UI, the Kernel is kept and the model gets a notice that Python state may not match the branch.
 8. **Interrupt.** User abort sends an interrupt. If the Kernel is still busy when the next Cell arrives, the user chooses between waiting and killing the Kernel (which loses Python state).
 9. **Python-state notice.** After every compaction while a Kernel is running, a `[python-state]` message lists up to 50 eligible live names from `list_names`, within 2,000 UTF-16 code units overall. It identifies omitted names and filtering, or reports when listing fails.

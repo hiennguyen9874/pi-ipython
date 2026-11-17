@@ -49,13 +49,15 @@ function withChoice(choice: string | undefined) {
 
 test("Restart Kernel on /tree loses Python state and tells the model", async () => {
 	const { prompts, ui } = withChoice("Restart Kernel");
-	h = await createHarness({ ui });
+	const notifications: string[] = [];
+	h = await createHarness({ ui: { ...ui, notify: (message: string) => { notifications.push(message); } } });
 	const [first] = await h.runCells("x = 41\nimport os; os.getpid()");
 	const pid = Number(resultText(first!));
 
 	await navigateToStart(h);
 	expect(prompts).toHaveLength(1);
 	expect(prompts[0]!.options).toEqual(["Keep Kernel", "Restart Kernel"]);
+	expect(notifications).toContain("Kernel stopped; earlier Python state is unavailable.");
 	expect(kernelPids()).not.toContain(pid);
 
 	const { result, seen } = await runCellSeeing(h, "x + 1");

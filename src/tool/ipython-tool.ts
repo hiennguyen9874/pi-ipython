@@ -59,7 +59,7 @@ const KERNEL_KILLED_CAUSE = "The user killed the previous Kernel because an inte
 /** The State-loss notice: one text for every Kernel replacement. Its cause follows it as plain text. */
 export const STATE_LOST_NOTICE = [
 	"<ipython_state_lost>",
-	"The Python Kernel was replaced, so all Python state from earlier Cells is gone: variables, functions, imports, async tasks, and open resources no longer exist. Recreate what you need before using it.",
+	"Python state from earlier Cells is not available to subsequent Cells. Recreate variables, functions, imports, and handles before using them. Tasks tied to the old Kernel may have stopped. Files, subprocesses, and other external effects may still exist; check before repeating actions.",
 	"</ipython_state_lost>",
 ].join("\n");
 export const CELL_NOT_RUN_AFTER_STATE_LOSS = "Cell not run: resubmit it once the state it needs exists.";
@@ -81,6 +81,8 @@ export interface IpythonToolDetails extends CellResult {
 	outputLimits?: TruncationOptions;
 	/** True when this result carries the State-loss notice. */
 	stateLost?: boolean;
+	stateLossCause?: string;
+	stateLossCellRan?: boolean;
 }
 
 export interface IpythonToolOptions {
@@ -109,6 +111,8 @@ function stateLostResult(cause: string, cellRan = false) {
 		status: "error",
 		durationMs: 0,
 		stateLost: true,
+		stateLossCause: cause,
+		stateLossCellRan: cellRan,
 	};
 	return { content: [{ type: "text" as const, text }], details, isError: true };
 }

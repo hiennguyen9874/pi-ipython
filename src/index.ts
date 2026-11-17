@@ -114,9 +114,9 @@ export default function piIpython(pi: ExtensionAPI): void {
 		// Warm the venv so the first Cell does not wait for it; a failure resurfaces on that Cell.
 		if (config.python.source === "uv") ensureKernelPython({ pythonVersion: config.python.version }).catch(() => undefined);
 
-		// Every session starts with a fresh Kernel: Cells already in the conversation ran in one that is gone.
-		if (["resume", "fork"].includes(event.reason) || hasEarlierCells(ctx.sessionManager.getBranch())) {
-			pi.sendMessage({ customType: STATE_LOST_TYPE, content: STATE_LOST_NOTICE, display: true }, { deliverAs: "nextTurn" });
+		// Summaries can contain Python state even when their Cells are not on this branch.
+		if (["resume", "fork"].includes(event.reason) || mayContainEarlierState(ctx.sessionManager.getBranch())) {
+			pi.sendMessage({ customType: STATE_LOST_TYPE, content: STATE_LOST_NOTICE, display: false }, { deliverAs: "nextTurn" });
 		}
 		forceExclusive();
 	});
@@ -154,7 +154,8 @@ export default function piIpython(pi: ExtensionAPI): void {
 			await kernel.shutdown();
 			kernel = undefined;
 			unannouncedStateLoss = undefined;
-			pi.sendMessage({ customType: STATE_LOST_TYPE, content: STATE_LOST_NOTICE, display: true }, { deliverAs: "nextTurn" });
+			pi.sendMessage({ customType: STATE_LOST_TYPE, content: STATE_LOST_NOTICE, display: false }, { deliverAs: "nextTurn" });
+			ctx.ui.notify?.("Kernel stopped; earlier Python state is unavailable.", "info");
 		} else {
 			pi.sendMessage({ customType: BRANCH_NOTICE_TYPE, content: BRANCH_NOTICE, display: true }, { deliverAs: "nextTurn" });
 		}
@@ -244,8 +245,9 @@ function pythonStateNotice(names: string[] | null): string {
 const KEEP_KERNEL = "Keep Kernel";
 const RESTART_KERNEL = "Restart Kernel";
 
-function hasEarlierCells(branch: SessionEntry[]): boolean {
+function mayContainEarlierState(branch: SessionEntry[]): boolean {
 	return branch.some(
-		(entry) => entry.type === "message" && entry.message.role === "toolResult" && entry.message.toolName === IPYTHON_TOOL_NAME,
+		(entry) => entry.type === "branch_summary" || entry.type === "compaction" ||
+			(entry.type === "message" && entry.message.role === "toolResult" && entry.message.toolName === IPYTHON_TOOL_NAME),
 	);
 }
