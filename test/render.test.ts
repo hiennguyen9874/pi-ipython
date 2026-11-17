@@ -189,6 +189,26 @@ test("a Cell whose Kernel died shows the replacement warning and the exit reason
 	expect(expanded).toContain("<ipython_state_lost>");
 });
 
+test("collapsed crash diagnostics stay bounded while the full result remains available", async () => {
+	h = await createHarness();
+	const [r] = await h.runCells("import os, sys\nfor i in range(1000): print(f'crash diagnostic {i:04d}', file=sys.stderr)\nsys.stderr.flush()\nos._exit(17)");
+	for (const width of [100, 30]) {
+		const lines = renderRow(h, r!, { width });
+		const text = plain(lines);
+		expect(lines.length).toBeLessThan(30);
+		expect(text).toContain("Kernel exited");
+		expect(text).toContain("0999");
+		expect(text).not.toContain("0000");
+	}
+	const expanded = plain(renderRow(h, r!, { expanded: true }));
+	expect(expanded).toContain("crash diagnostic 0000");
+	expect(expanded).toContain("crash diagnostic 0999");
+	expect(expanded).toContain("<ipython_state_lost>");
+	const modelText = r!.content.flatMap((block) => block.type === "text" ? [block.text] : []).join("\n");
+	expect(modelText).toContain("crash diagnostic 0000");
+	expect(modelText).toContain("crash diagnostic 0999");
+});
+
 test("an image the terminal does not draw is shown as a placeholder", async () => {
 	h = await createHarness();
 	const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";

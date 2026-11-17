@@ -82,8 +82,8 @@ test("a Kernel dying during /tree restart is announced once and the first Cell r
 	expect(resultText(result)).toBe("42");
 });
 
-test("Keep Kernel on /tree preserves Python state and warns it may not match the branch", async () => {
-	const { prompts, ui } = withChoice("Keep Kernel");
+test.each(["Keep Kernel", undefined])("keeping the Kernel (%s) preserves Python state and sends a hidden branch notice", async (choice) => {
+	const { prompts, ui } = withChoice(choice);
 	h = await createHarness({ ui });
 	await h.runCells("x = 41");
 
@@ -93,6 +93,7 @@ test("Keep Kernel on /tree preserves Python state and warns it may not match the
 	const { result, seen } = await runCellSeeing(h, "x + 1");
 	expect(seen).toContain(BRANCH_NOTICE);
 	expect(seen).not.toContain(SEEN_STATE_LOST);
+	expect(h.session.messages.find((message) => message.role === "custom" && message.content === BRANCH_NOTICE)).toMatchObject({ display: false });
 	expect(resultText(result)).toBe("42");
 });
 

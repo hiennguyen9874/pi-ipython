@@ -157,7 +157,7 @@ export default function piIpython(pi: ExtensionAPI): void {
 			pi.sendMessage({ customType: STATE_LOST_TYPE, content: STATE_LOST_NOTICE, display: false }, { deliverAs: "nextTurn" });
 			ctx.ui.notify?.("Kernel stopped; earlier Python state is unavailable.", "info");
 		} else {
-			pi.sendMessage({ customType: BRANCH_NOTICE_TYPE, content: BRANCH_NOTICE, display: true }, { deliverAs: "nextTurn" });
+			pi.sendMessage({ customType: BRANCH_NOTICE_TYPE, content: BRANCH_NOTICE, display: false }, { deliverAs: "nextTurn" });
 		}
 	});
 	// Compaction summarises the conversation, but the Kernel keeps its namespace: tell the model what survived.

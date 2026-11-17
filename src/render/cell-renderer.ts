@@ -53,7 +53,9 @@ export function renderCellResult(
 		// The Cell did not run or its Kernel died (refused, busy Kernel, Kernel failure): the reason is the content.
 		if (d?.stateLost) add(theme.fg("warning", "Kernel replaced: earlier Python state is gone."));
 		if (d?.stateLost && !expanded && d.stateLossCause !== undefined) {
-			add(theme.fg("error", d.stateLossCause));
+			const cause = theme.fg("error", d.stateLossCause);
+			const heading = theme.fg("error", d.stateLossCause.split("\n", 1)[0]!);
+			container.addChild(new TailPreview(cause, theme, context, heading));
 			add(theme.fg("warning", d.stateLossCellRan ? "Cell may have run; external effects may remain." : "Cell not run."));
 			add(expandHint("full result", theme, context));
 		} else {

@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- State-loss notice review fixes: collapsed Cell-loss diagnostics now show a bounded stderr preview while keeping the exit cause visible and preserving the full expanded/model result. `/tree` Keep and dismissed choices now send hidden branch notices, matching the other lifecycle notices. Real-session regressions cover large-stderr crashes and hidden Keep/dismiss notices. (#42)
+
 - State-loss notices no longer imply a Kernel existed or that external effects were undone. Lifecycle notices are hidden from the UI but still reach the model; `/tree` restart gives a short confirmation, and Cell loss results are concise and expandable. Branch summaries and compaction entries trigger conservative warnings on session start; a clean `/new` remains quiet. (#42)
 
 - A clean `/new` session no longer sends a State-loss notice when its branch has no earlier Cells or summaries. Sessions with earlier Cells or summaries and explicit resume/fork sessions still receive a hidden notice. (#41, #42)
