@@ -1,6 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { fauxAssistantMessage, getSystemMessageText } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxToolCall, getSystemMessageText } from "@earendil-works/pi-ai";
+import { type ExtensionAPI, type ToolExposure } from "@earendil-works/pi-coding-agent";
 import { afterEach, expect, test } from "vitest";
 import { Type } from "typebox";
 import { createHarness, type Harness } from "./harness.ts";
@@ -62,15 +63,20 @@ test("the prompt names no tool other than ipython and warns against magics and !
 	}
 	expect(prompt).toContain("%magic");
 	expect(prompt).toContain("!cmd");
+	expect(prompt).not.toContain("`pi`");
+	expect(prompt).not.toContain("await pi.");
+	expect(prompt).toContain("`bash(command:");
+	expect(prompt).toContain("## Rules");
 });
 
-test("the prompt explains pi discovery without listing any Pi tool", async () => {
+test.each(["direct", "codemode", "deferred"] as const)("the prompt explains pi discovery for %s tools without listing any Pi tool", async (exposure) => {
 	h = await createHarness({
 		extensions: [
 			(pi) => pi.registerTool({
 				name: "frobnicate",
 				label: "frobnicate",
 				description: "Frobnicate a widget.",
+				exposure,
 				parameters: Type.Object({}),
 				execute: async () => ({ content: [], details: {} }),
 			}),
@@ -82,4 +88,105 @@ test("the prompt explains pi discovery without listing any Pi tool", async () =>
 	expect(prompt).toContain("await pi.tools()");
 	expect(prompt).toContain("await pi.describe(");
 	expect(prompt).not.toContain("frobnicate");
+});
+
+test("excluded tools do not enable the pi section", async () => {
+	h = await createHarness({
+		extensions: [(pi) => {
+			for (const exposure of ["hidden", "model-only"] as const) {
+				pi.registerTool({
+					name: exposure,
+					label: exposure,
+					description: "Unavailable to Cells.",
+					exposure,
+					parameters: Type.Object({}),
+					execute: async () => ({ content: [], details: {} }),
+				});
+			}
+			pi.registerTool({
+				name: "dispatcher",
+				label: "dispatcher",
+				description: "Reaches other tools.",
+				reachesTools: () => "all",
+				parameters: Type.Object({}),
+				execute: async () => ({ content: [], details: {} }),
+			});
+		}],
+	});
+	expect(h.session.getAllTools().some((tool) => tool.sourceInfo.source === "builtin")).toBe(true);
+	const prompt = await providerSystemPrompt(h);
+	expect(prompt).not.toContain("await pi.");
+});
+
+test("the pi section follows tools added and hidden between runs", async () => {
+	let api!: ExtensionAPI;
+	h = await createHarness({ extensions: [(pi) => { api = pi; }] });
+	const register = (exposure: ToolExposure) => api.registerTool({
+		name: "late",
+		label: "late",
+		description: "Registered after session startup.",
+		exposure,
+		parameters: Type.Object({}),
+		execute: async () => ({ content: [], details: {} }),
+	});
+	expect(await providerSystemPrompt(h)).not.toContain("await pi.");
+	register("codemode");
+	expect(await providerSystemPrompt(h)).toContain("await pi.tools()");
+	register("hidden");
+	expect(await providerSystemPrompt(h)).not.toContain("await pi.");
+});
+
+test("tools registered by a later before_agent_start handler appear in the first request", async () => {
+	h = await createHarness({
+		extensions: [(pi) => {
+			pi.on("before_agent_start", async () => {
+				await Promise.resolve();
+				pi.registerTool({
+					name: "late_startup",
+					label: "late",
+					description: "Registered by a later startup handler.",
+					exposure: "codemode",
+					parameters: Type.Object({}),
+					execute: async () => ({ content: [], details: {} }),
+				});
+			});
+		}],
+	});
+	expect(await providerSystemPrompt(h)).toContain("await pi.tools()");
+});
+
+test("the pi section follows the live callable set within one run", async () => {
+	let api!: ExtensionAPI;
+	const register = (exposure: ToolExposure) => api.registerTool({
+		name: "toggle",
+		label: "toggle",
+		description: "Hide this Pi tool.",
+		exposure,
+		parameters: Type.Object({}),
+		execute: async () => {
+			register("hidden");
+			return { content: [], details: {} };
+		},
+	});
+	h = await createHarness({
+		extensions: [(pi) => {
+			api = pi;
+			register("codemode");
+		}],
+	});
+	const prompts: string[] = [];
+	h.setResponses([
+		(context) => {
+			prompts.push(getSystemMessageText(context.messages.find((m) => m.role === "system")!));
+			return fauxAssistantMessage(fauxToolCall("ipython", { code: "await pi.tool('toggle')" }), { stopReason: "toolUse" });
+		},
+		(context) => {
+			prompts.push(getSystemMessageText(context.messages.find((m) => m.role === "system")!));
+			return fauxAssistantMessage("done");
+		},
+	]);
+	await h.session.prompt("hide the tool");
+	expect(prompts).toHaveLength(2);
+	expect(prompts[0]).toContain("await pi.tools()");
+	expect(prompts[1]).not.toContain("await pi.");
 });

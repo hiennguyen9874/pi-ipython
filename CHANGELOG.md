@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- The system prompt includes the `pi` discovery and call instructions only when a Pi tool is callable. The condition uses the bridge's filtered tool set and is refreshed before every model request, including after late MCP registration or tools becoming hidden. The `pi` module and Cell-level MCP readiness remain unchanged; pending servers with no registered callable tools do not add prompt instructions.
+
 - MCP tools registered by `builtin:mcp` are discoverable and callable from Cells instead of being excluded with pi's built-in file/shell tools. Cells declare that they reach Pi tools so MCP connections finish registration before Python discovery runs. Hidden tools stay unavailable and Bridged calls keep pi's permission hooks.
 
 - Pi tools registered during a Cell are activated before discovery or Bridged calls, including initially inactive `direct` tools. They can be called immediately while their declarations stay hidden from the model. (#31)

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import { type ExtensionAPI, getAgentDir, type SessionEntry } from "@earendil-works/pi-coding-agent";
+import { getCurrentSystemMessage } from "@earendil-works/pi-ai";
+import { type BeforeAgentStartEvent, type ExtensionAPI, getAgentDir, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { answerHostRequest, bridgedTools } from "./bridge/pi-tools.ts";
 import { loadConfig, type PiIpythonConfig } from "./config.ts";
 import { ensureKernelPython, resolveProjectPython, RUNTIME_SRC_DIR } from "./kernel/bootstrap.ts";
@@ -17,6 +18,7 @@ export { STATE_LOST_NOTICE };
  */
 export default function piIpython(pi: ExtensionAPI): void {
 	let kernel: KernelClient | undefined;
+	let promptOptions: BeforeAgentStartEvent["systemPromptOptions"] | undefined;
 	let cwd = process.cwd();
 	let config: PiIpythonConfig = loadConfig(cwd).config;
 	let journalPath: string | undefined;
@@ -87,6 +89,7 @@ export default function piIpython(pi: ExtensionAPI): void {
 	);
 
 	pi.on("session_start", (event, ctx) => {
+		promptOptions = undefined;
 		pendingStateNotice = undefined;
 		// A new session's Kernel is fresh; any loss is announced below, before its first turn.
 		unannouncedStateLoss = undefined;
@@ -114,8 +117,24 @@ export default function piIpython(pi: ExtensionAPI): void {
 		forceExclusive();
 	});
 	pi.on("before_agent_start", (event) => {
+		promptOptions = event.systemPromptOptions;
+		// Own the provider projection below, instead of freezing a forced string for the whole run.
+		promptOptions.forceSystemPrompt = undefined;
 		forceExclusive();
-		return { systemPrompt: buildSystemPrompt(event.systemPromptOptions) };
+	});
+	// MCP can register tools after before_agent_start, including while a Cell waits for readiness.
+	// Project one leading prompt from the live callable set before every provider request,
+	// preserving the current declarations while leaving the persisted transcript untouched.
+	pi.on("context_with_system", (event) => {
+		if (!promptOptions) return;
+		const current = getCurrentSystemMessage(event.messages);
+		const head = {
+			role: "system" as const,
+			content: buildSystemPrompt(promptOptions, bridgedTools(pi.getAllTools(), IPYTHON_TOOL_NAME).length > 0),
+			...(current?.toolsAdded ? { toolsAdded: current.toolsAdded } : {}),
+			timestamp: current?.timestamp ?? Date.now(),
+		};
+		return { messages: [head, ...event.messages.filter((message) => message.role !== "system")] };
 	});
 	// Python state follows the Kernel, not the conversation: on a branch switch the user decides whether it still fits.
 	pi.on("session_tree", async (_event, ctx) => {

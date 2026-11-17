@@ -1,7 +1,7 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { type Context, fauxAssistantMessage, fauxToolCall, getCurrentTools } from "@earendil-works/pi-ai";
+import { type Context, fauxAssistantMessage, fauxToolCall, getCurrentTools, getSystemMessageText } from "@earendil-works/pi-ai";
 import { createCodemodeExtension, createMcpExtension, type ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { afterEach, expect, test } from "vitest";
 import { createHarness, type Harness, resultText } from "./harness.ts";
@@ -80,14 +80,15 @@ test.each(["direct", "codemode", "deferred"])("builtin:mcp tools with %s exposur
 	});
 });
 
-test("the first Cell waits for MCP registration before Python discovery runs", async () => {
+test.each(["direct", "codemode", "deferred"])("the pi prompt follows delayed %s MCP registration and the first Cell waits for readiness", async (exposure) => {
 	let gate: string;
 	let registeredBeforeCell = false;
 	const mcp: ExtensionFactory = (pi) => {
 		pi.on("tool_call", (event) => {
 			if (event.toolName === "ipython") writeFileSync(gate, "ready");
 		});
-		createMcpExtension()(pi);
+		// A gated direct server must not hold up the first model request either.
+		createMcpExtension({ startupWaitMs: 0 })(pi);
 		// This handler runs after the real MCP readiness handler, but before Cell execution.
 		pi.on("tool_call", (event) => {
 			if (event.toolName === "ipython") {
@@ -98,11 +99,29 @@ test("the first Cell waits for MCP registration before Python discovery runs", a
 	h = await createHarness({
 		setup: ({ agentDir }) => {
 			gate = join(agentDir, "mcp-ready");
-			writeConfig(agentDir, "codemode", gate);
+			writeConfig(agentDir, exposure, gate);
 		},
 		extensions: [{ name: "mcp", builtin: true, factory: mcp }],
 	});
-	const [r] = await h.runCells("print([t['name'] for t in await pi.tools()])");
+	const prompts: string[] = [];
+	h.setResponses([
+		(context) => {
+			// No tools are registered yet: do not advertise the pi API.
+			expect(h!.session.getAllTools().some((t) => t.name === "mcp__docs__echo")).toBe(false);
+			prompts.push(getSystemMessageText(context.messages.find((m) => m.role === "system")!));
+			return fauxAssistantMessage(fauxToolCall("ipython", { code: "print([t['name'] for t in await pi.tools()])" }), { stopReason: "toolUse" });
+		},
+		(context) => {
+			prompts.push(getSystemMessageText(context.messages.find((m) => m.role === "system")!));
+			return fauxAssistantMessage("done");
+		},
+	]);
+	await h.session.prompt("discover tools");
+	const r = h.session.messages.find((m) => m.role === "toolResult");
+	expect(prompts).toHaveLength(2);
+	expect(prompts[0]).not.toContain("await pi.");
+	expect(prompts[1]).toContain("await pi.tools()");
+	expect(prompts[1]).not.toContain("mcp__docs__echo");
 	expect(registeredBeforeCell).toBe(true);
 	expect(r?.isError).toBe(false);
 	expect(resultText(r!)).toBe("['mcp__docs__echo', 'mcp__docs__guarded']");
