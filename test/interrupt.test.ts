@@ -1,5 +1,6 @@
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { fauxAssistantMessage, fauxToolCall, type ToolResultMessage } from "@earendil-works/pi-ai";
 import { afterEach, expect, test } from "vitest";
 import { STATE_LOST_NOTICE } from "../src/tool/ipython-tool.ts";
@@ -98,6 +99,29 @@ test("a Cell ignoring the interrupt leads to a wait/kill choice; Kill does not r
 	expect(next?.isError).toBe(false);
 	expect(resultText(next!)).toBe("'state gone'");
 }, 60_000);
+
+test.each(["Wait and preserve state", "Kill kernel and restart"])(
+	"a Kernel dying during the busy dialog: %s blocks only the pending Cell",
+	async (choice) => {
+		let pid = 0;
+		h = await createHarness({ ui: { select: async () => {
+			process.kill(pid, "SIGKILL");
+			await sleep(200);
+			return choice;
+		} } });
+		const [first] = await h.runCells("import os; os.getpid()");
+		pid = Number(resultText(first!));
+		await runAndAbort(h, stubbornCell(h.cwd), join(h.cwd, "started"));
+		const [blocked, next] = await h.runCells("open('ran', 'w').close()", "40 + 2");
+		expect(blocked?.isError).toBe(true);
+		expect(resultText(blocked!)).toContain(STATE_LOST_NOTICE);
+		expect(resultText(blocked!)).toContain("Cell not run");
+		expect(existsSync(join(h.cwd, "ran"))).toBe(false);
+		expect(next?.isError).toBe(false);
+		expect(resultText(next!)).toBe("42");
+	},
+	60_000,
+);
 
 test("choosing Wait keeps Python state once the interrupted Cell finishes", async () => {
 	let release = "";

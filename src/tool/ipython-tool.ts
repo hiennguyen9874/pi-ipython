@@ -172,6 +172,9 @@ export function createIpythonTool({
 			}
 			let r: CellResult;
 			for (;;) {
+				// A dialog may have outlived the Kernel whose state this Cell assumes.
+				const cause = takeStateLoss();
+				if (cause !== undefined) return stateLostResult(cause);
 				try {
 					r = await getKernel().execute(params.code, signal);
 					break;
@@ -189,6 +192,7 @@ export function createIpythonTool({
 					if (choice === BUSY_KERNEL_WAIT_CHOICE) continue;
 					if (choice !== BUSY_KERNEL_KILL_CHOICE) throw error;
 					await killKernel();
+					takeStateLoss();
 					// The Cell was written for the killed Kernel's state (ADR 0003).
 					return stateLostResult(KERNEL_KILLED_CAUSE);
 				}

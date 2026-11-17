@@ -442,6 +442,8 @@ export class KernelClient {
 	/** The Kernel process died or broke the protocol: drop it; the next Cell starts a fresh one. */
 	private lose(child: ChildProcess, error: Error): void {
 		if (this.child !== child) return;
+		const stderr = this.active?.stderr;
+		if (stderr) error = new Error(`${error.message}\n\n[Cell stderr]\n${stderr}`, { cause: error });
 		this.child = undefined;
 		this.starting = undefined;
 		this.failPending(error);

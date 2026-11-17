@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from "node:timers/promises";
 import { type Context, fauxAssistantMessage, fauxToolCall, type ToolResultMessage } from "@earendil-works/pi-ai";
 import { afterEach, expect, test } from "vitest";
 import { BRANCH_NOTICE, STATE_LOST_NOTICE } from "../src/index.ts";
@@ -61,6 +62,22 @@ test("Restart Kernel on /tree loses Python state and tells the model", async () 
 	expect(seen).toContain(SEEN_STATE_LOST);
 	expect(seen).not.toContain(BRANCH_NOTICE);
 	expect(resultText(result)).toContain("NameError");
+});
+
+test("a Kernel dying during /tree restart is announced once and the first Cell runs", async () => {
+	let pid = 0;
+	h = await createHarness({ ui: { select: async () => {
+		process.kill(pid, "SIGKILL");
+		await sleep(200);
+		return "Restart Kernel";
+	} } });
+	const [first] = await h.runCells("import os; os.getpid()");
+	pid = Number(resultText(first!));
+	await navigateToStart(h);
+	const { result, seen } = await runCellSeeing(h, "40 + 2");
+	expect(seen).toContain(SEEN_STATE_LOST);
+	expect(result.isError).toBe(false);
+	expect(resultText(result)).toBe("42");
 });
 
 test("Keep Kernel on /tree preserves Python state and warns it may not match the branch", async () => {

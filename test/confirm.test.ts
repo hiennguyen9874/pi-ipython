@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { afterEach, expect, test } from "vitest";
 import { createHarness, type Harness, kernelPids, resultText } from "./harness.ts";
 
@@ -62,6 +63,29 @@ test("with confirmEachCell on and no UI, the Cell is refused with the reason", a
 	expect(resultText(r!)).toContain("confirmEachCell");
 	expect(resultText(r!)).toContain("no UI");
 	expect(existsSync(marker)).toBe(false);
+});
+
+test("a Kernel that dies during approval blocks the Cell without side effects", async () => {
+	let pid: number | undefined;
+	h = await createHarness({
+		setup: confirmOn,
+		ui: { confirm: async () => {
+			if (pid !== undefined) {
+				process.kill(pid, "SIGKILL");
+				await sleep(200);
+				pid = undefined;
+			}
+			return true;
+		} },
+	});
+	const [first] = await h.runCells("import os; os.getpid()");
+	pid = Number(resultText(first!));
+	const marker = join(h.cwd, "ran");
+	const [blocked, next] = await h.runCells(touch(marker), "40 + 2");
+	expect(blocked?.isError).toBe(true);
+	expect(resultText(blocked!)).toContain("Cell not run");
+	expect(existsSync(marker)).toBe(false);
+	expect(resultText(next!)).toBe("42");
 });
 
 test("with confirmEachCell off (the default), Cells run without prompting", async () => {

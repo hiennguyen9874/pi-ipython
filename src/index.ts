@@ -117,6 +117,7 @@ export default function piIpython(pi: ExtensionAPI): void {
 		if (choice === RESTART_KERNEL) {
 			await kernel.shutdown();
 			kernel = undefined;
+			unannouncedStateLoss = undefined;
 			pi.sendMessage({ customType: STATE_LOST_TYPE, content: STATE_LOST_NOTICE, display: true }, { deliverAs: "nextTurn" });
 		} else {
 			pi.sendMessage({ customType: BRANCH_NOTICE_TYPE, content: BRANCH_NOTICE, display: true }, { deliverAs: "nextTurn" });

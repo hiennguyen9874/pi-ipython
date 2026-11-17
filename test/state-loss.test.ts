@@ -65,10 +65,11 @@ test("a session-level State-loss notice counts as delivered: the first Cell afte
 
 test("a Cell that kills its Kernel carries the State-loss notice, and the next Cell runs in a fresh Kernel", async () => {
 	h = await createHarness();
-	const [crashed, next] = await h.runCells("x = 41\nimport os; os._exit(17)", "globals().get('x', 'state gone')");
+	const [crashed, next] = await h.runCells("x = 41\nimport os, sys, time\nprint('crash diagnostic', file=sys.stderr, flush=True)\ntime.sleep(0.2)\nos._exit(17)", "globals().get('x', 'state gone')");
 	expect(crashed?.isError).toBe(true);
 	expect(resultText(crashed!)).toMatch(new RegExp(`^${STATE_LOST_NOTICE}\n\nKernel exited`));
 	expect(resultText(crashed!)).not.toContain("Cell not run");
+	expect(resultText(crashed!)).toContain("crash diagnostic");
 	expect(next?.isError).toBe(false);
 	expect(resultText(next!)).toBe("'state gone'");
 });
