@@ -44,6 +44,10 @@ export const KERNEL_RESTART_NOTICE = [
 	"</ipython_kernel_reset>",
 ].join("\n");
 
+export const CELL_REJECTED_ERROR = "Cell rejected by user: it did not run.";
+export const CONFIRM_NO_UI_ERROR =
+	"Cell not run: confirmEachCell is on, but there is no UI to ask the user for approval.";
+
 const ipythonSchema = Type.Object({
 	code: Type.String({ description: "Python code to run in the persistent Kernel." }),
 });
@@ -60,6 +64,8 @@ export interface IpythonToolOptions {
 	/** Kill the Kernel; the next `getKernel()` returns a fresh one. */
 	killKernel: () => Promise<void>;
 	getOutputLimits?: () => TruncationOptions;
+	/** When true, the user approves each Cell's code before it runs. */
+	getConfirmEachCell?: () => boolean;
 }
 
 /** Model-facing text: stdout, then stderr (labelled), then the trailing expression's repr, then the traceback. */
@@ -120,6 +126,7 @@ export function createIpythonTool({
 	getKernel,
 	killKernel,
 	getOutputLimits = () => ({}),
+	getConfirmEachCell = () => false,
 }: IpythonToolOptions): ToolDefinition<typeof ipythonSchema, IpythonToolDetails> {
 	return {
 		name: IPYTHON_TOOL_NAME,
@@ -131,6 +138,10 @@ export function createIpythonTool({
 		// One Kernel runs one Cell at a time.
 		executionMode: "sequential",
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			if (getConfirmEachCell()) {
+				if (!ctx.hasUI) throw new Error(CONFIRM_NO_UI_ERROR);
+				if (!(await ctx.ui.confirm("Run this Python Cell?", params.code, { signal }))) throw new Error(CELL_REJECTED_ERROR);
+			}
 			let kernelRestarted = false;
 			let r: CellResult;
 			for (;;) {

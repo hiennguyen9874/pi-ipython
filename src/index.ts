@@ -49,6 +49,7 @@ export default function piIpython(pi: ExtensionAPI): void {
 				kernel = undefined;
 			},
 			getOutputLimits: () => config.output,
+			getConfirmEachCell: () => config.confirmEachCell,
 		}),
 	);
 
