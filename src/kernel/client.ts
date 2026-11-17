@@ -38,6 +38,14 @@ export class KernelBusyError extends Error {
 	}
 }
 
+/** A failed host request whose reply also carries `result`, such as a failed tool call's structured content. */
+export class HostRequestError extends Error {
+	constructor(message: string, readonly result: unknown) {
+		super(message);
+		this.name = "HostRequestError";
+	}
+}
+
 export interface CellError {
 	ename: string;
 	evalue: string;
@@ -358,7 +366,11 @@ export class KernelClient {
 		};
 		answer().then(
 			(result) => reply({ status: "ok", result: result ?? null }),
-			(error: unknown) => reply({ status: "error", error: error instanceof Error ? error.message : String(error) }),
+			(error: unknown) => reply({
+				status: "error",
+				error: error instanceof Error ? error.message : String(error),
+				...(error instanceof HostRequestError ? { result: error.result } : {}),
+			}),
 		);
 	}
 

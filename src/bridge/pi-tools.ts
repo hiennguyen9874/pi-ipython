@@ -3,6 +3,7 @@
 // host requests answered here).
 
 import type { ExtensionToolContext, ToolInfo } from "@earendil-works/pi-coding-agent";
+import { HostRequestError } from "../kernel/client.ts";
 import { Bm25Ranker, createToolSearchDocument } from "./tool-search.ts";
 
 export const PI_TOOL_REQUEST = "pi.tool";
@@ -30,7 +31,7 @@ export function bridgedTools(tools: readonly ToolInfo[], ipythonName: string): T
 
 /**
  * Answer one host request of a running Cell. Resolves with the value Python receives; rejects with the
- * error text `pi.ToolError` carries. `search` is whether `pi.search` is on (`piTools.search`).
+ * error text `pi.ToolError` carries (and, for a failed structured tool, its `result`). `search` is whether `pi.search` is on (`piTools.search`).
  */
 export async function answerHostRequest(
 	data: Record<string, unknown>,
@@ -98,7 +99,10 @@ function outputSchema(ctx: ExtensionToolContext, name: string): unknown {
 	return ctx.tools.find((tool) => tool.name === name)?.outputSchema;
 }
 
-/** As codemode: `structuredContent` for tools with an output schema, else the text; images become a marker. */
+/**
+ * As codemode: `structuredContent` for tools with an output schema, else the text; images become a marker.
+ * An error outcome rejects with its text, carrying `structuredContent` as `pi.ToolError.result` on the same terms.
+ */
 function toPythonValue(name: string, { result, isError }: ToolOutcome, structured: boolean): unknown {
 	const blocks = result.content ?? [];
 	const images = blocks.filter((block) => block.type === "image").length;
@@ -106,7 +110,7 @@ function toPythonValue(name: string, { result, isError }: ToolOutcome, structure
 		...blocks.flatMap((block) => (block.type === "text" ? [block.text] : [])),
 		...(images > 0 ? [`[${images} image(s) omitted]`] : []),
 	].join("\n");
-	if (isError) throw new Error(text || `Tool ${name} failed`);
-	if (structured && result.structuredContent !== undefined) return result.structuredContent;
-	return text;
+	const structuredContent = structured ? result.structuredContent : undefined;
+	if (isError) throw new HostRequestError(text || `Tool ${name} failed`, structuredContent ?? null);
+	return structuredContent ?? text;
 }

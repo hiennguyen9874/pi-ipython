@@ -29,7 +29,10 @@ for await (const line of createInterface({ input: process.stdin })) {
 			};
 			break;
 		case "tools/call":
-			result = { content: [{ type: "text", text: `docs: ${request.params.arguments.text}` }] };
+			// `fail` makes a tool error that carries structured content.
+			result = request.params.arguments.text === "fail"
+				? { content: [{ type: "text", text: "docs: page not found" }], structuredContent: { code: 404 }, isError: true }
+				: { content: [{ type: "text", text: `docs: ${request.params.arguments.text}` }] };
 			break;
 		default:
 			process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, error: { code: -32601, message: "Unknown method" } }) + "\n");

@@ -48,11 +48,15 @@ test.each(["direct", "codemode", "deferred"])("builtin:mcp tools with %s exposur
 				"print(json.dumps(await pi.describe_namespace('mcp__docs'), sort_keys=True))",
 				"print((await pi.tool('mcp__docs__echo', {'text': 'hi'}))['content'][0]['text'])",
 				"print([t['name'] for t in await pi.search('mcp__docs__echo')][0], [t['name'] for t in await pi.search('hidden')])",
+				"try:",
+				"    await pi.tool('mcp__docs__echo', {'text': 'fail'})",
+				"except pi.ToolError as e:",
+				"    print(json.dumps(e.result, sort_keys=True), e)",
 				"for name in ['mcp__docs__hidden', 'read', 'codemode', 'mcp__docs__guarded']:",
 				"    try:",
 				"        await pi.tool(name, {'text': 'no'})",
 				"    except pi.ToolError as e:",
-				"        print(name, '->', e)",
+				"        print(name, '->', e, e.result)",
 			].join("\n") }), { stopReason: "toolUse" });
 		},
 		(context: Context) => {
@@ -79,10 +83,12 @@ test.each(["direct", "codemode", "deferred"])("builtin:mcp tools with %s exposur
 		"docs: hi",
 		// Found by name; the hidden tool is not callable, so it is never ranked.
 		"mcp__docs__echo []",
-		"mcp__docs__hidden -> Tool mcp__docs__hidden not found",
-		"read -> Tool read not found",
-		"codemode -> Tool codemode not found",
-		"mcp__docs__guarded -> blocked by policy",
+		// pi's MCP extension returns the whole CallToolResult as structured content.
+		'{"content": [{"text": "docs: page not found", "type": "text"}], "isError": true, "structuredContent": {"code": 404}} docs: page not found',
+		"mcp__docs__hidden -> Tool mcp__docs__hidden not found None",
+		"read -> Tool read not found None",
+		"codemode -> Tool codemode not found None",
+		"mcp__docs__guarded -> blocked by policy None",
 	]);
 	expect(declared).toEqual([["ipython"], ["ipython"]]);
 	expect(h.session.getAllTools().find((t) => t.name === "mcp__docs__echo")?.sourceInfo).toMatchObject({

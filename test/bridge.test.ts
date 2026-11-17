@@ -142,6 +142,48 @@ test("blocked, unknown, invalid, excluded, and throwing calls raise pi.ToolError
 	]);
 });
 
+test("a failed call carries structuredContent as pi.ToolError.result only for tools with an output schema", async () => {
+	const failure = { code: 404, missing: ["a"] };
+	const failingTools: ExtensionFactory = (pi) => {
+		for (const name of ["reject", "loose_reject"]) {
+			pi.registerTool({
+				name,
+				label: name,
+				description: "Fail with a structured result.",
+				parameters: Type.Object({ text: Type.String() }),
+				...(name === "reject" ? { outputSchema: Type.Object({ code: Type.Number(), missing: Type.Array(Type.String()) }) } : {}),
+				execute: async () => ({
+					content: [{ type: "text", text: `${name} failed` }],
+					structuredContent: failure,
+					isError: true,
+					details: {},
+				}),
+			});
+		}
+		pi.on("tool_call", (event) => (event.toolName === "reject" && event.input.text === "block" ? { block: true, reason: "reject is blocked" } : undefined));
+	};
+	h = await createHarness({ extensions: [...extensions, failingTools] });
+	const [r] = await h.runCells([
+		"import json",
+		"for name, args in [('reject', {'text': 'x'}), ('loose_reject', {'text': 'x'}), ('reject', {'text': 'block'}), ('reject', {}), ('nope', {})]:",
+		"    try:",
+		"        await pi.tool(name, args)",
+		"        print(name, 'no error')",
+		"    except pi.ToolError as e:",
+		"        print(name, json.dumps(e.result), str(e).split(chr(10))[0])",
+		"print(await pi.tool('stats'))",
+	].join("\n"));
+	expect(r?.isError).toBe(false);
+	const lines = resultText(r!).split("\n");
+	expect(lines.slice(0, 3)).toEqual([
+		`reject ${JSON.stringify(failure).replaceAll(",", ", ").replaceAll(":", ": ")} reject failed`,
+		"loose_reject null loose_reject failed",
+		"reject null reject is blocked",
+	]);
+	expect(lines[3]).toMatch(/^reject null Validation failed for tool "reject"/);
+	expect(lines.slice(4)).toEqual(["nope null Tool nope not found", "{'count': 2, 'names': ['a', 'b']}"]);
+});
+
 test.each(["finished", "missing"])("a background call with a %s originating Cell cannot borrow a later Cell's context", async (origin) => {
 	const called: string[] = [];
 	const observeCalls: ExtensionFactory = (pi) => {
@@ -159,14 +201,14 @@ test.each(["finished", "missing"])("a background call with a %s originating Cell
 			"    try:",
 			"        return await pi.tool('echo', {'text': 'stale'})",
 			"    except pi.ToolError as e:",
-			"        return f'ToolError: {e}'",
+			"        return f'ToolError {e.result}: {e}'",
 			`background = asyncio.create_task(late()${origin === "missing" ? ", context=contextvars.Context()" : ""})`,
 		].join("\n"),
 		"gate.set()\nprint(await background)",
 		"print(await asyncio.gather(pi.tool('echo', {'text': 'one'}), pi.tool('echo', {'text': 'two'})))",
 	);
 	expect(stale?.isError).toBe(false);
-	expect(resultText(stale!)).toBe("ToolError: Bridged calls are only allowed while their originating Cell runs");
+	expect(resultText(stale!)).toBe("ToolError None: Bridged calls are only allowed while their originating Cell runs");
 	expect(current?.isError).toBe(false);
 	expect(resultText(current!)).toBe("['echo: one', 'echo: two']");
 	expect(called).toEqual(["echo", "echo"]);

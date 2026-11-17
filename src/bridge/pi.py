@@ -15,14 +15,23 @@ __all__ = ["ToolError", "describe", "describe_namespace", "search", "tool", "too
 
 
 class ToolError(RuntimeError):
-    """A Bridged call failed: unknown or excluded tool, invalid arguments, a blocking hook, or the tool's own error."""
+    """A Bridged call failed: unknown or excluded tool, invalid arguments, a blocking hook, or the tool's own error.
+
+    ``result`` is the failed tool's structured result (a dict) when it declares an output
+    schema and its error result carries one, otherwise None.
+    """
+
+    def __init__(self, message: str, result: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.result = result
 
 
 async def tool(name: str, args: dict[str, Any] | None = None) -> Any:
     """Call the Pi tool ``name`` with ``args``.
 
     Returns the tool's structured result (a dict) when it declares an output schema,
-    otherwise its text content as one str. Raises ToolError when the call fails.
+    otherwise its text content as one str. Raises ToolError when the call fails; its
+    ``result`` holds a failed structured tool's result.
     """
     if not isinstance(name, str) or not name:
         raise TypeError("name must be a non-empty str")
@@ -86,4 +95,4 @@ async def _request(data: dict[str, Any]) -> Any:
     reply = await _repl.host_request(data)
     if reply.get("status") == "ok":
         return reply.get("result")
-    raise ToolError(str(reply.get("error") or f"{data['type']} failed"))
+    raise ToolError(str(reply.get("error") or f"{data['type']} failed"), reply.get("result"))
