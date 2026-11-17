@@ -19,7 +19,7 @@ import { renderCellCall, renderCellResult } from "../render/cell-renderer.ts";
 
 export const IPYTHON_TOOL_NAME = "ipython";
 
-/** Run once in every new Kernel: binds `bash` and `mcp` into the namespace. */
+/** Run once in every new Kernel: binds `bash` and `asyncio` into the namespace. */
 export const KERNEL_BOOTSTRAP_CODE = `
 import asyncio
 import os as _pi_ipython_os
@@ -28,7 +28,6 @@ _pi_ipython_os.environ["NO_COLOR"] = "1"
 
 import rlm as _pi_ipython_rlm
 bash = _pi_ipython_rlm.bash
-import rlm.mcp as mcp
 `.trim();
 
 // Busy-Kernel choice, from Unharnessed's pre-Rust host (core/tools/ipython.ts).

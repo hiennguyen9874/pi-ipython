@@ -50,9 +50,14 @@ test("python.source project runs the Kernel in the project's .venv, so its packa
 			writeProjectConfig(cwd, { python: { source: "project" } });
 		},
 	});
-	const [where, imported] = await h.runCells("import sys\nsys.prefix", "import projpkg\nprojpkg.VALUE");
+	const [where, imported, mcpSdk] = await h.runCells(
+		"import sys\nsys.prefix",
+		"import projpkg\nprojpkg.VALUE",
+		"import importlib.util\nimportlib.util.find_spec('mcp') is None",
+	);
 	expect(resultText(where!)).toBe(`'${venv}'`);
 	expect(resultText(imported!)).toBe("'from project venv'");
+	expect(resultText(mcpSdk!)).toBe("True");
 });
 
 test("a project value overrides the global value for the same key", async () => {

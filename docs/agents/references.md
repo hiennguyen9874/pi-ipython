@@ -12,7 +12,7 @@
 
 Source: `references/Unharnessed/unharnessed-runtime/src/rlm/`, vendored into `runtime/rlm/` together with its `test/` suite. The protocol spec is `repl.md` in the same folder (REPL protocol v3).
 
-Vendor: `__init__.py`, `repl.py`, `bash.py`, `_winjob.py`, `variables.py`, `skill.py`, `mcp.py`, `mcp_base.py`, `repl.md`. `mcp` and `bash` are imported by `__init__` and the bootstrap cell, so they ship even before the features they back.
+Vendor: `__init__.py`, `repl.py`, `bash.py`, `_winjob.py`, `variables.py`, `skill.py`, `mcp.py`, `mcp_base.py`, `repl.md`. The bootstrap exposes `bash`; the MCP modules ship with the runtime but are not pre-imported into the Kernel namespace.
 
 ## Kernel host: port from pre-Rust history
 

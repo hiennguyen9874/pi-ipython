@@ -31,6 +31,16 @@ test("Python state persists between Cells", async () => {
 	expect(resultText(second!)).toBe("42");
 });
 
+test("a new Kernel exposes working bootstrap helpers but not mcp", async () => {
+	h = await createHarness();
+	const [names, helpers] = await h.runCells(
+		"('mcp' in globals(), 'bash' in globals(), 'asyncio' in globals())",
+		"shell = await bash('printf bootstrap')\n(shell.exit_code, shell.output, await asyncio.sleep(0, result=42))",
+	);
+	expect(resultText(names!)).toBe("(False, True, True)");
+	expect(resultText(helpers!)).toBe("(0, 'bootstrap', 42)");
+});
+
 test("top-level await works", async () => {
 	h = await createHarness();
 	const [r] = await h.runCells("import asyncio\nawait asyncio.sleep(0)\nawait asyncio.sleep(0, result='awaited')");
