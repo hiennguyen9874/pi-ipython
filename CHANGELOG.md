@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Killing a busy Kernel reports the loss of Python state even if replacement startup or execution fails. Interrupt tests use a deterministic interrupt-ignoring Cell and distinguish POSIX synchronous interrupts from cross-platform async interrupts. (#9)
+
 - Branch switches in RPC mode keep the Kernel and notify the model without requesting a selection, even with a dialog-capable RPC UI. (#8)
 
 - Lifecycle cleanup preserves live hosts with unknown identities, never kills historical process groups without ownership proof, and retains journals after unresolved cleanup. Windows Kernels contain ordinary subprocesses in a kill-on-close job. Explicit new/resume/fork sessions receive a state-lost notice even without earlier Cells. After a POSIX host crash, groups whose leaders have already died are deliberately skipped because their ownership cannot be established safely. (#7)

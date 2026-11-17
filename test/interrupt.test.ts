@@ -11,16 +11,14 @@ afterEach(async () => {
 	h = undefined;
 });
 
-/** A Cell that swallows every KeyboardInterrupt until `release` exists; it touches `started` first. */
+/** Ignore interrupts before publishing `started`; the runtime restores its handler for the next Cell. */
 function stubbornCell(dir: string): string {
 	return [
-		"import os, time",
+		"import os, signal, time",
+		"signal.signal(signal.SIGINT, signal.SIG_IGN)",
 		`open(${JSON.stringify(join(dir, "started"))}, "w").close()`,
 		`while not os.path.exists(${JSON.stringify(join(dir, "release"))}):`,
-		"    try:",
-		"        time.sleep(0.02)",
-		"    except KeyboardInterrupt:",
-		"        pass",
+		"    time.sleep(0.02)",
 	].join("\n");
 }
 
@@ -53,7 +51,8 @@ function withChoice(choose: () => string | undefined) {
 	return { prompts, ui };
 }
 
-test("aborting a while True Cell raises KeyboardInterrupt and keeps Python state", async () => {
+// Windows cannot interrupt synchronous Cells (see runtime/src/rlm/repl.md).
+test.skipIf(process.platform === "win32")("aborting a while True Cell raises KeyboardInterrupt and keeps Python state", async () => {
 	h = await createHarness();
 	await h.runCells("x = 41");
 	const started = join(h.cwd, "started");
@@ -64,6 +63,38 @@ test("aborting a while True Cell raises KeyboardInterrupt and keeps Python state
 	const [next] = await h.runCells("x + 1");
 	expect(resultText(next!)).toBe("42");
 });
+
+test("aborting an await-suspended Cell raises KeyboardInterrupt and keeps Python state", async () => {
+	h = await createHarness();
+	await h.runCells("x = 41");
+	const started = join(h.cwd, "started");
+	const aborted = await runAndAbort(h, `import asyncio\nopen(${JSON.stringify(started)}, "w").close()\nawait asyncio.sleep(3600)`, started);
+	expect(aborted.isError).toBe(true);
+	expect(resultText(aborted)).toContain("KeyboardInterrupt");
+
+	const [next] = await h.runCells("x + 1");
+	expect(resultText(next!)).toBe("42");
+});
+
+test("Kill still tells the model state was lost when the replacement Kernel dies", async () => {
+	const { prompts, ui } = withChoice(() => "Kill kernel and restart");
+	h = await createHarness({ ui });
+	const [first] = await h.runCells("x = 41\nimport os; os.getpid()");
+	const pid = Number(resultText(first!));
+	await runAndAbort(h, stubbornCell(h.cwd), join(h.cwd, "started"));
+
+	const [failed] = await h.runCells("import os; os._exit(17)");
+	expect(prompts).toHaveLength(1);
+	expect(failed?.isError).toBe(true);
+	expect(resultText(failed!)).toContain(KERNEL_RESTART_NOTICE);
+	expect(resultText(failed!)).toContain("Kernel exited");
+	expect(kernelPids()).not.toContain(pid);
+
+	const [next] = await h.runCells("globals().get('x', 'state gone')");
+	expect(next?.isError).toBe(false);
+	expect(resultText(next!)).toBe("'state gone'");
+	expect(resultText(next!)).not.toContain(KERNEL_RESTART_NOTICE);
+}, 60_000);
 
 test("a Cell ignoring the interrupt leads to a wait/kill choice; Kill restarts the Kernel and tells the model", async () => {
 	const { prompts, ui } = withChoice(() => "Kill kernel and restart");

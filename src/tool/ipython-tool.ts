@@ -40,7 +40,7 @@ const BUSY_KERNEL_PROMPT = [
 ].join("\n");
 export const KERNEL_RESTART_NOTICE = [
 	"<ipython_kernel_reset>",
-	"The Python kernel was restarted after a previous interrupted cell kept running. Variables, imports, async tasks, and open resources from before the restart are no longer available; recreate them before using them.",
+	"The previous Python kernel was killed because an interrupted cell kept running. Variables, imports, async tasks, and open resources from that kernel are no longer available; recreate them before using them.",
 	"</ipython_kernel_reset>",
 ].join("\n");
 
@@ -138,7 +138,13 @@ export function createIpythonTool({
 					r = await getKernel().execute(params.code, signal);
 					break;
 				} catch (error) {
-					if (!(error instanceof KernelBusyError) || signal?.aborted) throw error;
+					if (!(error instanceof KernelBusyError) || signal?.aborted) {
+						if (kernelRestarted) {
+							const reason = error instanceof Error ? error.message : String(error);
+							throw new Error(`${KERNEL_RESTART_NOTICE}\n\n${reason}`, { cause: error });
+						}
+						throw error;
+					}
 					// Like the branch-switch choice, only the TUI prompts; elsewhere the model gets the busy error.
 					const choice = ctx.mode === "tui" && ctx.hasUI
 						? await ctx.ui.select(BUSY_KERNEL_PROMPT, [BUSY_KERNEL_WAIT_CHOICE, BUSY_KERNEL_KILL_CHOICE], { signal })
