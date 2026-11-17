@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall, getSystemMessageText } from "@earendil-works/pi-ai";
 import { type ExtensionAPI, type ToolExposure } from "@earendil-works/pi-coding-agent";
@@ -65,7 +65,11 @@ test("the prompt names no tool other than ipython and warns against magics and !
 	expect(prompt).toContain("!cmd");
 	expect(prompt).not.toContain("`pi`");
 	expect(prompt).not.toContain("await pi.");
-	expect(prompt).not.toContain("describe_namespace");
+	// Baseline from a858d6f, before #33; only the date and temporary cwd vary.
+	const baseline = readFileSync(new URL("./fixtures/no-pi-tools-prompt.txt", import.meta.url), "utf8")
+		.replace("{{DATE}}", localDate())
+		.replace("{{CWD}}", h.cwd.replace(/\\/g, "/"));
+	expect(prompt).toBe(baseline);
 	expect(prompt).toContain("`bash(command:");
 	expect(prompt).toContain("## Rules");
 });
