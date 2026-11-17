@@ -2,6 +2,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fauxAssistantMessage, getSystemMessageText } from "@earendil-works/pi-ai";
 import { afterEach, expect, test } from "vitest";
+import { Type } from "typebox";
 import { createHarness, type Harness } from "./harness.ts";
 
 let h: Harness | undefined;
@@ -61,4 +62,24 @@ test("the prompt names no tool other than ipython and warns against magics and !
 	}
 	expect(prompt).toContain("%magic");
 	expect(prompt).toContain("!cmd");
+});
+
+test("the prompt explains pi discovery without listing any Pi tool", async () => {
+	h = await createHarness({
+		extensions: [
+			(pi) => pi.registerTool({
+				name: "frobnicate",
+				label: "frobnicate",
+				description: "Frobnicate a widget.",
+				parameters: Type.Object({}),
+				execute: async () => ({ content: [], details: {} }),
+			}),
+		],
+	});
+	const prompt = await providerSystemPrompt(h);
+
+	expect(prompt).toContain("await pi.tool(");
+	expect(prompt).toContain("await pi.tools()");
+	expect(prompt).toContain("await pi.describe(");
+	expect(prompt).not.toContain("frobnicate");
 });

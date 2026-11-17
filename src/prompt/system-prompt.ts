@@ -17,6 +17,10 @@ const CORE_PROMPT = `You have one tool, \`ipython\`: a persistent CPython REPL w
 - \`bash(command: str, timeout: float | None = 600) -> BashHandle\`: start a shell command in the background and return at once; each call is a new process, and a command still running after \`timeout\` seconds is killed (\`None\`: no limit)
   - \`BashHandle\`: \`.pid\`, \`.running\`, \`.command\`, \`.tail(n=50)\`, \`.output()\`, \`.poll() -> BashResult | None\`, \`.kill(sig=SIGTERM, grace=5.0)\`, and \`await handle -> BashResult\`
   - \`BashResult\`: \`.exit_code\`, \`.output\`, \`.duration\`
+- \`pi\`: the session's other tools (extension tools such as subagents or MCP servers), callable from Python; all of it is async
+  - \`await pi.tools()\`: list the callable tools as dicts with \`name\`, \`description\` (first line), and \`namespace\`
+  - \`await pi.describe(name)\`: a tool's full \`description\` and its \`parameters\` JSON schema
+  - \`await pi.tool(name, args: dict | None = None)\`: call a tool; returns a dict for tools with an output schema, otherwise text, and raises \`pi.ToolError\` on failure
 
 ## Rules
 

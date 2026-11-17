@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type Context, fauxAssistantMessage, fauxToolCall, getCurrentTools } from "@earendil-works/pi-ai";
-import { createCodemodeExtension, type ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import { createCodemodeExtension, type ExtensionAPI, type ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { afterEach, expect, test } from "vitest";
 import { DEFAULT_PYTHON_VERSION, kernelVenvDir, venvPython } from "../src/kernel/bootstrap.ts";
@@ -67,6 +67,15 @@ const piTools: ExtensionFactory = (pi) => {
 		description: "Blocked by a hook.",
 		parameters: Type.Object({}),
 		execute: async () => ({ content: [{ type: "text", text: "guarded ran" }], details: {} }),
+	});
+	pi.registerTool({
+		name: "mcp__docs__lookup",
+		label: "lookup",
+		description: "Look up a doc page.\nPass the page slug; returns markdown.",
+		exposure: "codemode",
+		namespace: { name: "mcp__docs", description: "Docs server." },
+		parameters: Type.Object({ slug: Type.String({ description: "Page slug" }) }),
+		execute: async (_id, { slug }) => ({ content: [{ type: "text", text: `# ${slug}` }], details: {} }),
 	});
 	pi.on("tool_call", (event) => (event.toolName === "guarded" ? { block: true, reason: "guarded is blocked by policy" } : undefined));
 };
@@ -154,6 +163,59 @@ test.each(["finished", "missing"])("a background call with a %s originating Cell
 	expect(current?.isError).toBe(false);
 	expect(resultText(current!)).toBe("['echo: one', 'echo: two']");
 	expect(called).toEqual(["echo", "echo"]);
+});
+
+test("pi.tools() lists the callable set live, with first description lines and namespaces", async () => {
+	let api: ExtensionAPI | undefined;
+	h = await createHarness({ extensions: [...extensions, (pi) => void (api = pi)] });
+	const listing = "print(sorted((t['name'], t['description'], t['namespace']) for t in await pi.tools()))";
+	const [before] = await h.runCells(listing);
+	expect(resultText(before!)).toBe(
+		"[('echo', 'Echo text back.', None), ('explode', 'Always fails.', None), ('guarded', 'Blocked by a hook.', None), "
+			+ "('mcp__docs__lookup', 'Look up a doc page.', 'mcp__docs'), ('snapshot', 'Take screenshots.', None), ('stats', 'Count items.', None)]",
+	);
+	api!.registerTool({
+		name: "late",
+		label: "late",
+		description: "Registered after the Kernel started.",
+		exposure: "codemode",
+		parameters: Type.Object({}),
+		execute: async () => ({ content: [{ type: "text", text: "late ran" }], details: {} }),
+	});
+	const [after, called] = await h.runCells("print([t['name'] for t in await pi.tools() if t['name'] == 'late'])", "await pi.tool('late')");
+	expect(resultText(after!)).toBe("['late']");
+	expect(resultText(called!)).toBe("'late ran'");
+});
+
+test("pi.describe() returns the full description and schema; unknown and excluded names raise pi.ToolError", async () => {
+	h = await createHarness({ extensions });
+	const [described, errors] = await h.runCells(
+		"import json\nd = await pi.describe('mcp__docs__lookup')\nprint(json.dumps(d, sort_keys=True))",
+		[
+			"for name in ['nope', 'read', 'codemode', 'ipython']:",
+			"    try:",
+			"        await pi.describe(name)",
+			"        print(name, 'no error')",
+			"    except pi.ToolError as e:",
+			"        print(name, '->', e)",
+		].join("\n"),
+	);
+	expect(JSON.parse(resultText(described!))).toEqual({
+		name: "mcp__docs__lookup",
+		description: "Look up a doc page.\nPass the page slug; returns markdown.",
+		namespace: "mcp__docs",
+		parameters: {
+			type: "object",
+			properties: { slug: { type: "string", description: "Page slug" } },
+			required: ["slug"],
+		},
+	});
+	expect(resultText(errors!).split("\n")).toEqual([
+		"nope -> Tool nope not found",
+		"read -> Tool read not found",
+		"codemode -> Tool codemode not found",
+		"ipython -> Tool ipython not found",
+	]);
 });
 
 test("a result with images returns its text plus the omitted-images marker", async () => {

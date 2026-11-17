@@ -1,9 +1,11 @@
 // Host side of Bridged calls: which Pi tools a Cell may call, and how a call's outcome reaches Python
-// (`src/bridge/pi.py` sends the `pi.tool` host requests answered here).
+// (`src/bridge/pi.py` sends the `pi.tool`, `pi.tools`, and `pi.describe` host requests answered here).
 
 import type { ExtensionToolContext, ToolInfo } from "@earendil-works/pi-coding-agent";
 
 export const PI_TOOL_REQUEST = "pi.tool";
+export const PI_TOOLS_REQUEST = "pi.tools";
+export const PI_DESCRIBE_REQUEST = "pi.describe";
 
 type ToolOutcome = Awaited<ReturnType<ExtensionToolContext["executeTool"]>>;
 
@@ -28,15 +30,28 @@ export function bridgedTools(tools: readonly ToolInfo[], ipythonName: string): T
  */
 export async function answerHostRequest(
 	data: Record<string, unknown>,
-	callable: ReadonlySet<string>,
+	callable: readonly ToolInfo[],
 	ctx: ExtensionToolContext,
 	signal: AbortSignal | undefined,
 ): Promise<unknown> {
-	if (data.type !== PI_TOOL_REQUEST) throw new Error(`host request ${String(data.type)} is not supported by pi-ipython`);
+	if (data.type === PI_TOOLS_REQUEST) {
+		return callable.map((tool) => ({
+			name: tool.name,
+			description: tool.description.trim().split("\n")[0] ?? "",
+			namespace: tool.namespace?.name ?? null,
+		}));
+	}
+	if (data.type !== PI_TOOL_REQUEST && data.type !== PI_DESCRIBE_REQUEST) {
+		throw new Error(`host request ${String(data.type)} is not supported by pi-ipython`);
+	}
 	const { name, args } = data;
-	if (typeof name !== "string") throw new Error("pi.tool name must be a string");
+	if (typeof name !== "string") throw new Error(`${data.type} name must be a string`);
+	const tool = callable.find((candidate) => candidate.name === name);
 	// Same text as pi's unknown tool, so an excluded tool is indistinguishable from a missing one.
-	if (!callable.has(name)) throw new Error(`Tool ${name} not found`);
+	if (!tool) throw new Error(`Tool ${name} not found`);
+	if (data.type === PI_DESCRIBE_REQUEST) {
+		return { name, description: tool.description, namespace: tool.namespace?.name ?? null, parameters: tool.parameters };
+	}
 	const outcome = await ctx.executeTool(name, args ?? {}, { signal });
 	return toPythonValue(name, outcome, ctx.tools.find((tool) => tool.name === name)?.outputSchema !== undefined);
 }

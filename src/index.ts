@@ -73,8 +73,7 @@ export default function piIpython(pi: ExtensionAPI): void {
 				return cause;
 			},
 			answerHostRequest: (data, ctx, signal) => {
-				const callable = new Set(bridgedTools(pi.getAllTools(), IPYTHON_TOOL_NAME).map((tool) => tool.name));
-				return answerHostRequest(data, callable, ctx, signal);
+				return answerHostRequest(data, bridgedTools(pi.getAllTools(), IPYTHON_TOOL_NAME), ctx, signal);
 			},
 		}),
 	);
