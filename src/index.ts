@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { getCurrentSystemMessage } from "@earendil-works/pi-ai";
 import { type BeforeAgentStartEvent, type ExtensionAPI, getAgentDir, type SessionEntry } from "@earendil-works/pi-coding-agent";
+import { listPiTools } from "./bridge/pi-tool-listing.ts";
 import { answerHostRequest, bridgedTools } from "./bridge/pi-tools.ts";
 import { loadConfig, type PiIpythonConfig } from "./config.ts";
 import { ensureKernelPython, resolveProjectPython, RUNTIME_SRC_DIR } from "./kernel/bootstrap.ts";
@@ -85,6 +86,9 @@ export default function piIpython(pi: ExtensionAPI): void {
 			answerHostRequest: (data, ctx, signal) => {
 				return answerHostRequest(data, forceExclusive(), ctx, signal);
 			},
+			describePiTools: (loadout) => config.piTools.list
+				? listPiTools(loadout, new Set(bridgedTools(pi.getAllTools(), IPYTHON_TOOL_NAME).map((tool) => tool.name)))
+				: undefined,
 		}),
 	);
 

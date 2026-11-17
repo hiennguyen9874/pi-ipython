@@ -17,6 +17,7 @@ import {
 	type ExtensionToolContext,
 	formatSize,
 	type ToolDefinition,
+	type ToolLoadout,
 	type TruncationOptions,
 	truncateTail,
 } from "@earendil-works/pi-coding-agent";
@@ -93,6 +94,8 @@ export interface IpythonToolOptions {
 	takeStateLoss?: () => string | undefined;
 	/** Answers the running Cell's host requests (Bridged calls) with this call's context and signal. */
 	answerHostRequest?: (data: Record<string, unknown>, ctx: ExtensionToolContext, signal: AbortSignal | undefined) => Promise<unknown>;
+	/** Text appended to the model-facing description (Listed Pi tools), or undefined to leave it unchanged. */
+	describePiTools?: (loadout: ToolLoadout) => string | undefined;
 }
 
 /** The State-loss notice as a Cell's error result; a Cell that did not run says so. */
@@ -168,12 +171,14 @@ export function createIpythonTool({
 	getConfirmEachCell = () => false,
 	takeStateLoss = () => undefined,
 	answerHostRequest,
+	describePiTools,
 }: IpythonToolOptions): ToolDefinition<typeof ipythonSchema, IpythonToolDetails> {
+	const description =
+		"Run Python code in a persistent Python Kernel. Variables, functions, and imports persist between calls. Top-level `await` works. The output contains stdout, stderr, the repr of the trailing expression, and errors with tracebacks. Long output is truncated to its tail, with the full text saved to a temp file. Images emitted with `from rlm.repl import emit; emit({'image/png': base64_str})` are returned as images. Output from background threads, tasks, and subprocesses is reported under [background output] in the next result.";
 	return {
 		name: IPYTHON_TOOL_NAME,
 		label: "ipython",
-		description:
-			"Run Python code in a persistent Python Kernel. Variables, functions, and imports persist between calls. Top-level `await` works. The output contains stdout, stderr, the repr of the trailing expression, and errors with tracebacks. Long output is truncated to its tail, with the full text saved to a temp file. Images emitted with `from rlm.repl import emit; emit({'image/png': base64_str})` are returned as images. Output from background threads, tasks, and subprocesses is reported under [background output] in the next result.",
+		description,
 		promptSnippet: "ipython - persistent Python Kernel for code, data, and state",
 		parameters: ipythonSchema,
 		// One Kernel runs one Cell at a time.
@@ -181,9 +186,13 @@ export function createIpythonTool({
 		// Cells can discover/call any Pi tool: let MCP finish registration before Python runs.
 		reachesTools: () => "all",
 		// Other active tools are there only for Bridged calls: the model sees only ipython.
-		prepareLoadout: (loadout) => ({
-			hiddenDeclarations: loadout.declared.map((tool) => tool.name).filter((name) => name !== IPYTHON_TOOL_NAME),
-		}),
+		prepareLoadout: (loadout) => {
+			const listed = describePiTools?.(loadout);
+			return {
+				...(listed === undefined ? {} : { descriptions: { [IPYTHON_TOOL_NAME]: `${description}\n\n${listed}` } }),
+				hiddenDeclarations: loadout.declared.map((tool) => tool.name).filter((name) => name !== IPYTHON_TOOL_NAME),
+			};
+		},
 		renderCall: renderCellCall,
 		renderResult: renderCellResult,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {

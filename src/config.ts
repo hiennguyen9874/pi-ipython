@@ -12,6 +12,7 @@ export interface PiIpythonConfig {
 	confirmEachCell: boolean;
 	python: { source: "uv" | "project"; version: string };
 	output: { maxBytes: number; maxLines: number };
+	piTools: { list: boolean };
 }
 
 export interface LoadedConfig {
@@ -36,8 +37,9 @@ const FIELDS: Record<string, { valid: (v: unknown) => boolean; expected: string 
 	},
 	"output.maxBytes": { valid: isPositiveInt, expected: "a positive integer" },
 	"output.maxLines": { valid: isPositiveInt, expected: "a positive integer" },
+	"piTools.list": { valid: (v) => typeof v === "boolean", expected: "true or false" },
 };
-const SECTIONS = new Set(["python", "output"]);
+const SECTIONS = new Set(["python", "output", "piTools"]);
 
 export function configPaths(cwd: string, agentDir = getAgentDir()): { global: string; project: string } {
 	return {
@@ -60,6 +62,7 @@ export function loadConfig(cwd: string, agentDir = getAgentDir()): LoadedConfig 
 			confirmEachCell: get("confirmEachCell", false),
 			python: { source: get("python.source", "uv"), version: get("python.version", DEFAULT_PYTHON_VERSION) },
 			output: { maxBytes: get("output.maxBytes", DEFAULT_MAX_BYTES), maxLines: get("output.maxLines", DEFAULT_MAX_LINES) },
+			piTools: { list: get("piTools.list", true) },
 		},
 		errors,
 	};
