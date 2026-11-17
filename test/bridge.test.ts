@@ -184,6 +184,42 @@ test("a failed call carries structuredContent as pi.ToolError.result only for to
 	expect(lines.slice(4)).toEqual(["nope null Tool nope not found", "{'count': 2, 'names': ['a', 'b']}"]);
 });
 
+test("structured successes preserve JSON values and failed calls carry only dicts", async () => {
+	const valueSchema = Type.Union([Type.Null(), Type.Boolean(), Type.Number(), Type.String(), Type.Array(Type.String()), Type.Record(Type.String(), Type.Number())]);
+	h = await createHarness({
+		extensions: [(pi) => pi.registerTool({
+			name: "structured",
+			label: "structured",
+			description: "Return a JSON value, successfully or as a failure.",
+			parameters: Type.Object({ value: valueSchema, fail: Type.Boolean() }),
+			outputSchema: valueSchema,
+			execute: async (_id, { value, fail }) => ({
+				content: [{ type: "text", text: "fallback" }],
+				structuredContent: value,
+				isError: fail,
+				details: {},
+			}),
+		})],
+	});
+	const [r] = await h.runCells([
+		"for value in [None, False, 0, '', [], {}]:",
+		"    print('ok', repr(await pi.tool('structured', {'value': value, 'fail': False})))",
+		"    try:",
+		"        await pi.tool('structured', {'value': value, 'fail': True})",
+		"    except pi.ToolError as e:",
+		"        print('error', repr(e.result), str(e))",
+	].join("\n"));
+	expect(r?.isError).toBe(false);
+	expect(resultText(r!).split("\n")).toEqual([
+		"ok None", "error None fallback",
+		"ok False", "error None fallback",
+		"ok 0", "error None fallback",
+		"ok ''", "error None fallback",
+		"ok []", "error None fallback",
+		"ok {}", "error {} fallback",
+	]);
+});
+
 test.each(["finished", "missing"])("a background call with a %s originating Cell cannot borrow a later Cell's context", async (origin) => {
 	const called: string[] = [];
 	const observeCalls: ExtensionFactory = (pi) => {

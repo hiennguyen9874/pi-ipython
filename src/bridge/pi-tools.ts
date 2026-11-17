@@ -123,6 +123,11 @@ function toPythonValue(name: string, { result, isError }: ToolOutcome, structure
 		...(images > 0 ? [`[${images} image(s) omitted]`] : []),
 	].join("\n");
 	const structuredContent = structured ? result.structuredContent : undefined;
-	if (isError) throw new HostRequestError(text || `Tool ${name} failed`, structuredContent ?? null);
-	return structuredContent ?? text;
+	if (isError) {
+		const errorResult = structuredContent !== null && typeof structuredContent === "object" && !Array.isArray(structuredContent)
+			? structuredContent
+			: null;
+		throw new HostRequestError(text || `Tool ${name} failed`, errorResult);
+	}
+	return structuredContent !== undefined ? structuredContent : text;
 }

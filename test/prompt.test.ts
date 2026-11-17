@@ -4,7 +4,7 @@ import { fauxAssistantMessage, fauxToolCall, getSystemMessageText } from "@earen
 import { type ExtensionAPI, type ToolExposure } from "@earendil-works/pi-coding-agent";
 import { afterEach, expect, test } from "vitest";
 import { Type } from "typebox";
-import { createHarness, type Harness } from "./harness.ts";
+import { createHarness, type Harness, resultText } from "./harness.ts";
 
 let h: Harness | undefined;
 afterEach(async () => {
@@ -12,17 +12,22 @@ afterEach(async () => {
 	h = undefined;
 });
 
-/** Run one turn and return the system prompt the provider received. */
+/** Run a Cell and return the system prompt the provider received. */
 async function providerSystemPrompt(harness: Harness): Promise<string> {
 	let prompt: string | undefined;
 	harness.setResponses([
 		(context) => {
 			const system = context.messages.find((m) => m.role === "system");
 			prompt = system ? getSystemMessageText(system) : "";
-			return fauxAssistantMessage("ok");
+			return fauxAssistantMessage(fauxToolCall("ipython", { code: "print('prompt check')" }), { stopReason: "toolUse" });
 		},
+		fauxAssistantMessage("ok"),
 	]);
+	const before = harness.session.messages.length;
 	await harness.session.prompt("hi");
+	const result = harness.session.messages.slice(before).find((message) => message.role === "toolResult");
+	expect(result?.isError).toBe(false);
+	expect(resultText(result!)).toBe("prompt check");
 	return prompt ?? "";
 }
 

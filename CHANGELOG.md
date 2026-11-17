@@ -4,6 +4,9 @@
 
 ### Fixed
 
+- Pi tool bridge review fixes: successful structured `null` results remain Python `None` instead of falling back to text, and failed calls attach only dicts to `pi.ToolError.result` (other JSON values become `None`). A real-session regression covers null, boolean, number, string, array, and object results. (#37)
+- Prompt discovery tests now execute a Cell through the real Kernel before accepting the describe-before-use guidance. The v3 PRD also cross-references the existing MCP resource behavior. (#36, #38, #40)
+
 - Pi tool search ranks a full tool-name match above namespace-suffix matches, even when a namespaced tool has a higher BM25 score. Searching `echo` with `limit=1` now returns `echo` rather than `mcp__docs__echo`; a real-session regression covers this collision. (#35)
 
 - Richer tool discovery's no-callable-tools prompt regression test now checks exact equality against the pre-#33 baseline, substituting only the date and temporary working directory. (#33)
