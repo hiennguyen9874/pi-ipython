@@ -25,7 +25,7 @@ People who already run pi and want to try a Python-REPL-first agent on their own
 
 ### v1: Persistent Kernel
 
-1. **Exclusive tool surface.** If the extension is loaded, `ipython` is the only active tool. All other tools, including extension tools like subagent and MCP, are hidden. It is turned on and off through pi profiles/settings.
+1. **Exclusive tool surface.** If the extension is loaded, `ipython` is the only active tool. All other tools, including extension tools like subagent and MCP, are hidden from the model (from v3, Cells can still call them through the pi tool bridge). It is turned on and off through pi profiles/settings.
 2. **`ipython` tool.** Takes Python code, runs it as one Cell in the Kernel, and returns stdout, stderr, the repr of the trailing expression, any error with its traceback, and the duration.
 3. **Persistent Kernel.** One Kernel per pi session, running `python -m rlm.repl`. The namespace is shared across Cells and top-level `await` works. The working directory is the session cwd.
 4. **Lazy start.** The uv-managed venv is prepared in the background at `session_start`. The Kernel starts on the first Cell.
@@ -54,13 +54,22 @@ People who already run pi and want to try a Python-REPL-first agent on their own
 - Python skills: deferred until a concrete need appears.
 - A full Cell renderer, ported from `ipython-cell.ts`.
 
-### v3: Pi bridge (#15)
+### v3: Pi tool bridge (#15)
 
-- Python can call pi tools, for example `await pi.tool("subagent", {...})`, through `host_request`, subject to pi's tool hooks.
+Can ship in parallel with v1.1; it does not wait for #16.
+
+- **Bridged calls.** `await pi.tool(name, args)` calls a Pi tool through `host_request` and pi's `ctx.executeTool`, so validation, `tool_call`/`tool_result` hooks, and permission checks apply as for model-issued calls. Async only.
+- **Callable set.** Every registered Pi tool except `hidden` ones, `ipython` itself, tools that reach other tools (`codemode`, `tool_search`, anything with `reachesTools`), and pi's built-ins (`read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`). The model still sees only `ipython`. The set is recomputed every turn; `pi.tools()` reads it live. No config.
+- **Discovery.** `pi.tools()` lists `{name, description, namespace}` (first description line); `pi.describe(name)` gives the full description and JSON schema. The system prompt mentions `pi` and how to discover tools, never a tool list. No search.
+- **Results.** As in codemode: `structuredContent` (a dict) when the tool declares `outputSchema`, otherwise the text content as one `str`. Any error outcome raises `pi.ToolError` (a `RuntimeError`) with the tool's error text. Images are not returned; the text ends with `[N image(s) omitted]`.
+- **Lifetime.** A Bridged call is allowed only while its Cell's `ipython` call is running and uses that call's signal, so interrupting the Cell aborts it. Calls from background tasks or threads after the Cell returned fail at once. Concurrent calls within one Cell are allowed.
+- **Safety.** No extra confirmation per Bridged call; `confirmEachCell` covers the Cell, and pi's hooks guard each call. Documentation says Bridged calls can be hooked but direct Python is still not sandboxed.
+- **Namespace.** `pi` is a module owned by this repo (the vendored runtime stays unchanged), bound by the bootstrap in every new Kernel and left out of the Python-state notice.
+- **TUI.** pi's default display of nested tool calls; the Cell renderer is unchanged.
 
 ### v4: MCP via the bridge (#14)
 
-- MCP servers callable from Python through the pi bridge and pi's own MCP support, not a separate Python MCP stack.
+- MCP servers callable from Python through the pi tool bridge and pi's own MCP support, not a separate Python MCP stack. pi's MCP tools (`codemode` exposure by default) are plain Pi tools to the bridge; the runtime's `rlm.mcp` API is not revived.
 - Goals and autonomous continuation are not planned for core (#29).
 
 ## Open questions (decide before v2)

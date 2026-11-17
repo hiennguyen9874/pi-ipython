@@ -37,6 +37,8 @@ test/                   # vitest integration tests (real Kernel)
 | Busy Kernel / confirm each Cell | `ctx.ui` select/confirm inside `execute` |
 | Truncation | pi output truncation helpers, with full output written to a temp file |
 | Rendering | `renderCall` / `renderResult` on the tool definition |
+| Bridged calls (v3) | `ctx.executeTool` inside the running Cell's `execute`, answering the Kernel's `host_request` |
+| Callable set (v3) | activate bridged `direct` tools alongside `ipython` and hide their declarations via `prepareLoadout` → `hiddenDeclarations`; `pi.getAllTools()` for discovery |
 
 ## v1 slices (each one demoable)
 
@@ -56,10 +58,10 @@ test/                   # vitest integration tests (real Kernel)
 
 ## Later releases (one parent ticket each, broken down when they start)
 
-- **v1.1 (#16):** harden the Kernel contract before new features.
+- **v1.1 (#16):** harden the Kernel contract. v3 may proceed in parallel.
 - **v2 (#13):** snapshot/restore (no live pruning, ADR 0002), opt-in background-command notices, full renderer; Python skills deferred.
-- **v3 (#15):** pi tool bridge through `host_request`.
-- **v4 (#14):** MCP through the bridge. Goals and autonomous mode are not planned (#29).
+- **v3 (#15):** pi tool bridge through `host_request` and `ctx.executeTool` (see `docs/prd.md`).
+- **v4 (#14):** MCP through the bridge; pi's MCP tools are plain Pi tools. Goals and autonomous mode are not planned (#29).
 
 ## Testing
 
