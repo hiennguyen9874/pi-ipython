@@ -149,7 +149,8 @@ export default function piIpython(pi: ExtensionAPI): void {
 			content: buildSystemPrompt(
 				promptOptions,
 				bridgedTools(pi.getAllTools(), IPYTHON_TOOL_NAME).length > 0 ? { search: config.piTools.search } : undefined,
-				config.prelude,
+				// The prelude still runs with prompt off; only the model is not told about it.
+				config.prelude.prompt ? config.prelude : undefined,
 			),
 			...(current?.toolsAdded ? { toolsAdded: current.toolsAdded } : {}),
 			timestamp: current?.timestamp ?? Date.now(),

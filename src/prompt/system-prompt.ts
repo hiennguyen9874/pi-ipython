@@ -78,13 +78,13 @@ function preludePrompt({ defaults, imports }: PromptPrelude): string | undefined
 	].join("\n");
 }
 
-/** `piTools` is set when a Pi tool is callable; `search` is whether `pi.search` is on. */
+/** `piTools` is set when a Pi tool is callable; `search` is whether `pi.search` is on. Without `prelude`, the prompt does not mention it. */
 export function buildSystemPrompt(
 	options: Pick<BuildSystemPromptOptions, "cwd" | "contextFiles" | "skills">,
 	piTools: { search: boolean } | undefined,
-	prelude: PromptPrelude = { defaults: false, imports: [] },
+	prelude?: PromptPrelude,
 ): string {
-	const preludeLine = preludePrompt(prelude);
+	const preludeLine = prelude && preludePrompt(prelude);
 	const functions = [
 		CORE_PROMPT,
 		...(preludeLine ? [preludeLine] : []),

@@ -15,7 +15,7 @@ export interface PiIpythonConfig {
 	output: { maxBytes: number; maxLines: number };
 	piTools: { list: boolean; search: boolean };
 	/** `imports` concatenates global then project entries instead of the project winning. */
-	prelude: { defaults: boolean; imports: string[] };
+	prelude: { defaults: boolean; imports: string[]; prompt: boolean };
 }
 
 /** The import statements the Kernel bootstrap runs: the defaults (unless turned off), then the configured imports. */
@@ -49,6 +49,7 @@ const FIELDS: Record<string, { valid: (v: unknown) => boolean; expected: string 
 	"piTools.search": { valid: (v) => typeof v === "boolean", expected: "true or false" },
 	"prelude.defaults": { valid: (v) => typeof v === "boolean", expected: "true or false" },
 	"prelude.imports": { valid: Array.isArray, expected: "an array of import statements" },
+	"prelude.prompt": { valid: (v) => typeof v === "boolean", expected: "true or false" },
 };
 const SECTIONS = new Set(["python", "output", "piTools", "prelude"]);
 const IMPORT_EXPECTED = 'one "import …" or "from … import …" statement (absolute, without "*")';
@@ -75,7 +76,7 @@ export function loadConfig(cwd: string, agentDir = getAgentDir()): LoadedConfig 
 			python: { source: get("python.source", "uv"), version: get("python.version", DEFAULT_PYTHON_VERSION) },
 			output: { maxBytes: get("output.maxBytes", DEFAULT_MAX_BYTES), maxLines: get("output.maxLines", DEFAULT_MAX_LINES) },
 			piTools: { list: get("piTools.list", true), search: get("piTools.search", true) },
-			prelude: { defaults: get("prelude.defaults", true), imports: get<string[]>("prelude.imports", []) },
+			prelude: { defaults: get("prelude.defaults", true), imports: get<string[]>("prelude.imports", []), prompt: get("prelude.prompt", true) },
 		},
 		errors,
 	};

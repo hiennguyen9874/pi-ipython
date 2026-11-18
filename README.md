@@ -83,7 +83,7 @@ Global config lives in `~/.pi/agent/pi-ipython.json`. Project config lives in `.
   "python": { "source": "uv", "version": "3.13" },
   "output": { "maxBytes": 51200, "maxLines": 2000 },
   "piTools": { "list": true, "search": true },
-  "prelude": { "defaults": true, "imports": [] }
+  "prelude": { "defaults": true, "imports": [], "prompt": true }
 }
 ```
 
@@ -95,6 +95,7 @@ Global config lives in `~/.pi/agent/pi-ipython.json`. Project config lives in `.
 | `output.maxBytes` / `output.maxLines` | 50KB / 2000 | Cell output beyond these limits is truncated to its tail. The full output is saved to a temp file whose path is in the result. |
 | `prelude.defaults` | `true` | Run the default stdlib prelude (`json`, `os`, `re`, `Path`, …) in every Kernel. |
 | `prelude.imports` | `[]` | More import statements for every Kernel, such as `"import numpy as np"`. Each entry must be one absolute `import …` or `from … import …` statement without `*`; anything else is reported and skipped. An import that fails in the Kernel (a module that is not installed) is reported as a warning when the Kernel starts, and the rest still run. The system prompt lists the prelude, and the Python-state notice leaves its names out. |
+| `prelude.prompt` | `true` | List the prelude in the system prompt. `false` leaves it out of the prompt; the Kernel still runs the prelude, so forgotten imports still work. |
 | `piTools.list` | `true` | List callable `direct`/`codemode` Pi tools in the `ipython` description (see [MCP and other Pi tools](#mcp-and-other-pi-tools)). `false` leaves the description without the list. |
 | `piTools.search` | `true` | Enable `pi.search(query, limit=8, namespace=None)` over callable Pi tools. `false` makes it raise `pi.ToolError` and leaves it out of the system prompt. |
 

@@ -262,3 +262,22 @@ test("a prelude import that fails is reported to the user once per Kernel start;
 		type: "warning",
 	}]);
 });
+
+test("prelude.prompt false leaves the prelude out of the prompt, but the Kernel still imports it", async () => {
+	h = await createHarness({
+		setup: (dirs) => writeConfigs(dirs, { prelude: { prompt: false, imports: ["import base64 as b64"] } }),
+	});
+	expect(await systemPrompt(h)).not.toContain("Pre-imported");
+	const [r] = await h.runCells("json.dumps(1), Path('a/b').name, b64.b64encode(b'hi')");
+	expect(resultText(r!)).toBe("('1', 'b', b'aGk=')");
+});
+
+test("an invalid prelude.prompt is reported and the prelude line stays", async () => {
+	const notices: string[] = [];
+	h = await createHarness({
+		ui: { notify: (m) => notices.push(m) },
+		setup: (dirs) => writeConfigs(dirs, { prelude: { prompt: "no" } }),
+	});
+	expect(notices).toEqual([expect.stringContaining('"prelude.prompt" must be true or false, got "no"')]);
+	expect(await systemPrompt(h)).toContain("Pre-imported in the REPL only");
+});
