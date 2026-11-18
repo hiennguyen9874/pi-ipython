@@ -1,81 +1,143 @@
 # pi-ipython
 
-A [pi](https://pi.dev) extension that turns a session into a Python-REPL-first agent, modelled on Unharnessed. The model sees one tool, `ipython`. Each call runs one **Cell** in a persistent Python **Kernel** owned by the session. Variables, functions, and imports from earlier Cells stay available in later ones and survive compaction.
+A [pi](https://pi.dev) extension that makes the model work through Python. Modelled on Unharnessed.
 
-## Safety: read this first
+With the extension on, the model has **one tool: `ipython`**. Each call sends a piece of Python code (a **Cell**) to a Python process (the **Kernel**) that keeps running for the whole session. Python works much like a Jupyter notebook here:
 
-- **The Kernel runs with your permissions.** Cell code can read, write, and delete anything your user account can, start processes, and use the network.
-- **It is not a sandbox.** There is no isolation or permission gating of Cell code.
-- **It bypasses pi's tool-call guards.** Pi's per-tool checks and permission extensions see only the `ipython` call, not the file reads, writes, or shell commands that the Python code does inside it.
-- **Bridged calls are guarded; Python is not.** When a Cell calls a Pi tool with `await pi.tool(name, args)`, the call goes through pi like a model-issued one: argument validation, `tool_call`/`tool_result` hooks, and permission checks all apply, so a hook can block it. That covers only Pi tools reached through `pi`. Everything else the Cell's Python does directly is still unguarded and not sandboxed. There is no separate confirmation per Bridged call; `confirmEachCell` approves the whole Cell, including every Bridged call it makes.
-- **Bridged calls only run while their Cell runs.** Aborting the Cell (Esc) also aborts its in-flight Bridged calls. A background task or thread that calls `pi.tool` after its Cell returned gets `pi.ToolError` straight away, and the tool does not run.
-- **Run it in a container for untrusted work**: unfamiliar repositories, untrusted prompts or data, or anything you would not run yourself. Pi's own docs cover this in `docs/containerization.md`.
+- Variables, functions, and imports from one Cell are still there in later Cells.
+- They are also still there after pi compacts the conversation.
+- The model reads files, runs commands, and calls other tools from Python.
 
-To review each Cell before it runs, turn on `confirmEachCell` (see [Configuration](#configuration)). Pi then shows you each Cell's code and asks for approval. A rejected Cell does not run, and the model gets a "rejected by user" result. Without a UI (print mode), confirmation cannot be asked for, so every Cell is refused and the model is told why.
+```python
+# Cell 1
+data = json.loads(Path("package.json").read_text())
 
-## Install and enable
-
-Requirements: pi, and [uv](https://docs.astral.sh/uv/) on your `PATH` (not needed with `python.source: "project"`). uv fetches the Kernel's Python (3.13 by default), so you don't need a system Python.
-
-Install the package for all your sessions:
-
-```bash
-pi install git:github.com/hiennguyen9874/pi-ipython
+# Cell 2: `data` is still defined
+print(data["version"])
 ```
 
-Add `--local` (`-l`) to enable it only for the current project (written to `.pi/settings.json`), or try it for one run without installing:
+## ⚠️ Safety: read this first
+
+**The Kernel is not a sandbox.** Python code runs as your user account. It can read, change, and delete your files, start programs, and use the network.
+
+**pi's tool guards don't see what Python does.** pi's permission checks only see the `ipython` call. They don't see the file writes or shell commands that happen inside the Cell.
+
+The only exception is when a Cell calls another pi tool with `await pi.tool(...)` (a **Bridged call**). That call goes through pi like a normal tool call, so validation, hooks, and permission checks still apply.
+
+- A Bridged call can only run while its Cell is running. Pressing Esc stops the Cell and its Bridged calls. If a background thread calls `pi.tool` after its Cell has finished, it gets a `pi.ToolError` and the tool doesn't run.
+
+**Want to approve each Cell?** Set `"confirmEachCell": true` (see [Configuration](#configuration)).
+
+- pi shows you the code before it runs. If you reject it, the Cell doesn't run and the model is told "rejected by user".
+- One approval covers the whole Cell, including any Bridged calls in it.
+- Print mode has no UI to ask you, so every Cell is refused there.
+
+**For untrusted work, run pi in a container.** This covers unfamiliar repositories, prompts or data you don't trust, and anything you wouldn't run yourself. See pi's `docs/containerization.md`.
+
+## Quick start
+
+**You need:** pi, and [uv](https://docs.astral.sh/uv/) on your `PATH`. uv downloads Python for you (3.13 by default), so you don't need Python installed.
 
 ```bash
+# Install for all sessions
+pi install git:github.com/hiennguyen9874/pi-ipython
+
+# ...or only for this project (writes .pi/settings.json)
+pi install -l git:github.com/hiennguyen9874/pi-ipython
+
+# ...or try it for one run without installing
 pi -e git:github.com/hiennguyen9874/pi-ipython
 ```
 
-Loading the extension means ipython mode: `ipython` becomes the only active tool and pi's system prompt is replaced with a REPL prompt. Your context files (`AGENTS.md`) and skills stay in it. To go back to normal pi, disable the extension with `pi config` (or `pi config --local` for one project), or remove it with `pi remove git:github.com/hiennguyen9874/pi-ipython`.
+**To go back to normal pi**, disable the extension in `pi config` (use `pi config --local` for one project). To uninstall it, run `pi remove git:github.com/hiennguyen9874/pi-ipython`.
 
-The Kernel venv is prepared in the background when a session starts. The Kernel itself starts on the first Cell and is killed when you quit, reload, or switch sessions.
+## What changes when it's enabled
 
-Every Kernel starts with a prelude of common stdlib imports, so Cells can use them without importing: `json`, `os`, `re`, `sys`, `time`, `math`, `shutil`, `itertools`, `functools`, `collections`, `textwrap`, `Path` (pathlib), `datetime` and `timedelta` (from datetime), and `Counter` and `defaultdict` (from collections). The system prompt lists them as REPL-only, so files and scripts the model writes keep their own imports; configured imports are listed separately as installed for the project. Turn them off or add your own with `prelude` (see [Configuration](#configuration)).
+- **Tools:** `ipython` is the only tool the model can call. Other tools still work, but only from Python (see [below](#using-other-pi-tools-and-mcp)).
+- **System prompt:** pi's system prompt is replaced with one written for a Python REPL. Your `AGENTS.md` files and skills are still included.
+- **Kernel lifetime:**
+  - The Python environment is set up in the background when the session starts.
+  - The Kernel starts on the first Cell.
+  - It stops when you quit, reload, or switch sessions.
+- **Ready-made imports:** every Kernel imports these at startup, so Cells can use them right away:
+  - `json`, `os`, `re`, `sys`, `time`, `math`, `shutil`, `itertools`, `functools`, `collections`, `textwrap`
+  - `Path`, `datetime`, `timedelta`, `Counter`, `defaultdict`
 
-## MCP and other Pi tools
+  These imports exist only in the REPL, so scripts the model writes to disk still need their own imports. To turn them off or add your own, use the `prelude` setting.
 
-Load other extensions alongside pi-ipython. Their tools are available through Python, not as separate model-facing tools:
+## Using other pi tools and MCP
+
+Tools from other extensions you load (including MCP servers) don't show up as separate tools for the model. The model calls them from Python with the `pi` object:
 
 ```python
-await pi.tools()                         # names, descriptions, namespaces
-await pi.search("screenshot", limit=8)   # best-matching tools first, same entries as pi.tools()
-await pi.search("fetch", namespace="docs")  # only tools in one namespace (name or alias)
-await pi.describe("tool_name")           # full description, parameter schema, guidelines, returns
-await pi.describe_namespace("mcp__docs") # namespace description and instructions (e.g. an MCP server's)
-await pi.tool("tool_name", {"arg": "value"})
+await pi.tools()                            # list callable tools
+await pi.search("screenshot", limit=8)      # find tools by keyword
+await pi.search("fetch", namespace="docs")  # search inside one namespace
+await pi.describe("tool_name")              # parameters and docs for one tool
+await pi.describe_namespace("mcp__docs")    # e.g. an MCP server's instructions
+await pi.tool("tool_name", {"arg": "value"})  # call a tool
 ```
 
-For MCP, load pi's built-in MCP extension (explicitly if using `--no-extensions`):
+**Results and errors**
+
+- `pi.tool` returns a **dict** if the tool declares an output schema (all MCP tools do). Otherwise it returns **text**.
+- A failed call raises `pi.ToolError`.
+  - `e.result` holds the structured error result if the tool has an output schema, for example an MCP tool's whole `CallToolResult`.
+  - Otherwise `e.result` is `None`. This also applies to blocked calls, bad arguments, and unknown tools.
+
+**Which tools the model can see and call**
+
+- The `ipython` tool description lists tools with `direct` or `codemode` exposure. The list is capped at about 3000 tokens; a namespace that doesn't fit is marked `(some tools not listed)` or `(tools not listed)`.
+- `deferred` tools aren't listed, but the model can still find them with `pi.tools()` and `pi.search()` and call them. MCP registers its `codemode` and `deferred` servers' tools as `deferred`, so only `direct` MCP tools appear in the description.
+- `hidden` tools can't be called at all.
+- To remove the list from the description, set `piTools.list: false`.
+
+**How `pi.search` works**
+
+- It ranks every callable tool with BM25 over names, descriptions, parameters, and namespaces.
+- A query that exactly matches a tool's name puts that tool first.
+- With `namespace=`, only that namespace is searched. A namespace with no callable tools raises `pi.ToolError`.
+- To turn search off, set `piTools.search: false`. Calls then raise `pi.ToolError` and the system prompt no longer mentions it.
+
+### MCP
+
+Load pi's built-in MCP extension next to this one. If you use `--no-extensions`, load it explicitly:
 
 ```bash
 pi --no-extensions --no-skills -e src/index.ts -e builtin:mcp \
   -p 'Use ipython to run print(await pi.tools())'
 ```
 
-The `ipython` description lists the callable Pi tools registered with `direct` or `codemode` exposure (name and first description line, grouped by namespace, up to about 3000 tokens; a namespace that does not fit is marked `(some tools not listed)` or `(tools not listed)`). `deferred` tools are never listed, and MCP registers its `codemode` and `deferred` servers' tools as `deferred`, so only MCP tools with `direct` exposure are listed and connecting servers do not change the description otherwise. Turn the list off with `piTools.list: false`.
-
-`pi.tool` returns a dict for tools with an output schema (every MCP tool has one), otherwise text. A failed call raises `pi.ToolError` with the tool's error text; `e.result` holds the error result's structured content when the tool has an output schema, for example an MCP tool's whole `CallToolResult`, and is `None` otherwise (also for blocked calls, invalid arguments, and unknown tools).
-
-`pi.search(query, limit=8, namespace=None)` ranks every callable Pi tool, listed or not (including `deferred` MCP tools), with BM25 over names, descriptions, parameter schemas, and namespaces; a query that is exactly a tool's name ranks it first. With `namespace` (a name or alias, as in `pi.describe_namespace`), only that namespace's tools are ranked, then `limit` applies; a namespace with no callable tools raises `pi.ToolError`. Turn it off with `piTools.search: false`: calls then raise `pi.ToolError` and the system prompt does not mention it.
-
-MCP tools with `direct`, `codemode`, or `deferred` exposure are callable through `pi`; `hidden` tools stay unavailable. MCP resources are reachable the same way, through pi's `list_mcp_resources`, `list_mcp_resource_templates`, and `read_mcp_resource` tools, which return dicts:
+MCP resources are read through pi's resource tools, which return dicts:
 
 ```python
-listing = await pi.tool("list_mcp_resources", {})  # {"resources": [{"server", "uri", "name", ...}]}
-page = await pi.tool("read_mcp_resource", {"server": "docs", "uri": listing["resources"][0]["uri"]})
-page["contents"]                                    # [{"uri", "mimeType", "text" or "blob"}]
+listing = await pi.tool("list_mcp_resources", {})
+# {"resources": [{"server", "uri", "name", ...}]}
+
+page = await pi.tool("read_mcp_resource",
+                     {"server": "docs", "uri": listing["resources"][0]["uri"]})
+page["contents"]   # [{"uri", "mimeType", "text" or "blob"}]
 ```
 
-They exist only while a non-`hidden` server offers resources, never reach `hidden` servers, and take the widest exposure of those servers (so by default they are not listed in the description, but `pi.tools()` and `pi.search` find them).
+There is also `list_mcp_resource_templates`. These tools only exist while a non-`hidden` server offers resources. By default they aren't listed in the description, but `pi.tools()` and `pi.search()` find them.
 
-Cells wait for MCP registration before running. Neither `builtin:codemode` nor `builtin:tool-search` is needed for Python discovery. Run `pi mcp list` to diagnose connection failures, and `pi mcp login <server>` for servers that need authentication. Project `.pi/mcp.json` is read only in trusted projects.
+**Good to know**
+
+- Cells wait until MCP tools have registered before they run.
+- You don't need `builtin:codemode` or `builtin:tool-search`.
+- Connection problems: run `pi mcp list`. Servers that need login: run `pi mcp login <server>`.
+- A project's `.pi/mcp.json` is only read in trusted projects.
 
 ## Configuration
 
-Global config lives in `~/.pi/agent/pi-ipython.json`. Project config lives in `.pi/pi-ipython.json` and wins per key, except `prelude.imports`, where global and project entries are concatenated. Invalid files, values, and unknown keys are reported and skipped, so the remaining values and defaults apply.
+There are two config files:
+
+- **Global:** `~/.pi/agent/pi-ipython.json`
+- **Project:** `.pi/pi-ipython.json`
+
+Project values override global ones key by key. The exception is `prelude.imports`: global and project lists are combined. If a file has a bad value or an unknown key, you get a warning and that entry is skipped. Everything else still applies.
+
+Defaults:
 
 ```json
 {
@@ -87,17 +149,22 @@ Global config lives in `~/.pi/agent/pi-ipython.json`. Project config lives in `.
 }
 ```
 
-| Key | Default | Meaning |
+| Key | Default | What it does |
 |---|---|---|
-| `confirmEachCell` | `false` | Ask the user to approve each Cell before it runs. |
-| `python.source` | `"uv"` | `"uv"`: a managed venv. `"project"`: the project's own `<cwd>/.venv`, so Cells can import your project's packages. |
-| `python.version` | `"3.13"` | Python version for the managed venv (3.11 or newer). |
-| `output.maxBytes` / `output.maxLines` | 50KB / 2000 | Cell output beyond these limits is truncated to its tail. The full output is saved to a temp file whose path is in the result. |
-| `prelude.defaults` | `true` | Run the default stdlib prelude (`json`, `os`, `re`, `Path`, …) in every Kernel. |
-| `prelude.imports` | `[]` | More import statements for every Kernel, such as `"import numpy as np"`. Each entry must be one absolute `import …` or `from … import …` statement without `*`; anything else is reported and skipped. An import that fails in the Kernel (a module that is not installed) is reported as a warning when the Kernel starts, and the rest still run. The system prompt lists the prelude, and the Python-state notice leaves its names out. |
-| `prelude.prompt` | `true` | List the prelude in the system prompt. `false` leaves it out of the prompt; the Kernel still runs the prelude, so forgotten imports still work. |
-| `piTools.list` | `true` | List callable `direct`/`codemode` Pi tools in the `ipython` description (see [MCP and other Pi tools](#mcp-and-other-pi-tools)). `false` leaves the description without the list. |
-| `piTools.search` | `true` | Enable `pi.search(query, limit=8, namespace=None)` over callable Pi tools. `false` makes it raise `pi.ToolError` and leaves it out of the system prompt. |
+| `confirmEachCell` | `false` | Ask you to approve each Cell before it runs. |
+| `python.source` | `"uv"` | `"uv"`: use a separate environment managed by uv. `"project"`: use your project's `<cwd>/.venv`, so Cells can import your project's packages (uv not required). |
+| `python.version` | `"3.13"` | Python version for the uv environment (3.11 or newer). |
+| `output.maxBytes` / `output.maxLines` | `51200` / `2000` | When a Cell prints more than this, only the end is shown. The full output is saved to a temp file, and the result includes its path. |
+| `prelude.defaults` | `true` | Load the [ready-made imports](#what-changes-when-its-enabled). |
+| `prelude.imports` | `[]` | Extra imports for every Kernel, e.g. `"import numpy as np"`. See the rules below. |
+| `prelude.prompt` | `true` | List the prelude in the system prompt. With `false` the imports still run, just without telling the model. |
+| `piTools.list` | `true` | List callable `direct`/`codemode` tools in the `ipython` description. |
+| `piTools.search` | `true` | Enable `pi.search()`. |
+
+Rules for `prelude.imports`:
+
+- Each entry must be a single absolute `import …` or `from … import …` statement, without `*`. Anything else is skipped with a warning.
+- If an import fails when the Kernel starts (for example, the package isn't installed), you get a warning and the other imports still run.
 
 ## License
 
