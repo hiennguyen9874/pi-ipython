@@ -181,7 +181,7 @@ test("prelude.defaults false leaves the default names undefined and out of the p
 	h = await createHarness({ setup: (dirs) => writeConfigs(dirs, { prelude: { defaults: false } }) });
 	const [r] = await h.runCells("'json' in globals(), 'Path' in globals()");
 	expect(resultText(r!)).toBe("(False, False)");
-	expect(await systemPrompt(h)).not.toContain("Already imported");
+	expect(await systemPrompt(h)).not.toContain("Pre-imported");
 });
 
 test("prelude.imports from global and project config concatenate, bind their names, and join the prompt", async () => {
@@ -195,9 +195,25 @@ test("prelude.imports from global and project config concatenate, bind their nam
 	const [r] = await h.runCells("b64.b64encode(b'hi'), lower[:3], digits[:3], urllib.parse.quote('a b'), 'json' in globals()");
 	expect(resultText(r!)).toBe("(b'aGk=', 'abc', '012', 'a%20b', False)");
 	const prompt = await systemPrompt(h);
-	expect(prompt).toContain(
-		"- Already imported in every Kernel, no need to import again: `import base64 as b64`; `from string import (ascii_lowercase as lower, digits,)`; `import urllib.parse`\n",
-	);
+	expect(prompt).toContain([
+		"- Pre-imported in the REPL only (files and scripts you write still need their own imports):",
+		"  - installed and configured for this project, use them where they fit: `import base64 as b64`; `from string import (ascii_lowercase as lower, digits,)`; `import urllib.parse`",
+		"",
+	].join("\n"));
+	expect(prompt).not.toContain("stdlib:");
+});
+
+test("with defaults on, configured imports get their own sub-line, without repeating a default statement", async () => {
+	h = await createHarness({
+		setup: (dirs) => writeConfigs(dirs, { prelude: { imports: ["from pathlib import Path", "import base64 as b64"] } }),
+	});
+	const prompt = await systemPrompt(h);
+	const section = prompt.slice(prompt.indexOf("- Pre-imported"), prompt.indexOf("## Rules")).trimEnd().split("\n");
+	expect(section).toEqual([
+		"- Pre-imported in the REPL only (files and scripts you write still need their own imports):",
+		"  - stdlib: json, os, re, sys, time, math, shutil, itertools, functools, collections, textwrap, Path, datetime (the class), timedelta, Counter, defaultdict",
+		"  - installed and configured for this project, use them where they fit: `import base64 as b64`",
+	]);
 });
 
 test("invalid prelude.imports entries are reported and skipped; valid entries and defaults still apply", async () => {

@@ -9,6 +9,7 @@
 // MIT License, see LICENSE.
 
 import { type BuildSystemPromptOptions, formatSkillsForPrompt } from "@earendil-works/pi-coding-agent";
+import { DEFAULT_PRELUDE, preludeNames } from "../kernel/prelude.ts";
 
 const CORE_PROMPT = `You have one tool, \`ipython\`: a persistent CPython REPL where top-level \`await\` works. Every other capability is a Python function in that REPL. Variables, functions, and imports persist between calls.
 
@@ -48,17 +49,40 @@ function today(): string {
 	return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-/** The prompt line naming what the prelude already imported, or undefined without a prelude. */
-function preludePrompt(prelude: readonly string[]): string | undefined {
-	if (prelude.length === 0) return undefined;
-	return `- Already imported in every Kernel, no need to import again: ${prelude.map((statement) => `\`${statement.trim()}\``).join("; ")}`;
+export interface PromptPrelude {
+	/** Whether the default stdlib prelude runs. */
+	defaults: boolean;
+	/** Configured import statements. */
+	imports: readonly string[];
 }
 
-/** `piTools` is set when a Pi tool is callable; `search` is whether `pi.search` is on. `prelude` lists the bootstrap's import statements. */
+/** `datetime` is bound to the class; say so, since the module has the same name. */
+const DEFAULT_PRELUDE_TEXT = preludeNames(DEFAULT_PRELUDE)
+	.map((name) => (name === "datetime" ? "datetime (the class)" : name))
+	.join(", ");
+
+/**
+ * What the prelude bound, scoped to the REPL so written files keep their imports. Stdlib defaults
+ * are named; configured imports are shown whole and flagged as installed, so the model uses them.
+ */
+function preludePrompt({ defaults, imports }: PromptPrelude): string | undefined {
+	const configured = [...new Set(imports.map((statement) => statement.trim()))]
+		.filter((statement) => !(defaults && DEFAULT_PRELUDE.includes(statement)));
+	if (!defaults && configured.length === 0) return undefined;
+	return [
+		"- Pre-imported in the REPL only (files and scripts you write still need their own imports):",
+		...(defaults ? [`  - stdlib: ${DEFAULT_PRELUDE_TEXT}`] : []),
+		...(configured.length > 0
+			? [`  - installed and configured for this project, use them where they fit: ${configured.map((s) => `\`${s}\``).join("; ")}`]
+			: []),
+	].join("\n");
+}
+
+/** `piTools` is set when a Pi tool is callable; `search` is whether `pi.search` is on. */
 export function buildSystemPrompt(
 	options: Pick<BuildSystemPromptOptions, "cwd" | "contextFiles" | "skills">,
 	piTools: { search: boolean } | undefined,
-	prelude: readonly string[] = [],
+	prelude: PromptPrelude = { defaults: false, imports: [] },
 ): string {
 	const preludeLine = preludePrompt(prelude);
 	const functions = [

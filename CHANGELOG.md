@@ -6,6 +6,7 @@
 
 - A default prelude of stdlib imports (`json`, `os`, `re`, `sys`, `time`, `math`, `shutil`, `itertools`, `functools`, `collections`, `textwrap`, `Path`, `datetime`, `timedelta`, `Counter`, `defaultdict`) runs in every Kernel, including after a Kernel replacement, so Cells can use them without importing. The system prompt lists the prelude, and the Python-state notice leaves its names out like other bootstrap names. (#44)
 - `prelude` config: `prelude.defaults: false` drops the default imports, and `prelude.imports` adds import statements (global and project entries concatenate). Entries that are not a single absolute import statement are reported and skipped; an import that fails in the Kernel is reported as a warning and the rest still run. (#45)
+- The prompt's prelude line names the stdlib defaults instead of repeating their import statements and says they exist only in the REPL, so files and scripts the model writes keep their own imports. Configured imports get their own sub-line, marked as installed for the project, so the model uses them instead of probing or installing alternatives. (#46)
 
 ### Fixed
 

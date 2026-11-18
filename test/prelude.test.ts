@@ -1,7 +1,7 @@
 import { fauxAssistantMessage, fauxToolCall, getSystemMessageText } from "@earendil-works/pi-ai";
 import { afterEach, expect, test } from "vitest";
 import { PYTHON_STATE_TYPE } from "../src/index.ts";
-import { DEFAULT_PRELUDE } from "../src/kernel/prelude.ts";
+import { DEFAULT_PRELUDE, preludeNames } from "../src/kernel/prelude.ts";
 import { createHarness, type Harness, resultText } from "./harness.ts";
 
 let h: Harness | undefined;
@@ -33,7 +33,7 @@ test.skipIf(process.platform === "win32")("the prelude runs again after a Kernel
 	expect(resultText(fresh!)).toBe(defaultsResult);
 });
 
-test("the system prompt lists the prelude statements", async () => {
+test("the system prompt names the default prelude, scoped to the REPL", async () => {
 	h = await createHarness();
 	let prompt = "";
 	h.setResponses([
@@ -43,7 +43,9 @@ test("the system prompt lists the prelude statements", async () => {
 		},
 	]);
 	await h.session.prompt("hi");
-	for (const statement of DEFAULT_PRELUDE) expect(prompt).toContain(`\`${statement}\``);
+	expect(prompt).toContain("- Pre-imported in the REPL only (files and scripts you write still need their own imports):\n  - stdlib: json, os,");
+	for (const name of preludeNames(DEFAULT_PRELUDE)) expect(prompt).toMatch(new RegExp(`stdlib: .*\\b${name}\\b`));
+	expect(prompt).toContain("datetime (the class)");
 });
 
 test("the Python-state notice leaves prelude names out, even re-imported ones", async () => {

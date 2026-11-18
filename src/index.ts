@@ -149,7 +149,7 @@ export default function piIpython(pi: ExtensionAPI): void {
 			content: buildSystemPrompt(
 				promptOptions,
 				bridgedTools(pi.getAllTools(), IPYTHON_TOOL_NAME).length > 0 ? { search: config.piTools.search } : undefined,
-				prelude(),
+				config.prelude,
 			),
 			...(current?.toolsAdded ? { toolsAdded: current.toolsAdded } : {}),
 			timestamp: current?.timestamp ?? Date.now(),

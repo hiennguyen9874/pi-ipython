@@ -33,7 +33,7 @@ Loading the extension means ipython mode: `ipython` becomes the only active tool
 
 The Kernel venv is prepared in the background when a session starts. The Kernel itself starts on the first Cell and is killed when you quit, reload, or switch sessions.
 
-Every Kernel starts with a prelude of common stdlib imports, so Cells can use them without importing: `json`, `os`, `re`, `sys`, `time`, `math`, `shutil`, `itertools`, `functools`, `collections`, `textwrap`, `Path` (pathlib), `datetime` and `timedelta` (from datetime), and `Counter` and `defaultdict` (from collections). The system prompt lists them. Turn them off or add your own with `prelude` (see [Configuration](#configuration)).
+Every Kernel starts with a prelude of common stdlib imports, so Cells can use them without importing: `json`, `os`, `re`, `sys`, `time`, `math`, `shutil`, `itertools`, `functools`, `collections`, `textwrap`, `Path` (pathlib), `datetime` and `timedelta` (from datetime), and `Counter` and `defaultdict` (from collections). The system prompt lists them as REPL-only, so files and scripts the model writes keep their own imports; configured imports are listed separately as installed for the project. Turn them off or add your own with `prelude` (see [Configuration](#configuration)).
 
 ## MCP and other Pi tools
 
