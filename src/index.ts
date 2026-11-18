@@ -9,7 +9,8 @@ import { ensureKernelPython, resolveProjectPython, RUNTIME_SRC_DIR } from "./ker
 import { KernelClient } from "./kernel/client.ts";
 import { hostJournalPath, reapDeadHosts } from "./kernel/orphans.ts";
 import { buildSystemPrompt } from "./prompt/system-prompt.ts";
-import { createIpythonTool, IPYTHON_TOOL_NAME, KERNEL_BOOTSTRAP_CODE, STATE_LOST_NOTICE } from "./tool/ipython-tool.ts";
+import { DEFAULT_PRELUDE, preludeNames } from "./kernel/prelude.ts";
+import { createIpythonTool, IPYTHON_TOOL_NAME, kernelBootstrapCode, STATE_LOST_NOTICE } from "./tool/ipython-tool.ts";
 
 export { STATE_LOST_NOTICE };
 
@@ -37,15 +38,19 @@ export default function piIpython(pi: ExtensionAPI): void {
 		voidPendingStateNotice();
 	};
 
+	/** The prelude statements of the current config. */
+	const prelude = (): readonly string[] => DEFAULT_PRELUDE;
+
 	const createKernel = (): KernelClient => {
 		const { source, version } = config.python;
+		const bootstrapCode = kernelBootstrapCode(prelude());
 		if (source === "project") {
 			// The project venv lacks the runtime: import it from the package's vendored sources.
 			const pythonPath = [RUNTIME_SRC_DIR, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter);
 			return new KernelClient({
 				cwd,
 				resolvePython: () => resolveProjectPython(cwd),
-				bootstrapCode: KERNEL_BOOTSTRAP_CODE,
+				bootstrapCode,
 				env: { PYTHONPATH: pythonPath },
 				journalPath,
 				onLost,
@@ -54,7 +59,7 @@ export default function piIpython(pi: ExtensionAPI): void {
 		return new KernelClient({
 			cwd,
 			resolvePython: () => ensureKernelPython({ pythonVersion: version }),
-			bootstrapCode: KERNEL_BOOTSTRAP_CODE,
+			bootstrapCode,
 			journalPath,
 			onLost,
 		});
@@ -137,6 +142,7 @@ export default function piIpython(pi: ExtensionAPI): void {
 			content: buildSystemPrompt(
 				promptOptions,
 				bridgedTools(pi.getAllTools(), IPYTHON_TOOL_NAME).length > 0 ? { search: config.piTools.search } : undefined,
+				prelude(),
 			),
 			...(current?.toolsAdded ? { toolsAdded: current.toolsAdded } : {}),
 			timestamp: current?.timestamp ?? Date.now(),
@@ -164,9 +170,10 @@ export default function piIpython(pi: ExtensionAPI): void {
 	pi.on("session_compact", async () => {
 		const current = kernel;
 		if (!current?.isRunning) return;
-		// `pi` is re-created by the bootstrap, like `bash`, which the runtime already leaves out.
+		// `pi` and the prelude's names are re-created by the bootstrap, like `bash`, which the runtime already leaves out.
+		const bootstrapNames = new Set(["pi", ...preludeNames(prelude())]);
 		const listed = await current.listNames(AbortSignal.timeout(STATE_LISTING_TIMEOUT_MS));
-		const names = listed?.filter((name) => name !== "pi") ?? null;
+		const names = listed?.filter((name) => !bootstrapNames.has(name)) ?? null;
 		// A failed listing still gets a notice, unless the Kernel stopped meanwhile.
 		if (names === null && !(kernel === current && current.isRunning)) return;
 		pendingStateNotice = { content: pythonStateNotice(names), id: randomUUID(), timestamp: Date.now() };

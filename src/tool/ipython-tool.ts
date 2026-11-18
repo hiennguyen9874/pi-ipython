@@ -23,6 +23,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { type CellResult, type KernelClient, KernelBusyError } from "../kernel/client.ts";
+import { preludeCode } from "../kernel/prelude.ts";
 import { renderCellCall, renderCellResult } from "../render/cell-renderer.ts";
 
 export const IPYTHON_TOOL_NAME = "ipython";
@@ -30,10 +31,15 @@ export const IPYTHON_TOOL_NAME = "ipython";
 /** The repo-owned `pi` module (Bridged calls), loaded from its file so the vendored runtime stays unchanged. */
 const PI_MODULE_PATH = fileURLToPath(new URL("../bridge/pi.py", import.meta.url));
 
-/** Run once in every new Kernel: binds `bash`, `asyncio`, and `pi` into the namespace. */
-export const KERNEL_BOOTSTRAP_CODE = `
+/** Run once in every new Kernel: binds `bash`, `asyncio`, `pi`, and the prelude's names into the namespace. */
+export function kernelBootstrapCode(prelude: readonly string[] = []): string {
+	return [KERNEL_BOOTSTRAP_CODE, preludeCode(prelude)].filter(Boolean).join("\n\n");
+}
+
+const KERNEL_BOOTSTRAP_CODE = `
 import asyncio
 import os as _pi_ipython_os
+import sys as _pi_ipython_sys
 
 _pi_ipython_os.environ["NO_COLOR"] = "1"
 

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- A default prelude of stdlib imports (`json`, `os`, `re`, `sys`, `time`, `math`, `shutil`, `itertools`, `functools`, `collections`, `textwrap`, `Path`, `datetime`, `timedelta`, `Counter`, `defaultdict`) runs in every Kernel, including after a Kernel replacement, so Cells can use them without importing. The system prompt lists the prelude, and the Python-state notice leaves its names out like other bootstrap names. (#44)
+
 ### Fixed
 
 - State-loss notice review fixes: collapsed Cell-loss diagnostics now show a bounded stderr preview while keeping the exit cause visible and preserving the full expanded/model result. `/tree` Keep and dismissed choices now send hidden branch notices, matching the other lifecycle notices. Real-session regressions cover large-stderr crashes and hidden Keep/dismiss notices. (#42)

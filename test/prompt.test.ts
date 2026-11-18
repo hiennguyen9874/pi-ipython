@@ -70,7 +70,7 @@ test("the prompt names no tool other than ipython and warns against magics and !
 	expect(prompt).toContain("!cmd");
 	expect(prompt).not.toContain("`pi`");
 	expect(prompt).not.toContain("await pi.");
-	// Baseline from a858d6f, before #33; only the date and temporary cwd vary.
+	// Baseline from a858d6f, before #33, plus the default prelude (#44); only the date and temporary cwd vary.
 	const baseline = readFileSync(new URL("./fixtures/no-pi-tools-prompt.txt", import.meta.url), "utf8")
 		.replace("{{DATE}}", localDate())
 		.replace("{{CWD}}", h.cwd.replace(/\\/g, "/"));

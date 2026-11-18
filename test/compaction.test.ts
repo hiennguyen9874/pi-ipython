@@ -43,13 +43,13 @@ function noticeEntries(harness: Harness) {
 
 test("after /compact, the next context lists the live Python names", async () => {
 	h = await createHarness();
-	await h.runCells("a = 1\nb = 'two'\n_private = 3\nimport json");
+	await h.runCells("a = 1\nb = 'two'\n_private = 3\nimport base64");
 
 	await compact(h);
 	const { result, seen } = await runCellSeeing(h, "a + 1");
 	expect(seen).toContain("[python-state]");
 	expect(seen).toContain("Your Python kernel persisted through compaction");
-	expect(seen).toContain("These names are still defined: a, b, json.");
+	expect(seen).toContain("These names are still defined: a, b, base64.");
 	expect(resultText(result)).toBe("2");
 });
 

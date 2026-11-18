@@ -48,14 +48,24 @@ function today(): string {
 	return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-/** `piTools` is set when a Pi tool is callable; `search` is whether `pi.search` is on. */
+/** The prompt line naming what the prelude already imported, or undefined without a prelude. */
+function preludePrompt(prelude: readonly string[]): string | undefined {
+	if (prelude.length === 0) return undefined;
+	return `- Already imported in every Kernel, no need to import again: ${prelude.map((statement) => `\`${statement.trim()}\``).join("; ")}`;
+}
+
+/** `piTools` is set when a Pi tool is callable; `search` is whether `pi.search` is on. `prelude` lists the bootstrap's import statements. */
 export function buildSystemPrompt(
 	options: Pick<BuildSystemPromptOptions, "cwd" | "contextFiles" | "skills">,
 	piTools: { search: boolean } | undefined,
+	prelude: readonly string[] = [],
 ): string {
-	const functions = piTools
-		? [CORE_PROMPT, PI_TOOLS_HEAD, ...(piTools.search ? [PI_SEARCH_PROMPT] : []), PI_TOOLS_TAIL].join("\n")
-		: CORE_PROMPT;
+	const preludeLine = preludePrompt(prelude);
+	const functions = [
+		CORE_PROMPT,
+		...(preludeLine ? [preludeLine] : []),
+		...(piTools ? [PI_TOOLS_HEAD, ...(piTools.search ? [PI_SEARCH_PROMPT] : []), PI_TOOLS_TAIL] : []),
+	].join("\n");
 	const parts = [functions, RULES_PROMPT];
 
 	const contextFiles = options.contextFiles ?? [];
