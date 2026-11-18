@@ -15,8 +15,8 @@ const CORE_PROMPT = `You have one tool, \`ipython\`: a persistent CPython REPL w
 ## Functions in the REPL
 
 - \`bash(command: str, timeout: float | None = 600) -> BashHandle\`: start a shell command in the background and return at once; each call is a new process, and a command still running after \`timeout\` seconds is killed (\`None\`: no limit)
-  - \`BashHandle\`: \`.pid\`, \`.running\`, \`.command\`, \`.tail(n=50)\`, \`.output()\`, \`.poll() -> BashResult | None\`, \`.kill(sig=SIGTERM, grace=5.0)\`, and \`await handle -> BashResult\`
-  - \`BashResult\`: \`.exit_code\`, \`.output\`, \`.duration\``;
+  - \`r = await bash(cmd)\` waits and gives a \`BashResult\`: \`.exit_code\`, \`.output\`, \`.duration\` (plain values; no \`.tail()\`, not awaitable)
+  - \`h = bash(cmd)\` gives a running \`BashHandle\`: \`.pid\`, \`.running\`, \`.command\`, \`.tail(n=50)\`, \`.output()\`, \`.poll() -> BashResult | None\`, \`.kill(sig=SIGTERM, grace=5.0)\`; \`await h\` gives its \`BashResult\``;
 
 const PI_TOOLS_HEAD = `- \`pi\`: the session's other tools (extension tools such as subagents or MCP servers), callable from Python; all of it is async
   - \`await pi.tools()\`: list the callable tools as dicts with \`name\`, \`description\` (first line), and \`namespace\``;
