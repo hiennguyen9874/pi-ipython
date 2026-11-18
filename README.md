@@ -33,7 +33,7 @@ Loading the extension means ipython mode: `ipython` becomes the only active tool
 
 The Kernel venv is prepared in the background when a session starts. The Kernel itself starts on the first Cell and is killed when you quit, reload, or switch sessions.
 
-Every Kernel starts with a prelude of common stdlib imports, so Cells can use them without importing: `json`, `os`, `re`, `sys`, `time`, `math`, `shutil`, `itertools`, `functools`, `collections`, `textwrap`, `Path` (pathlib), `datetime` and `timedelta` (from datetime), and `Counter` and `defaultdict` (from collections). The system prompt lists them.
+Every Kernel starts with a prelude of common stdlib imports, so Cells can use them without importing: `json`, `os`, `re`, `sys`, `time`, `math`, `shutil`, `itertools`, `functools`, `collections`, `textwrap`, `Path` (pathlib), `datetime` and `timedelta` (from datetime), and `Counter` and `defaultdict` (from collections). The system prompt lists them. Turn them off or add your own with `prelude` (see [Configuration](#configuration)).
 
 ## MCP and other Pi tools
 
@@ -75,14 +75,15 @@ Cells wait for MCP registration before running. Neither `builtin:codemode` nor `
 
 ## Configuration
 
-Global config lives in `~/.pi/agent/pi-ipython.json`. Project config lives in `.pi/pi-ipython.json` and wins per key. Invalid files, values, and unknown keys are reported and skipped, so the remaining values and defaults apply.
+Global config lives in `~/.pi/agent/pi-ipython.json`. Project config lives in `.pi/pi-ipython.json` and wins per key, except `prelude.imports`, where global and project entries are concatenated. Invalid files, values, and unknown keys are reported and skipped, so the remaining values and defaults apply.
 
 ```json
 {
   "confirmEachCell": false,
   "python": { "source": "uv", "version": "3.13" },
   "output": { "maxBytes": 51200, "maxLines": 2000 },
-  "piTools": { "list": true, "search": true }
+  "piTools": { "list": true, "search": true },
+  "prelude": { "defaults": true, "imports": [] }
 }
 ```
 
@@ -92,6 +93,8 @@ Global config lives in `~/.pi/agent/pi-ipython.json`. Project config lives in `.
 | `python.source` | `"uv"` | `"uv"`: a managed venv. `"project"`: the project's own `<cwd>/.venv`, so Cells can import your project's packages. |
 | `python.version` | `"3.13"` | Python version for the managed venv (3.11 or newer). |
 | `output.maxBytes` / `output.maxLines` | 50KB / 2000 | Cell output beyond these limits is truncated to its tail. The full output is saved to a temp file whose path is in the result. |
+| `prelude.defaults` | `true` | Run the default stdlib prelude (`json`, `os`, `re`, `Path`, …) in every Kernel. |
+| `prelude.imports` | `[]` | More import statements for every Kernel, such as `"import numpy as np"`. Each entry must be one absolute `import …` or `from … import …` statement without `*`; anything else is reported and skipped. An import that fails in the Kernel (a module that is not installed) is reported as a warning when the Kernel starts, and the rest still run. The system prompt lists the prelude, and the Python-state notice leaves its names out. |
 | `piTools.list` | `true` | List callable `direct`/`codemode` Pi tools in the `ipython` description (see [MCP and other Pi tools](#mcp-and-other-pi-tools)). `false` leaves the description without the list. |
 | `piTools.search` | `true` | Enable `pi.search(query, limit=8, namespace=None)` over callable Pi tools. `false` makes it raise `pi.ToolError` and leaves it out of the system prompt. |
 

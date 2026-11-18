@@ -4,12 +4,12 @@ import { getCurrentSystemMessage } from "@earendil-works/pi-ai";
 import { type BeforeAgentStartEvent, type ExtensionAPI, getAgentDir, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { listPiTools } from "./bridge/pi-tool-listing.ts";
 import { answerHostRequest, bridgedTools } from "./bridge/pi-tools.ts";
-import { loadConfig, type PiIpythonConfig } from "./config.ts";
+import { effectivePrelude, loadConfig, type PiIpythonConfig } from "./config.ts";
 import { ensureKernelPython, resolveProjectPython, RUNTIME_SRC_DIR } from "./kernel/bootstrap.ts";
 import { KernelClient } from "./kernel/client.ts";
 import { hostJournalPath, reapDeadHosts } from "./kernel/orphans.ts";
 import { buildSystemPrompt } from "./prompt/system-prompt.ts";
-import { DEFAULT_PRELUDE, preludeNames } from "./kernel/prelude.ts";
+import { preludeNames } from "./kernel/prelude.ts";
 import { createIpythonTool, IPYTHON_TOOL_NAME, kernelBootstrapCode, STATE_LOST_NOTICE } from "./tool/ipython-tool.ts";
 
 export { STATE_LOST_NOTICE };
@@ -39,7 +39,12 @@ export default function piIpython(pi: ExtensionAPI): void {
 	};
 
 	/** The prelude statements of the current config. */
-	const prelude = (): readonly string[] => DEFAULT_PRELUDE;
+	const prelude = (): readonly string[] => effectivePrelude(config);
+	/** Reports to the user: a UI notification, or stderr without a UI. Set on session start. */
+	let report = (message: string, _type: "error" | "warning") => console.error(message);
+	const onBootstrapStderr = (stderr: string) => {
+		for (const line of stderr.split("\n").filter((l) => l.trim())) report(`pi-ipython prelude: ${line}`, "warning");
+	};
 
 	const createKernel = (): KernelClient => {
 		const { source, version } = config.python;
@@ -51,6 +56,7 @@ export default function piIpython(pi: ExtensionAPI): void {
 				cwd,
 				resolvePython: () => resolveProjectPython(cwd),
 				bootstrapCode,
+				onBootstrapStderr,
 				env: { PYTHONPATH: pythonPath },
 				journalPath,
 				onLost,
@@ -60,6 +66,7 @@ export default function piIpython(pi: ExtensionAPI): void {
 			cwd,
 			resolvePython: () => ensureKernelPython({ pythonVersion: version }),
 			bootstrapCode,
+			onBootstrapStderr,
 			journalPath,
 			onLost,
 		});
@@ -105,11 +112,11 @@ export default function piIpython(pi: ExtensionAPI): void {
 		cwd = ctx.cwd;
 		const loaded = loadConfig(cwd);
 		config = loaded.config;
-		for (const error of loaded.errors) {
-			const message = `pi-ipython config: ${error}`;
-			if (ctx.hasUI) ctx.ui.notify(message, "error");
+		report = (message, type) => {
+			if (ctx.hasUI) ctx.ui.notify(message, type);
 			else console.error(message);
-		}
+		};
+		for (const error of loaded.errors) report(`pi-ipython config: ${error}`, "error");
 
 		// Kernels of pi hosts that died without shutting them down.
 		const journalDir = path.join(getAgentDir(), "pi-ipython", "journal");

@@ -80,6 +80,8 @@ export interface KernelClientOptions {
 	resolvePython: () => Promise<string>;
 	/** Code run once right after the Kernel starts, before any Cell. */
 	bootstrapCode?: string;
+	/** stderr of a bootstrap that succeeded, such as prelude imports that failed. */
+	onBootstrapStderr?: (stderr: string) => void;
 	/** Extra environment for the Kernel process. */
 	env?: Record<string, string>;
 	/** This host's orphan journal (see orphans.ts), so a Kernel left by a crashed host is reaped later. */
@@ -250,6 +252,7 @@ export class KernelClient {
 					const details = [result.stderr, result.error?.traceback.join("")].filter(Boolean).join("\n");
 					throw new Error(`Failed to initialize the Kernel runtime:\n${details}`);
 				}
+				if (result.stderr) this.options.onBootstrapStderr?.(result.stderr);
 			}
 		} catch (error) {
 			if (this.child === child) await this.shutdown();

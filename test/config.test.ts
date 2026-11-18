@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { fauxAssistantMessage, getSystemMessageText } from "@earendil-works/pi-ai";
 import { afterEach, expect, test } from "vitest";
 import { createHarness, type Harness, resultText } from "./harness.ts";
 
@@ -153,4 +154,95 @@ test("unparseable JSON and unknown keys are reported with the file", async () =>
 	]);
 	const [r] = await h.runCells("1 + 1");
 	expect(resultText(r!)).toBe("2");
+});
+
+
+function writeConfigs(dirs: { cwd: string; agentDir: string }, global: unknown, project?: unknown): void {
+	writeFileSync(join(dirs.agentDir, "pi-ipython.json"), JSON.stringify(global));
+	if (project !== undefined) {
+		mkdirSync(join(dirs.cwd, ".pi"), { recursive: true });
+		writeFileSync(join(dirs.cwd, ".pi", "pi-ipython.json"), JSON.stringify(project));
+	}
+}
+
+async function systemPrompt(harness: Harness): Promise<string> {
+	let prompt = "";
+	harness.setResponses([
+		(context) => {
+			prompt = getSystemMessageText(context.messages.find((m) => m.role === "system")!);
+			return fauxAssistantMessage("hi");
+		},
+	]);
+	await harness.session.prompt("hi");
+	return prompt;
+}
+
+test("prelude.defaults false leaves the default names undefined and out of the prompt", async () => {
+	h = await createHarness({ setup: (dirs) => writeConfigs(dirs, { prelude: { defaults: false } }) });
+	const [r] = await h.runCells("'json' in globals(), 'Path' in globals()");
+	expect(resultText(r!)).toBe("(False, False)");
+	expect(await systemPrompt(h)).not.toContain("Already imported");
+});
+
+test("prelude.imports from global and project config concatenate, bind their names, and join the prompt", async () => {
+	h = await createHarness({
+		setup: (dirs) => writeConfigs(
+			dirs,
+			{ prelude: { imports: ["import base64 as b64", "from string import (ascii_lowercase as lower, digits,)"] } },
+			{ prelude: { defaults: false, imports: ["import urllib.parse", "import base64 as b64"] } },
+		),
+	});
+	const [r] = await h.runCells("b64.b64encode(b'hi'), lower[:3], digits[:3], urllib.parse.quote('a b'), 'json' in globals()");
+	expect(resultText(r!)).toBe("(b'aGk=', 'abc', '012', 'a%20b', False)");
+	const prompt = await systemPrompt(h);
+	expect(prompt).toContain(
+		"- Already imported in every Kernel, no need to import again: `import base64 as b64`; `from string import (ascii_lowercase as lower, digits,)`; `import urllib.parse`\n",
+	);
+});
+
+test("invalid prelude.imports entries are reported and skipped; valid entries and defaults still apply", async () => {
+	const notices: string[] = [];
+	let file = "";
+	h = await createHarness({
+		ui: { notify: (m) => notices.push(m) },
+		setup: (dirs) => {
+			file = join(dirs.agentDir, "pi-ipython.json");
+			writeConfigs(dirs, { prelude: { imports: ["import os; os.remove('x')", "from os import *", 42, "from .x import y", "print(1)", "import base64"] } });
+		},
+	});
+	const expected = 'one "import …" or "from … import …" statement (absolute, without "*")';
+	expect(notices).toEqual([
+		`pi-ipython config: ${file}: "prelude.imports[0]" must be ${expected}, got "import os; os.remove('x')"`,
+		`pi-ipython config: ${file}: "prelude.imports[1]" must be ${expected}, got "from os import *"`,
+		`pi-ipython config: ${file}: "prelude.imports[2]" must be ${expected}, got 42`,
+		`pi-ipython config: ${file}: "prelude.imports[3]" must be ${expected}, got "from .x import y"`,
+		`pi-ipython config: ${file}: "prelude.imports[4]" must be ${expected}, got "print(1)"`,
+	]);
+	const [r] = await h.runCells("base64.b64encode(b'hi'), json.dumps(1)");
+	expect(resultText(r!)).toBe("(b'aGk=', '1')");
+});
+
+test("prelude.imports that is not an array is reported", async () => {
+	const notices: string[] = [];
+	h = await createHarness({
+		ui: { notify: (m) => notices.push(m) },
+		setup: (dirs) => writeConfigs(dirs, { prelude: { imports: "import numpy" } }),
+	});
+	expect(notices).toEqual([expect.stringContaining('"prelude.imports" must be an array of import statements, got "import numpy"')]);
+});
+
+test("a prelude import that fails is reported to the user once per Kernel start; other prelude names still work", async () => {
+	const notices: { message: string; type?: string }[] = [];
+	h = await createHarness({
+		ui: { notify: (message, type) => notices.push({ message, type }) },
+		setup: (dirs) => writeConfigs(dirs, { prelude: { imports: ["import no_such_module_xyz as nope", "import base64"] } }),
+	});
+	const [r] = await h.runCells("base64.b64encode(b'hi'), json.dumps(1), 'nope' in globals()");
+	expect(resultText(r!)).toBe("(b'aGk=', '1', False)");
+	const [again] = await h.runCells("1");
+	expect(resultText(again!)).toBe("1");
+	expect(notices).toEqual([{
+		message: "pi-ipython prelude: 'import no_such_module_xyz as nope' failed: ModuleNotFoundError: No module named 'no_such_module_xyz'",
+		type: "warning",
+	}]);
 });
