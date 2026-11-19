@@ -117,6 +117,13 @@ export type HostRequestHandler = (data: Record<string, unknown>) => Promise<unkn
 /** Told that a running Cell's output grew, with its streams so far. Read them before the Cell's result is used. */
 export type CellOutputListener = (output: CellOutput) => void;
 
+interface CellExecutionOptions {
+	signal?: AbortSignal;
+	onHostRequest?: HostRequestHandler;
+	onDispatch?: (startedAt: number) => void;
+	onOutput?: CellOutputListener;
+}
+
 /** Requests that run in order and end with a `done` frame. */
 type KernelRequest = { type: "execute"; code: string } | { type: "list_names" };
 
@@ -183,12 +190,12 @@ export class KernelClient {
 	}
 
 	/**
-	 * Run one Cell, starting the Kernel first if needed. `onHostRequest` answers its host requests while it runs;
-	 * `onOutput` hears of its output (its own and Background output) until its tool call returns.
+	 * Run one Cell, starting the Kernel first if needed. `onDispatch` marks when its request is sent;
+	 * `onOutput` hears of its own and Background output until its tool call returns.
 	 */
-	async execute(code: string, signal?: AbortSignal, onHostRequest?: HostRequestHandler, onOutput?: CellOutputListener): Promise<CellResult> {
+	async execute(code: string, options?: CellExecutionOptions): Promise<CellResult> {
 		await this.start();
-		return this.request({ type: "execute", code }, signal, onHostRequest, onOutput);
+		return this.request({ type: "execute", code }, options);
 	}
 
 	/**
@@ -199,7 +206,7 @@ export class KernelClient {
 		if (!this.child || this.active) return null;
 		try {
 			await this.starting;
-			const result = await this.request({ type: "list_names" }, signal);
+			const result = await this.request({ type: "list_names" }, { signal });
 			disposeCellOutput(result.output);
 			return result.status === "ok" ? (result.names ?? []) : null;
 		} catch {
@@ -474,22 +481,15 @@ export class KernelClient {
 		}
 	}
 
-	private request(
-		request: KernelRequest,
-		signal?: AbortSignal,
-		onHostRequest?: HostRequestHandler,
-		onOutput?: CellOutputListener,
-	): Promise<CellResult> {
-		const run = this.queue.then(() => this.send(request, signal, onHostRequest, onOutput));
+	private request(request: KernelRequest, options?: CellExecutionOptions): Promise<CellResult> {
+		const run = this.queue.then(() => this.send(request, options));
 		this.queue = run.catch(() => undefined);
 		return run;
 	}
 
 	private async send(
 		request: KernelRequest,
-		signal?: AbortSignal,
-		onHostRequest?: HostRequestHandler,
-		onOutput?: CellOutputListener,
+		{ signal, onHostRequest, onDispatch, onOutput }: CellExecutionOptions = {},
 	): Promise<CellResult> {
 		await this.waitUntilIdle(signal);
 		if (signal?.aborted) {
@@ -536,7 +536,7 @@ export class KernelClient {
 			};
 			this.active = cell;
 			signal?.addEventListener("abort", onAbort, { once: true });
-			this.write({ ...request, id: cell.id }).catch((error: Error) => {
+			this.write({ ...request, id: cell.id }, onDispatch && (() => onDispatch(cell.started))).catch((error: Error) => {
 				if (this.active !== cell) return;
 				this.clearActive();
 				cell.reject(error);
@@ -578,7 +578,7 @@ export class KernelClient {
 		return truncateTail(stderr.tail, { maxBytes: limits.maxBytes ?? DEFAULT_MAX_BYTES, maxLines: limits.maxLines ?? DEFAULT_MAX_LINES }).content;
 	}
 
-	private write(request: Record<string, unknown>): Promise<void> {
+	private write(request: Record<string, unknown>, onQueued?: () => void): Promise<void> {
 		const child = this.child;
 		if (!child) return Promise.reject(new Error("Kernel stdin is not connected"));
 		return new Promise<void>((resolve, reject) => {
@@ -588,6 +588,8 @@ export class KernelClient {
 				return;
 			}
 			stdin.write(`${JSON.stringify(request)}\n`, (error) => (error ? reject(error) : resolve()));
+			// Notify before any output frames can arrive, without letting a listener fail the Cell.
+			try { onQueued?.(); } catch {}
 		}).catch((error: Error) => {
 			// A write callback can fail before any stream error or process close event.
 			// Retire its owning Kernel now, so the next Cell cannot reuse a broken transport.

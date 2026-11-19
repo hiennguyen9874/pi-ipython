@@ -44,11 +44,10 @@ export function renderCellResult(
 	const container = new Container();
 	const add = (text: string) => container.addChild(new Text(text, 0, 0));
 	const d = result.details;
-	const elapsed = elapsedText(context, isPartial);
+	const elapsed = elapsedText(context, isPartial && d?.running ? d.startedAt : undefined);
 	if (isPartial) {
-		// A running Cell: its output so far (pi never sends partial results to the model).
 		if (d?.running) addStreams(container, d, expanded, theme, context);
-		add(theme.fg("muted", `Running… ${elapsed}`));
+		if (elapsed !== undefined) add(theme.fg("muted", `Running… ${elapsed}`));
 		return container;
 	}
 	// A thrown error leaves no Cell result (pi sets details to {}).
@@ -88,54 +87,48 @@ export function renderCellResult(
 	return container;
 }
 
-/** stdout, stderr, the result, Background output, then the traceback when expanded: the tail within the output limits. */
-function addStreams(container: Container, d: IpythonToolDetails, expanded: boolean, theme: Theme, context: Context): void {
+/** Stream tails, followed by the traceback on expanded final results. */
+function addStreams(container: Container, details: IpythonToolDetails, expanded: boolean, theme: Theme, context: Context): void {
 	const lines: { text: string; color: Parameters<Theme["fg"]>[0] }[] = [];
 	const append = (text: string, color: Parameters<Theme["fg"]>[0]) => {
 		for (const line of trimNewline(text).split("\n")) lines.push({ text: line, color });
 	};
-	if (d.stdout) append(d.stdout, "toolOutput");
-	if (d.stderr) append(d.stderr, "warning");
-	if (d.result !== undefined) append(d.result, "toolOutput");
-	if (d.backgroundOutput) append(`[background output]\n${d.backgroundOutput}`, "muted");
-	const errorLine = d.error && (d.error.evalue ? `${d.error.ename}: ${d.error.evalue}` : d.error.ename);
-	if (d.error && expanded) {
+	if (details.stdout) append(details.stdout, "toolOutput");
+	if (details.stderr) append(details.stderr, "warning");
+	if (details.result !== undefined) append(details.result, "toolOutput");
+	if (details.backgroundOutput) append(`[background output]\n${details.backgroundOutput}`, "muted");
+	if (!details.running && details.error && expanded) {
+		const { ename, evalue } = details.error;
+		const errorLine = evalue ? `${ename}: ${evalue}` : ename;
 		// The traceback ends with the error line, which is drawn highlighted below.
-		let traceback = trimNewline(d.error.traceback.join(""));
+		let traceback = trimNewline(details.error.traceback.join(""));
 		if (errorLine && traceback.endsWith(errorLine)) traceback = traceback.slice(0, -errorLine.length).trimEnd();
 		if (traceback) append(traceback, "toolOutput");
 	}
-	// Limit raw text, not ANSI styling, using the same limits as the model-facing result.
-	const raw = lines.map((line) => line.text).join("\n");
-	const body = truncateTail(raw, d.outputLimits).content;
-	if (!body) return;
-	const kept = body.split("\n");
-	// Locate the raw tail, including partial lines and a discarded final newline.
-	const firstLine = raw.slice(0, raw.lastIndexOf(body)).split("\n").length - 1;
-	const colors = lines.slice(firstLine);
-	const styled = kept.map((line, i) => theme.fg(colors[i]!.color, line)).join("\n");
+	if (!lines.length) return;
+	let kept = lines;
+	if (!details.running) {
+		// Final results use the model-facing limits; live details already bound each stream.
+		const raw = lines.map((line) => line.text).join("\n");
+		const body = truncateTail(raw, details.outputLimits).content;
+		if (!body) return;
+		const firstLine = raw.slice(0, raw.lastIndexOf(body)).split("\n").length - 1;
+		kept = body.split("\n").map((text, i) => ({ text, color: lines[firstLine + i]!.color }));
+	}
+	const styled = kept.map(({ text, color }) => theme.fg(color, text)).join("\n");
 	container.addChild(expanded ? new Text(styled, 0, 0) : new TailPreview(styled, theme, context));
 }
 
-interface TimerState {
-	startedAt?: number;
-	interval?: ReturnType<typeof setInterval>;
-}
-
-/**
- * How long the Cell has been running, redrawn every second while partial. Like pi's own tool timer,
- * which pi does not export.
- */
-function elapsedText(context: Context, isPartial: boolean): string {
-	const state = ((context.state as { ipythonTimer?: TimerState }).ipythonTimer ??= {});
-	if (!isPartial || context.isError) {
-		clearInterval(state.interval);
-		state.interval = undefined;
-		return "";
+/** How long the Cell has been running since dispatch, redrawn every second while partial. */
+function elapsedText(context: Context, startedAt: number | undefined): string | undefined {
+	const state = context.state as { ipythonTimer?: ReturnType<typeof setInterval> };
+	if (startedAt === undefined || context.isError) {
+		clearInterval(state.ipythonTimer);
+		state.ipythonTimer = undefined;
+		return;
 	}
-	state.startedAt ??= Date.now();
-	state.interval ??= setInterval(() => context.invalidate(), 1000);
-	return formatElapsed(Date.now() - state.startedAt);
+	state.ipythonTimer ??= setInterval(() => context.invalidate(), 1000);
+	return formatElapsed(Date.now() - startedAt);
 }
 
 /** `4.2s` below a minute, then `1m 30s` and `2h 3m 4s`, as pi formats tool durations. */

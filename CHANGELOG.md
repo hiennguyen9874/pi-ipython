@@ -12,6 +12,8 @@
 
 ### Fixed
 
+- Live Cell output review fixes: `Running…` starts when the Cell is sent to the Kernel, not during startup or a busy-Kernel prompt. Expanding the live row shows each bounded stream tail and the Background output label. The RPC tail respects the byte limit even when that label only fits in the truncation notice. Final results and Spill files are unchanged. (#23)
+
 - Cell output no longer grows pi's memory or session file without bound. Each stream (stdout, stderr, Background output) keeps a bounded tail and begins spooling as soon as either configured output limit is crossed. The Spill file preserves the original text, including Unicode across frames, and `details` stores only the tails. Intermediate spools are removed after assembly or on Kernel loss. A failed spool write keeps the Cell running and reports why full output could not be saved. One resize worker keeps the last eight images in arrival order, including Background displays; drop notices remain visible outside the truncated text. (#19)
 - A Background command (a `bash()` handle that outlives its Cell) that finishes no longer adds a misleading `Background bash completion follow-up … was not accepted` warning to the next Cell's background output. The host now acknowledges the runtime's `bash.completed` and `bash.consumed` requests whether or not a Cell is running, without notifying the model; other host requests from finished Cells are still rejected. Real-session regressions cover completion between Cells and during another Cell. (#49)
 

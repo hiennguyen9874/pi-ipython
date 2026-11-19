@@ -1,3 +1,5 @@
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, initTheme, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
 import { afterEach, beforeAll, expect, test } from "vitest";
@@ -87,27 +89,65 @@ test("Background output arriving while a Cell runs streams with it", async () =>
 	expect(text(live[0]!)).toContain("[background output]\ntick");
 });
 
-test("a partial result shows the output tail and the running time", async () => {
-	h = await createHarness();
-	const row = new ToolExecutionComponent(
-		"ipython", "call-1", { code: "print('hi')" }, { showImages: true }, h.session.getToolDefinition("ipython"),
-		{ requestRender: () => {} } as unknown as TUI, h.cwd,
-	);
-	row.markExecutionStarted();
-	row.setArgsComplete();
-	const plain = () => row.render(80).map((l) => l.replace(/\x1b\[[0-9;]*m/g, "").trim()).join("\n");
-
-	row.updateResult({ content: [], details: undefined, isError: false }, true);
-	expect(plain()).toMatch(/Running… \d+\.\ds/);
-
-	const details: IpythonToolDetails = {
-		stdout: "one\ntwo\n", stderr: "careful\n", backgroundOutput: "tick\n", images: [], status: "ok", durationMs: 0, running: true,
+function outputLimits(output: { maxBytes?: number; maxLines?: number }) {
+	return ({ cwd }: { cwd: string }) => {
+		mkdirSync(join(cwd, ".pi"), { recursive: true });
+		writeFileSync(join(cwd, ".pi", "pi-ipython.json"), JSON.stringify({ output }));
 	};
-	row.updateResult({ content: [{ type: "text", text: "one\ntwo" }], details, isError: false }, true);
-	const shown = plain();
-	expect(shown).toContain("two\ncareful\n[background output]\ntick");
-	expect(shown).toMatch(/Running… \d+\.\ds/);
+}
 
-	row.updateResult({ content: [{ type: "text", text: "one\ntwo" }], details: { ...details, running: undefined }, isError: false });
-	expect(plain()).not.toContain("Running");
+test("live RPC text respects a byte limit smaller than the Background output heading", async () => {
+	h = await createHarness({ setup: outputLimits({ maxBytes: 1 }) });
+	const { updates } = recordUpdates(h);
+	const [r] = await h.runCells("import threading, time\nthreading.Thread(target=lambda: print('tick', end='', flush=True)).start()\ntime.sleep(0.6)");
+	expect(r!.isError).toBe(false);
+	expect(updates.map(text)).toContainEqual(expect.stringMatching(/^k\n\n\[Output truncated .* so far\): showing the tail of background output.*\]$/));
+});
+
+test("real Cell updates render the last five visual lines, expand to all stream tails, and stop the timer", async () => {
+	h = await createHarness({ setup: outputLimits({ maxLines: 6 }) });
+	const { session, cwd } = h;
+	const code = [
+		"import sys, threading, time",
+		"print('own-output', flush=True)",
+		"print('warning-output', file=sys.stderr, flush=True)",
+		"threading.Thread(target=lambda: print('\\n'.join(f'tick-{i}' for i in range(8)), flush=True)).start()",
+		"time.sleep(0.6)",
+	].join("\n");
+	let row: ToolExecutionComponent | undefined;
+	const plain = () => row!.render(80).map((l) => l.replace(/\x1b\[[0-9;]*m/g, "").trim()).join("\n");
+	let beforeDispatch = "";
+	let collapsed = "";
+	let expanded = "";
+	let final = "";
+	session.subscribe((event) => {
+		if (!("toolName" in event) || event.toolName !== "ipython") return;
+		if (event.type === "tool_execution_start") {
+			row = new ToolExecutionComponent(
+				"ipython", event.toolCallId, { code }, { showImages: true }, session.getToolDefinition("ipython"),
+				{ requestRender: () => {} } as unknown as TUI, cwd,
+			);
+			row.markExecutionStarted();
+			row.setArgsComplete();
+			beforeDispatch = plain();
+		} else if (event.type === "tool_execution_update") {
+			row!.updateResult({ ...event.partialResult, isError: false }, true);
+			if ((event.partialResult.details as IpythonToolDetails).backgroundOutput.includes("tick-7")) {
+				row!.setExpanded(false);
+				collapsed = plain();
+				row!.setExpanded(true);
+				expanded = plain();
+			}
+		} else if (event.type === "tool_execution_end") {
+			row!.updateResult({ ...event.result, isError: event.isError });
+			final = plain();
+		}
+	});
+	const [r] = await h.runCells(code);
+	expect(r!.isError).toBe(false);
+	expect(beforeDispatch).not.toContain("Running…");
+	expect(collapsed).toMatch(/\ntick-3\ntick-4\ntick-5\ntick-6\ntick-7\nRunning… \d+\.\ds/);
+	expect(collapsed).not.toContain("\ntick-2\n");
+	expect(expanded).toContain("\nown-output\nwarning-output\n[background output]\ntick-2");
+	expect(final).not.toContain("Running…");
 });

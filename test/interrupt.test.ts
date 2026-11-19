@@ -146,10 +146,16 @@ test("dismissing the wait/kill choice returns Kernel busy and keeps the Kernel",
 	await h.runCells("x = 41");
 	await runAndAbort(h, stubbornCell(h.cwd), join(h.cwd, "started"));
 
+	const updates: unknown[] = [];
+	const unsubscribe = h.session.subscribe((event) => {
+		if (event.type === "tool_execution_update" && event.toolName === "ipython") updates.push(event.partialResult);
+	});
 	const [busy] = await h.runCells("x + 1");
+	unsubscribe();
 	expect(prompts).toHaveLength(1);
 	expect(busy?.isError).toBe(true);
 	expect(resultText(busy!)).toContain("Kernel busy");
+	expect(updates).toEqual([]);
 
 	writeFileSync(join(h.cwd, "release"), "");
 	const [next] = await h.runCells("x + 1");

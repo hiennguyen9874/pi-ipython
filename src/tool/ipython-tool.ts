@@ -91,6 +91,8 @@ export interface IpythonToolDetails extends Omit<CellResult, "output"> {
 	outputLimits?: TruncationOptions;
 	/** Set on partial updates while the Cell runs; its streams are tails cut to `outputLimits`. */
 	running?: true;
+	/** Dispatch timestamp used by the TUI timer; only present on partial updates. */
+	startedAt?: number;
 	/** True when this result carries the State-loss notice. */
 	stateLost?: boolean;
 	stateLossCause?: string;
@@ -210,17 +212,21 @@ export function composeCellText(
 		? `the last ${formatSize(t.outputBytes)} of the last line`
 		: `the last ${t.outputLines} of ${totalLines} lines`;
 	if (backgroundStart >= 0 && tail.length - content.length > backgroundStart) {
-		// The tail starts inside the background section: restore its attribution, reserving space.
+		// Restore the attribution unless it can only fit in the live notice.
+		const headingBytes = Buffer.byteLength(BACKGROUND_HEADING);
+		const showHeading = !live || headingBytes <= maxBytes;
 		const background = truncateTail(tail.slice(backgroundStart + BACKGROUND_HEADING.length + 1), {
-			maxLines: Math.max(0, maxLines - 1),
-			maxBytes: Math.max(0, maxBytes - Buffer.byteLength(BACKGROUND_HEADING) - 1),
+			maxLines: showHeading ? Math.max(0, maxLines - 1) : maxLines,
+			maxBytes: showHeading ? Math.max(0, maxBytes - headingBytes - 1) : maxBytes,
 		});
-		content = background.content ? `${BACKGROUND_HEADING}\n${background.content}` : BACKGROUND_HEADING;
+		content = showHeading
+			? [BACKGROUND_HEADING, background.content].filter(Boolean).join("\n")
+			: background.content;
 		shown = `the tail of background output (${formatSize(background.outputBytes)})`;
 	}
 	if (live) {
 		const outputWarning = `[Output truncated (${formatSize(totalBytes)} so far): showing ${shown}]`;
-		return { text: `${content}\n\n${outputWarning}`, outputWarning };
+		return { text: content ? `${content}\n\n${outputWarning}` : outputWarning, outputWarning };
 	}
 	const fullOutputPath = join(tmpdir(), `pi-ipython-${randomUUID()}.log`);
 	try {
@@ -238,7 +244,7 @@ export function composeCellText(
 const LIVE_UPDATE_INTERVAL_MS = 100;
 
 /** A running Cell's streams (none yet when undefined) as a partial update: tails cut to the limits, no Spill file. */
-function liveResult(output: CellOutput | undefined, limits: TruncationOptions, started: number) {
+function liveResult(output: CellOutput | undefined, limits: TruncationOptions, startedAt: number) {
 	const cut = (b: OutputBuffer | undefined) => (b ? truncateTail(b.tail, limits).content : "");
 	const details: IpythonToolDetails = {
 		stdout: cut(output?.stdout),
@@ -246,15 +252,16 @@ function liveResult(output: CellOutput | undefined, limits: TruncationOptions, s
 		backgroundOutput: cut(output?.background),
 		images: [],
 		status: "ok",
-		durationMs: Date.now() - started,
+		durationMs: Date.now() - startedAt,
 		outputLimits: limits,
 		running: true,
+		startedAt,
 	};
 	if (!output || output.stdout.totalBytes + output.stderr.totalBytes + output.background.totalBytes === 0) {
 		return { content: [], details };
 	}
-	const r: CellResult = { stdout: "", stderr: "", images: [], backgroundOutput: "", output, status: "ok", durationMs: 0 };
-	return { content: [{ type: "text" as const, text: composeCellText(r, limits, { live: true }).text }], details };
+	const partialCell: CellResult = { ...details, output };
+	return { content: [{ type: "text" as const, text: composeCellText(partialCell, limits, { live: true }).text }], details };
 }
 
 /**
@@ -262,22 +269,25 @@ function liveResult(output: CellOutput | undefined, limits: TruncationOptions, s
  * output grows. None after `close`, so none outlives the tool call.
  */
 function liveUpdates(onUpdate: AgentToolUpdateCallback<IpythonToolDetails>, limits: TruncationOptions) {
-	const started = Date.now();
+	let startedAt: number | undefined;
 	let output: CellOutput | undefined;
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	let lastAt = 0;
 	let closed = false;
 	const emit = () => {
 		timer = undefined;
-		if (closed) return;
+		if (closed || startedAt === undefined) return;
 		lastAt = Date.now();
 		try {
-			onUpdate(liveResult(output, limits, started));
+			onUpdate(liveResult(output, limits, startedAt));
 		} catch {} // Progress must never fail the Cell.
 	};
 	return {
 		/** Like pi's bash tool: an update with no output marks the start. */
-		start: emit,
+		start(dispatchedAt: number) {
+			startedAt = dispatchedAt;
+			emit();
+		},
 		notify(current: CellOutput) {
 			if (closed) return;
 			output = current;
@@ -360,19 +370,18 @@ export function createIpythonTool({
 			}
 			let r: CellResult;
 			const live = onUpdate && liveUpdates(onUpdate, getOutputLimits());
-			live?.start();
 			try {
 				for (;;) {
 					// A dialog may have outlived the Kernel whose state this Cell assumes.
 					const cause = takeStateLoss();
 					if (cause !== undefined) return stateLostResult(cause);
 					try {
-						r = await getKernel().execute(
-							params.code,
+						r = await getKernel().execute(params.code, {
 							signal,
-							answerHostRequest && ((data) => answerHostRequest(data, ctx, signal)),
-							live?.notify,
-						);
+							onHostRequest: answerHostRequest && ((data) => answerHostRequest(data, ctx, signal)),
+							onDispatch: live?.start,
+							onOutput: live?.notify,
+						});
 						break;
 					} catch (error) {
 						if (!(error instanceof KernelBusyError) || signal?.aborted) {
