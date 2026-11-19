@@ -70,10 +70,10 @@ pi -e git:github.com/hiennguyen9874/pi-ipython
 
 The uv environment comes with these packages installed: requests, httpx, pyyaml, tomli, python-dotenv, pandas, numpy, scipy, beautifulsoup4, lxml, pydantic, tyro. The system prompt lists them.
 
-- **Add your own** with `python.packages` (uv requirement strings, e.g. `"polars"` or `"rich>=13"`). Global and project lists are combined.
+- **Add your own** with `python.packages` (uv requirement strings, e.g. `"polars"` or `"rich>=13"`). Global and trusted project lists are combined; pi ignores package entries from untrusted projects. Use absolute paths for local packages.
 - **Turn the defaults off** with `python.defaultPackages: false`.
-- **During a session** the model can install more with `await bash(f"uv pip install --python {sys.executable} <pkg>")`. Those installs aren't recorded: they're lost when the environment is rebuilt (for example after a pi-ipython upgrade). To keep a package, add it to `python.packages`.
-- **Each package list gets its own environment**, in `~/.pi/agent/pi-ipython/kernel-venv-<version>-<hash>`, so projects with different lists don't rebuild each other's. Old ones aren't cleaned up yet; delete directories you no longer need.
+- **During a session** the model can install more with `import shlex, sys; await bash(f"uv pip install --python {shlex.quote(sys.executable)} package-name")` (replace `package-name`). Those installs aren't recorded: they're lost when the environment is rebuilt (for example after a pi-ipython upgrade). To keep a package, add it to `python.packages`.
+- **Each package list gets its own environment**, in `~/.pi/agent/pi-ipython/kernel-venv-<version>-<hash>` (full package-set hash; no hash for an empty set), so projects with different lists don't rebuild each other's. If set, `PI_IPYTHON_VENV_DIR` replaces the path prefix, not the version or hash. Old directories, including those from the shorter-hash layout, aren't cleaned up yet.
 - If a package fails to install, the Kernel doesn't start and the error names `python.packages`.
 - With `python.source: "project"` nothing is installed: Kernel packages are ignored, with a warning if `python.packages` is set.
 
@@ -161,7 +161,7 @@ There are two config files:
 - **Global:** `~/.pi/agent/pi-ipython.json`
 - **Project:** `.pi/pi-ipython.json`
 
-Project values override global ones key by key. The exceptions are `prelude.imports` and `python.packages`: global and project lists are combined. If a file has a bad value or an unknown key, you get a warning and that entry is skipped. Everything else still applies.
+Project values override global ones key by key. The exceptions are `prelude.imports` and `python.packages`: global and project lists are combined (trusted projects only for `python.packages`). If a file has a bad value or an unknown key, you get a warning and that entry is skipped. Everything else still applies.
 
 Defaults:
 
@@ -183,7 +183,7 @@ Defaults:
 | `python.source` | `"uv"` | `"uv"`: use a separate environment managed by uv. `"project"`: use your project's `<cwd>/.venv`, so Cells can import your project's packages (uv not required). |
 | `python.version` | `"3.13"` | Python version for the uv environment (3.11 or newer). |
 | `python.defaultPackages` | `true` | Install the default [Kernel packages](#kernel-packages) and pre-import `np`, `pd`, `requests`, `httpx`, `yaml` (uv only). |
-| `python.packages` | `[]` | Extra packages for the uv environment, as uv requirement strings. Entries that are empty or start with `-` are skipped with a warning. |
+| `python.packages` | `[]` | Kernel packages for the uv environment, as uv requirement strings. Entries that are empty or start with `-` are skipped with a warning. |
 | `output.maxBytes` / `output.maxLines` | `51200` / `2000` | When a Cell prints more than this, only the end is shown. The full output is saved to a Spill file, and the result includes its path. |
 | `prelude.defaults` | `true` | Load the [ready-made imports](#what-changes-when-its-enabled). |
 | `prelude.imports` | `[]` | Extra imports for every Kernel, e.g. `"import numpy as np"`. See the rules below. |

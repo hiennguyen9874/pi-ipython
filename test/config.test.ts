@@ -1,11 +1,8 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { fauxAssistantMessage, getSystemMessageText } from "@earendil-works/pi-ai";
 import { afterEach, expect, test } from "vitest";
-import { kernelVenvDir } from "../src/kernel/bootstrap.ts";
-import { DEFAULT_PACKAGE_REQUIREMENTS } from "../src/kernel/packages.ts";
-import { createHarness, type Harness, resultText } from "./harness.ts";
+import { createHarness, defaultKernelVenv, type Harness, resultText, systemPrompt, writeConfigs } from "./harness.ts";
 
 let h: Harness | undefined;
 afterEach(async () => {
@@ -13,7 +10,7 @@ afterEach(async () => {
 	h = undefined;
 });
 
-const managedVenv = kernelVenvDir("3.13", DEFAULT_PACKAGE_REQUIREMENTS);
+const managedVenv = defaultKernelVenv();
 const whereCell = "import sys\n(sys.prefix, '%d.%d' % sys.version_info[:2])";
 
 function writeGlobalConfig(agentDir: string, config: unknown): void {
@@ -158,27 +155,6 @@ test("unparseable JSON and unknown keys are reported with the file", async () =>
 	expect(resultText(r!)).toBe("2");
 });
 
-
-function writeConfigs(dirs: { cwd: string; agentDir: string }, global: unknown, project?: unknown): void {
-	writeFileSync(join(dirs.agentDir, "pi-ipython.json"), JSON.stringify(global));
-	if (project !== undefined) {
-		mkdirSync(join(dirs.cwd, ".pi"), { recursive: true });
-		writeFileSync(join(dirs.cwd, ".pi", "pi-ipython.json"), JSON.stringify(project));
-	}
-}
-
-async function systemPrompt(harness: Harness): Promise<string> {
-	let prompt = "";
-	harness.setResponses([
-		(context) => {
-			prompt = getSystemMessageText(context.messages.find((m) => m.role === "system")!);
-			return fauxAssistantMessage("hi");
-		},
-	]);
-	await harness.session.prompt("hi");
-	return prompt;
-}
-
 test("prelude.defaults false leaves the default names undefined and out of the prompt", async () => {
 	h = await createHarness({ setup: (dirs) => writeConfigs(dirs, { prelude: { defaults: false } }) });
 	const [r] = await h.runCells("'json' in globals(), 'Path' in globals()");
@@ -210,7 +186,7 @@ test("with defaults on, configured imports get their own sub-line, without repea
 		setup: (dirs) => writeConfigs(dirs, { prelude: { imports: ["from pathlib import Path", "import numpy as np", "import base64 as b64"] } }),
 	});
 	const prompt = await systemPrompt(h);
-	const section = prompt.slice(prompt.indexOf("- Pre-imported"), prompt.indexOf("- Installed Python packages")).trimEnd().split("\n");
+	const section = prompt.slice(prompt.indexOf("- Pre-imported"), prompt.indexOf("- Installed Kernel packages")).trimEnd().split("\n");
 	expect(section).toEqual([
 		"- Pre-imported in the REPL only (files and scripts you write still need their own imports):",
 		"  - stdlib: json, os, re, sys, time, math, shutil, itertools, functools, collections, textwrap, Path, datetime (the class), timedelta, Counter, defaultdict",

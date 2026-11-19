@@ -9,7 +9,7 @@
 // MIT License, see LICENSE.
 
 import { type BuildSystemPromptOptions, formatSkillsForPrompt } from "@earendil-works/pi-coding-agent";
-import { DEFAULT_PACKAGE_PRELUDE, packageLabels } from "../kernel/packages.ts";
+import { DEFAULT_PACKAGE_PRELUDE } from "../kernel/packages.ts";
 import { DEFAULT_PRELUDE, preludeNames } from "../kernel/prelude.ts";
 
 const CORE_PROMPT = `You have one tool, \`ipython\`: a persistent CPython REPL where top-level \`await\` works. Every other capability is a Python function in that REPL. Variables, functions, and imports persist between calls.
@@ -58,7 +58,7 @@ export interface PromptPrelude {
 	/** Whether the default stdlib prelude runs. */
 	defaults: boolean;
 	/** Whether the default packages' imports run (the default packages are installed). */
-	packages: boolean;
+	includeDefaultPackageImports: boolean;
 	/** Configured import statements. */
 	imports: readonly string[];
 }
@@ -72,8 +72,8 @@ const DEFAULT_PRELUDE_TEXT = preludeNames(DEFAULT_PRELUDE)
  * What the prelude bound, scoped to the REPL so written files keep their imports. Stdlib defaults
  * are named; configured imports are shown whole and flagged as installed, so the model uses them.
  */
-function preludePrompt({ defaults, packages, imports }: PromptPrelude): string | undefined {
-	const withPackages = defaults && packages;
+function preludePrompt({ defaults, includeDefaultPackageImports, imports }: PromptPrelude): string | undefined {
+	const withPackages = defaults && includeDefaultPackageImports;
 	const configured = [...new Set(imports.map((statement) => statement.trim()))]
 		.filter((statement) => !(defaults && DEFAULT_PRELUDE.includes(statement)))
 		.filter((statement) => !(withPackages && DEFAULT_PACKAGE_PRELUDE.includes(statement)));
@@ -88,16 +88,16 @@ function preludePrompt({ defaults, packages, imports }: PromptPrelude): string |
 	].join("\n");
 }
 
-const INSTALL_COMMAND = '`await bash(f"uv pip install --python {sys.executable} <pkg>")`';
+const INSTALL_COMMAND = '`import shlex, sys; await bash(f"uv pip install --python {shlex.quote(sys.executable)} package-name")`';
 
 /** The Kernel packages and how to add one; packages the model installs are not recorded anywhere. */
-function packagesPrompt(packages: readonly string[]): string {
-	if (packages.length === 0) return `- Install Python packages with ${INSTALL_COMMAND}; they last until the kernel environment is rebuilt.`;
-	return `- Installed Python packages: ${packageLabels(packages).join(", ")}. Install more with ${INSTALL_COMMAND}; packages you install last until the kernel environment is rebuilt.`;
+function packagesPrompt(labels: readonly string[]): string {
+	if (labels.length === 0) return `- Install Python packages with ${INSTALL_COMMAND}; they last until the Kernel environment is rebuilt.`;
+	return `- Installed Kernel packages: ${labels.join(", ")}. Install more with ${INSTALL_COMMAND}; packages you install last until the Kernel environment is rebuilt.`;
 }
 
 /**
- * `packages` lists the Kernel packages (uv mode only; without it the prompt does not say how to install one).
+ * `packageLabels` lists the Kernel packages (uv mode only; without it the prompt does not say how to install one).
  * `piTools` is set when a Pi tool is callable; `search` is whether `pi.search` is on. Without `prelude`, the prompt
  * does not mention it. `backgroundNotices` adds the rule for commands that outlive their Cell.
  */
@@ -106,13 +106,13 @@ export function buildSystemPrompt(
 	piTools: { search: boolean } | undefined,
 	prelude?: PromptPrelude,
 	backgroundNotices = false,
-	packages?: readonly string[],
+	packageLabels?: readonly string[],
 ): string {
 	const preludeLine = prelude && preludePrompt(prelude);
 	const functions = [
 		CORE_PROMPT,
 		...(preludeLine ? [preludeLine] : []),
-		...(packages ? [packagesPrompt(packages)] : []),
+		...(packageLabels ? [packagesPrompt(packageLabels)] : []),
 		...(piTools ? [PI_TOOLS_HEAD, ...(piTools.search ? [PI_SEARCH_PROMPT] : []), PI_TOOLS_TAIL] : []),
 	].join("\n");
 	const rules = [RULES_HEAD, ...(backgroundNotices ? [BACKGROUND_NOTICE_RULE] : []), RULES_TAIL].join("\n");

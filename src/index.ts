@@ -22,6 +22,7 @@ export { STATE_LOST_NOTICE };
 export default function piIpython(pi: ExtensionAPI): void {
 	let kernel: KernelClient | undefined;
 	let promptOptions: BeforeAgentStartEvent["systemPromptOptions"] | undefined;
+	let warmPackageLabels: Promise<string[]> | undefined;
 	let cwd = process.cwd();
 	let config: PiIpythonConfig = loadConfig(cwd).config;
 	let journalPath: string | undefined;
@@ -83,7 +84,7 @@ export default function piIpython(pi: ExtensionAPI): void {
 		const packages = effectivePackages(config);
 		return new KernelClient({
 			cwd,
-			resolvePython: () => ensureKernelPython({ pythonVersion: version, packages }),
+			resolvePython: async () => (await ensureKernelPython({ pythonVersion: version, packages })).python,
 			bootstrapCode,
 			onBootstrapStderr,
 			env: kernelPathEnv(),
@@ -133,7 +134,7 @@ export default function piIpython(pi: ExtensionAPI): void {
 		// A new session's Kernel is fresh; any loss is announced below, before its first turn.
 		unannouncedStateLoss = undefined;
 		cwd = ctx.cwd;
-		const loaded = loadConfig(cwd);
+		const loaded = loadConfig(cwd, getAgentDir(), ctx.isProjectTrusted());
 		config = loaded.config;
 		report = (message, type) => {
 			if (ctx.hasUI) ctx.ui.notify(message, type);
@@ -144,15 +145,20 @@ export default function piIpython(pi: ExtensionAPI): void {
 		// Print and JSON modes exit once the prompt is done: nothing could start the turn.
 		notices.enabled = config.backgroundNotices && (ctx.mode === "tui" || ctx.mode === "rpc");
 		for (const error of loaded.errors) report(`pi-ipython config: ${error}`, "error");
+		for (const warning of loaded.warnings) report(`pi-ipython config: ${warning}`, "warning");
 
 		// Kernels of pi hosts that died without shutting them down.
 		const journalDir = path.join(getAgentDir(), "pi-ipython", "journal");
 		reapDeadHosts(journalDir);
 		journalPath = hostJournalPath(journalDir);
 
-		// Warm the venv so the first Cell does not wait for it; a failure resurfaces on that Cell.
+		// Warm the venv in the background; a build failure resurfaces on the first Cell.
+		warmPackageLabels = undefined;
 		if (config.python.source === "uv") {
-			ensureKernelPython({ pythonVersion: config.python.version, packages: effectivePackages(config) }).catch(() => undefined);
+			const packages = effectivePackages(config);
+			const warm = ensureKernelPython({ pythonVersion: config.python.version, packages })
+				.then(({ packageLabels }) => packageLabels, () => []);
+			warmPackageLabels = packages.length > 0 ? warm : Promise.resolve([]);
 		}
 
 		// Summaries can contain Python state even when their Cells are not on this branch.
@@ -173,8 +179,9 @@ export default function piIpython(pi: ExtensionAPI): void {
 	// MCP can register tools after before_agent_start, including while a Cell waits for readiness.
 	// Project one leading prompt from the live callable set before every provider request,
 	// preserving the current declarations while leaving the persisted transcript untouched.
-	pi.on("context_with_system", (event) => {
+	pi.on("context_with_system", async (event) => {
 		if (!promptOptions) return;
+		const packageLabels = await warmPackageLabels;
 		const current = getCurrentSystemMessage(event.messages);
 		const head = {
 			role: "system" as const,
@@ -182,9 +189,9 @@ export default function piIpython(pi: ExtensionAPI): void {
 				promptOptions,
 				bridgedTools(pi.getAllTools(), IPYTHON_TOOL_NAME).length > 0 ? { search: config.piTools.search } : undefined,
 				// The prelude still runs with prompt off; only the model is not told about it.
-				config.prelude.prompt ? { ...config.prelude, packages: hasDefaultPackages(config) } : undefined,
+				config.prelude.prompt ? { ...config.prelude, includeDefaultPackageImports: hasDefaultPackages(config) } : undefined,
 				notices.enabled,
-				config.python.source === "uv" ? effectivePackages(config) : undefined,
+				packageLabels,
 			),
 			...(current?.toolsAdded ? { toolsAdded: current.toolsAdded } : {}),
 			timestamp: current?.timestamp ?? Date.now(),

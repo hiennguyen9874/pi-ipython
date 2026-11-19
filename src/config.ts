@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { CONFIG_DIR_NAME, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_PYTHON_VERSION } from "./kernel/bootstrap.ts";
-import { DEFAULT_PACKAGE_PRELUDE, DEFAULT_PACKAGE_REQUIREMENTS, isPackageRequirement } from "./kernel/packages.ts";
+import { DEFAULT_PACKAGE_PRELUDE, DEFAULT_PACKAGE_REQUIREMENTS, redactPackageUrls } from "./kernel/packages.ts";
 import { DEFAULT_PRELUDE, preludeStatementNames } from "./kernel/prelude.ts";
 
 export const CONFIG_FILE_NAME = "pi-ipython.json";
@@ -48,6 +48,7 @@ export interface LoadedConfig {
 	config: PiIpythonConfig;
 	/** One message per problem, naming the file and the key. */
 	errors: string[];
+	warnings: string[];
 }
 
 const isPositiveInt = (v: unknown) => Number.isInteger(v) && (v as number) > 0;
@@ -86,18 +87,25 @@ export function configPaths(cwd: string, agentDir = getAgentDir()): { global: st
 	};
 }
 
-export function loadConfig(cwd: string, agentDir = getAgentDir()): LoadedConfig {
+export function loadConfig(cwd: string, agentDir = getAgentDir(), projectTrusted = false): LoadedConfig {
 	const errors: string[] = [];
+	const warnings: string[] = [];
 	const values = new Map<string, unknown>();
 	const paths = configPaths(cwd, agentDir);
-	for (const file of [paths.global, paths.project]) {
-		const raw = readJsonObject(file, errors);
-		if (raw) collect(raw, file, values, errors);
-	}
+	const global = readJsonObject(paths.global, errors);
+	if (global) collect(global, paths.global, values, errors, true);
+	const project = readJsonObject(paths.project, errors);
+	if (project) collect(project, paths.project, values, errors, projectTrusted);
+	const hasPackages = (raw: Record<string, unknown> | undefined) =>
+		isPlainObject(raw?.python) && Object.hasOwn(raw.python, "packages");
 	const get = <T>(key: string, fallback: T) => (values.has(key) ? (values.get(key) as T) : fallback);
 	const source = get<"uv" | "project">("python.source", "uv");
 	const packages = get<string[]>("python.packages", []);
-	if (source === "project" && packages.length > 0) errors.push('"python.packages" is ignored because python.source is "project"');
+	if (source === "project" && (hasPackages(global) || hasPackages(project))) {
+		warnings.push('"python.packages" is ignored because python.source is "project"');
+	} else if (!projectTrusted && hasPackages(project)) {
+		warnings.push('Project "python.packages" is ignored because the project is not trusted');
+	}
 	return {
 		config: {
 			confirmEachCell: get("confirmEachCell", false),
@@ -108,6 +116,7 @@ export function loadConfig(cwd: string, agentDir = getAgentDir()): LoadedConfig 
 			prelude: { defaults: get("prelude.defaults", true), imports: get<string[]>("prelude.imports", []), prompt: get("prelude.prompt", true) },
 		},
 		errors,
+		warnings,
 	};
 }
 
@@ -133,14 +142,18 @@ function readJsonObject(file: string, errors: string[]): Record<string, unknown>
 	return parsed;
 }
 
-function collect(raw: Record<string, unknown>, file: string, values: Map<string, unknown>, errors: string[]): void {
+function collect(raw: Record<string, unknown>, file: string, values: Map<string, unknown>, errors: string[], allowPackages: boolean): void {
 	const check = (key: string, value: unknown) => {
+		if (key === "python.packages" && !allowPackages) return;
 		const field = Object.hasOwn(FIELDS, key) ? FIELDS[key] : undefined;
 		if (!field) errors.push(`${file}: unknown key "${key}"`);
-		else if (!field.valid(value)) errors.push(`${file}: "${key}" must be ${field.expected}, got ${JSON.stringify(value)}`);
-		else if (key === "prelude.imports") values.set(key, [...((values.get(key) as string[] | undefined) ?? []), ...validImports(value as unknown[], file, errors)]);
-		else if (key === "python.packages") values.set(key, [...((values.get(key) as string[] | undefined) ?? []), ...validPackages(value as unknown[], file, errors)]);
-		else values.set(key, value);
+		else if (!field.valid(value)) {
+			const shown = JSON.stringify(value);
+			errors.push(`${file}: "${key}" must be ${field.expected}, got ${key === "python.packages" ? redactPackageUrls(shown) : shown}`);
+		} else if (key === "prelude.imports" || key === "python.packages") {
+			const validate = key === "prelude.imports" ? validImports : validPackages;
+			values.set(key, [...((values.get(key) as string[] | undefined) ?? []), ...validate(value as unknown[], file, errors)]);
+		} else values.set(key, value);
 	};
 	for (const [key, value] of Object.entries(raw)) {
 		if (!SECTIONS.has(key)) check(key, value);
@@ -161,8 +174,9 @@ function validImports(entries: unknown[], file: string, errors: string[]): strin
 /** Entries that are uv requirements; each other entry is reported and skipped. */
 function validPackages(entries: unknown[], file: string, errors: string[]): string[] {
 	return entries.flatMap((entry, i) => {
-		if (isPackageRequirement(entry)) return [entry.trim()];
-		errors.push(`${file}: "python.packages[${i}]" must be ${PACKAGE_EXPECTED}, got ${JSON.stringify(entry)}`);
+		const requirement = typeof entry === "string" ? entry.trim() : "";
+		if (requirement && !requirement.startsWith("-")) return [requirement];
+		errors.push(`${file}: "python.packages[${i}]" must be ${PACKAGE_EXPECTED}, got ${redactPackageUrls(JSON.stringify(entry))}`);
 		return [];
 	});
 }

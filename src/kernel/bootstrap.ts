@@ -17,6 +17,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { tryAcquireDirLock } from "./dir-lock.ts";
+import { installedPackageLabels, redactPackageUrls } from "./packages.ts";
 import { isProcessAlive } from "./process.ts";
 
 export const DEFAULT_PYTHON_VERSION = "3.13";
@@ -33,20 +34,15 @@ export interface EnsureKernelPythonOptions {
 	pythonVersion?: string;
 	/** Kernel packages (uv requirements) installed after the runtime. */
 	packages?: readonly string[];
-	/** Venv directory. Defaults to `kernelVenvDir(pythonVersion, packages)`. */
-	venvDir?: string;
 }
 
-/**
- * `$PI_IPYTHON_VENV_DIR`, else `<agentDir>/pi-ipython/kernel-venv-<version>`, suffixed with a hash of the
- * package set when it is not empty: each package set gets its own venv, so sessions with different sets
- * never rebuild each other's (ADR 0004).
- */
+/** The override replaces the prefix, not the version or package-set key (ADR 0004). */
 export function kernelVenvDir(pythonVersion: string, packages: readonly string[] = []): string {
 	const override = process.env.PI_IPYTHON_VENV_DIR;
-	const base = override ? path.resolve(override) : path.join(getAgentDir(), "pi-ipython", `kernel-venv-${pythonVersion}`);
+	const prefix = override ? path.resolve(override) : path.join(getAgentDir(), "pi-ipython", "kernel-venv");
 	const set = packageSet(packages);
-	return set.length === 0 ? base : `${base}-${createHash("sha256").update(set.join("\n")).digest("hex").slice(0, 8)}`;
+	const base = `${prefix}-${pythonVersion}`;
+	return set.length === 0 ? base : `${base}-${createHash("sha256").update(JSON.stringify(set)).digest("hex")}`;
 }
 
 /** Sorted and deduplicated, so order and repeats in config do not change the venv. */
@@ -54,12 +50,18 @@ function packageSet(packages: readonly string[]): string[] {
 	return [...new Set(packages.map((p) => p.trim()))].sort();
 }
 
-/** `PATH` plus the directories uv is looked up in, so `bash("uv …")` in a Cell finds the uv that built the venv. */
+const pathKey = () => process.platform === "win32"
+	? Object.keys(process.env).find((key) => key.toUpperCase() === "PATH") ?? "Path"
+	: "PATH";
+
+function uvSearchDirs(): string[] {
+	const dirs = (process.env[pathKey()] ?? "").split(path.delimiter).filter(Boolean);
+	return [...new Set([...dirs, path.join(os.homedir(), ".local", "bin")])];
+}
+
+/** Let `bash("uv …")` see the same search directories as bootstrap. */
 export function kernelPathEnv(): Record<string, string> {
-	const key = Object.keys(process.env).find((k) => k.toUpperCase() === "PATH") ?? "PATH";
-	const dirs = (process.env[key] ?? "").split(path.delimiter).filter(Boolean);
-	const uvDir = path.join(os.homedir(), ".local", "bin");
-	return { [key]: [...dirs, ...(dirs.includes(uvDir) ? [] : [uvDir])].join(path.delimiter) };
+	return { [pathKey()]: uvSearchDirs().join(path.delimiter) };
 }
 
 export function venvPython(venv: string): string {
@@ -82,30 +84,36 @@ export async function resolveProjectPython(cwd: string): Promise<string> {
 	return python;
 }
 
-const inFlight = new Map<string, Promise<string>>();
+interface KernelEnvironment {
+	python: string;
+	packageLabels: string[];
+}
 
-/** Return the venv's Python, building the venv first when it is missing or stale. */
-export function ensureKernelPython(options: EnsureKernelPythonOptions = {}): Promise<string> {
+const inFlight = new Map<string, Promise<KernelEnvironment>>();
+
+/** Return the venv's Python and labels, building the venv first when it is missing or stale. */
+export function ensureKernelPython(options: EnsureKernelPythonOptions = {}): Promise<KernelEnvironment> {
 	const version = options.pythonVersion ?? DEFAULT_PYTHON_VERSION;
 	const packages = packageSet(options.packages ?? []);
-	const venv = options.venvDir ?? kernelVenvDir(version, packages);
-	const key = `${venv}\0${version}\0${packages.join("\n")}`;
-	let promise = inFlight.get(key);
+	const venv = kernelVenvDir(version, packages);
+	let promise = inFlight.get(venv);
 	if (!promise) {
-		promise = ensureUncached(venv, version, packages).finally(() => inFlight.delete(key));
-		inFlight.set(key, promise);
+		promise = ensureUncached(venv, version, packages).finally(() => inFlight.delete(venv));
+		inFlight.set(venv, promise);
 	}
 	return promise;
 }
 
-async function ensureUncached(venv: string, version: string, packages: string[]): Promise<string> {
+async function ensureUncached(venv: string, version: string, packages: string[]): Promise<KernelEnvironment> {
 	const python = venvPython(venv);
 	const identity = await runtimeIdentity(version, packages);
-	if (await isReady(venv, python, identity)) return python;
+	const ready = await readReadyLabels(venv, python, identity);
+	if (ready) return { python, packageLabels: ready };
 
 	const release = await acquireLock(venv);
 	try {
-		if (await isReady(venv, python, identity)) return python;
+		const ready = await readReadyLabels(venv, python, identity);
+		if (ready) return { python, packageLabels: ready };
 		await rm(venv, { recursive: true, force: true });
 		const uv = await findUv();
 		// Refresh the local runtime wheel: uv's cache may otherwise reuse a wheel
@@ -113,33 +121,46 @@ async function ensureUncached(venv: string, version: string, packages: string[])
 		await run(uv, ["sync", "--project", RUNTIME_DIR, "--frozen", "--no-dev", "--no-editable", "--refresh-package", "pi-ipython-runtime", "--python", version], {
 			UV_PROJECT_ENVIRONMENT: venv,
 		});
+		let packageLabels: string[] = [];
 		if (packages.length > 0) {
 			try {
-				await run(uv, ["pip", "install", "--python", python, ...packages], {});
+				await run(uv, ["pip", "install", "--python", python, ...packages]);
+				await run(uv, ["pip", "check", "--python", python]);
+				const inventory = await run(python, ["-IS", "-c", PACKAGE_INVENTORY], {}, true);
+				packageLabels = installedPackageLabels(packages, JSON.parse(inventory));
 			} catch (error) {
 				throw new Error(`Installing the Kernel packages failed; check python.packages in pi-ipython.json.\n${errorMessage(error)}`);
 			}
 		}
-		await writeFile(path.join(venv, MARKER_FILE), `${JSON.stringify({ identity })}\n`);
+		await writeFile(path.join(venv, MARKER_FILE), `${JSON.stringify({ identity, packageLabels })}\n`);
+		return { python, packageLabels };
 	} catch (error) {
 		throw new Error(
-			`Failed to set up the Python Kernel venv at ${venv}. First-time setup needs internet to fetch Python ${version} and the runtime's dependencies.\n${errorMessage(error)}`,
+			`Failed to set up the Python Kernel venv at ${venv}. First-time setup needs internet to fetch Python ${version} and the runtime's dependencies.\n${redactPackageUrls(errorMessage(error))}`,
 		);
 	} finally {
 		await release();
 	}
-	return python;
 }
 
-async function isReady(venv: string, python: string, identity: string): Promise<boolean> {
+async function readReadyLabels(venv: string, python: string, identity: string): Promise<string[] | undefined> {
 	try {
 		await access(python, constants.X_OK);
-		const marker = JSON.parse(await readFile(path.join(venv, MARKER_FILE), "utf8")) as { identity?: unknown };
-		return marker.identity === identity;
-	} catch {
-		return false;
-	}
+		const marker = JSON.parse(await readFile(path.join(venv, MARKER_FILE), "utf8")) as { identity?: unknown; packageLabels?: string[] };
+		if (marker.identity === identity && Array.isArray(marker.packageLabels)) return marker.packageLabels;
+	} catch {}
 }
+
+// Read distribution names without loading site hooks or copying direct-install URLs.
+const PACKAGE_INVENTORY = `
+import json, sys, sysconfig
+from importlib.metadata import distributions
+from pathlib import Path
+root = str(Path(sys.executable).parent.parent)
+paths = sysconfig.get_paths(vars={"base": root, "platbase": root})
+print(json.dumps([{"name": d.metadata["Name"] or "", "direct": d.read_text("direct_url.json") is not None}
+                  for d in distributions(path=list({paths["purelib"], paths["platlib"]}))]))
+`;
 
 /** Hash of the Python version, the Kernel packages, and the runtime sources, so any change rebuilds the venv. */
 async function runtimeIdentity(version: string, packages: readonly string[]): Promise<string> {
@@ -153,7 +174,7 @@ async function runtimeIdentity(version: string, packages: readonly string[]): Pr
 	};
 	await collect(path.join(RUNTIME_DIR, "src", "rlm"));
 	files.sort();
-	const hash = createHash("sha256").update(`python=${version}\0packages=${packages.join("\n")}\0`);
+	const hash = createHash("sha256").update(`python=${version}\0packages=${JSON.stringify(packages)}\0`);
 	for (const file of files) {
 		hash.update(path.relative(RUNTIME_DIR, file)).update("\0").update(await readFile(file)).update("\0");
 	}
@@ -182,10 +203,8 @@ async function acquireLock(venv: string): Promise<() => Promise<void>> {
 
 async function findUv(): Promise<string> {
 	const exe = process.platform === "win32" ? "uv.exe" : "uv";
-	const dirs = [...(process.env.PATH ?? "").split(path.delimiter), path.join(os.homedir(), ".local", "bin")];
-	for (const dir of dirs) {
-		if (!dir) continue;
-		const candidate = path.join(dir, exe);
+	for (const dir of uvSearchDirs()) {
+		const candidate = path.resolve(dir, exe);
 		try {
 			await access(candidate, constants.X_OK);
 			return candidate;
@@ -194,22 +213,26 @@ async function findUv(): Promise<string> {
 	throw new Error(`uv is required to set up the Python Kernel. Install it: ${UV_INSTALL_HINT}`);
 }
 
-function run(command: string, args: string[], env: Record<string, string>): Promise<void> {
+function run(command: string, args: string[], env: Record<string, string> = {}, capture = false): Promise<string> {
 	return new Promise((resolve, reject) => {
 		const child = spawn(command, args, {
+			// Do not pick up uv settings from the user's current project.
+			cwd: RUNTIME_DIR,
 			env: { ...process.env, ...env },
-			stdio: ["ignore", "ignore", "pipe"],
+			stdio: ["ignore", capture ? "pipe" : "ignore", "pipe"],
 			windowsHide: true,
 		});
+		let stdout = "";
 		let stderr = "";
-		child.stderr.setEncoding("utf8");
-		child.stderr.on("data", (chunk: string) => {
-			stderr = (stderr + chunk).slice(-4096);
+		child.stdout?.setEncoding("utf8").on("data", (chunk: string) => { stdout += chunk; });
+		child.stderr?.setEncoding("utf8").on("data", (chunk: string) => {
+			stderr = (stderr + chunk).slice(0, 4096);
 		});
 		child.on("error", reject);
 		child.on("close", (code, signal) => {
-			if (code === 0) resolve();
-			else reject(new Error(`${command} ${args.join(" ")} failed with ${signal ?? `exit code ${code}`}\n${stderr}`));
+			if (code === 0) resolve(stdout);
+			// Arguments may contain private package URLs.
+			else reject(new Error(`${command} failed with ${signal ?? `exit code ${code}`}\n${stderr}`));
 		});
 	});
 }

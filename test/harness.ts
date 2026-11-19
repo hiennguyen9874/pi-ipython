@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -7,6 +7,7 @@ import {
 	fauxAssistantMessage,
 	fauxProvider,
 	fauxToolCall,
+	getSystemMessageText,
 	type ToolResultMessage,
 } from "@earendil-works/pi-ai";
 import {
@@ -21,7 +22,10 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+import { configPaths } from "../src/config.ts";
 import piIpython from "../src/index.ts";
+import { DEFAULT_PYTHON_VERSION, kernelVenvDir } from "../src/kernel/bootstrap.ts";
+import { DEFAULT_PACKAGE_REQUIREMENTS } from "../src/kernel/packages.ts";
 
 export interface HarnessOptions {
 	/** Runs before the session starts, e.g. to write config files. */
@@ -30,6 +34,8 @@ export interface HarnessOptions {
 	ui?: Partial<ExtensionUIContext>;
 	/** Defaults to TUI with a bound UI, otherwise print. */
 	mode?: ExtensionContext["mode"];
+	/** Whether pi trusts project config. Defaults to the SDK setting. */
+	projectTrusted?: boolean;
 	/** Use this agent dir (kept on dispose) instead of a fresh one. */
 	agentDir?: string;
 	/** Start the session from these entries (header first), e.g. a previous session's `fileEntries()`. */
@@ -57,6 +63,31 @@ export interface Harness {
 /** Text the model sees in a tool result. */
 export function resultText(message: ToolResultMessage): string {
 	return message.content.map((block) => (block.type === "text" ? block.text : "")).join("");
+}
+
+export function defaultKernelVenv(): string {
+	return kernelVenvDir(DEFAULT_PYTHON_VERSION, DEFAULT_PACKAGE_REQUIREMENTS);
+}
+
+export function writeConfigs(dirs: { cwd: string; agentDir: string }, global: unknown, project?: unknown): void {
+	const paths = configPaths(dirs.cwd, dirs.agentDir);
+	writeFileSync(paths.global, JSON.stringify(global));
+	if (project !== undefined) {
+		mkdirSync(join(dirs.cwd, ".pi"), { recursive: true });
+		writeFileSync(paths.project, JSON.stringify(project));
+	}
+}
+
+export async function systemPrompt(harness: Harness): Promise<string> {
+	let prompt = "";
+	harness.setResponses([
+		(context) => {
+			prompt = getSystemMessageText(context.messages.find((m) => m.role === "system")!);
+			return fauxAssistantMessage("hi");
+		},
+	]);
+	await harness.session.prompt("hi");
+	return prompt;
 }
 
 /** Pids of Kernel processes (`python -m rlm.repl`) that are children of this test process. */
@@ -99,6 +130,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 	modelRuntime.registerNativeProvider(faux.provider);
 
 	const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false } });
+	if (options.projectTrusted !== undefined) settingsManager.setProjectTrusted(options.projectTrusted);
 	const resourceLoader = new DefaultResourceLoader({
 		cwd,
 		agentDir,

@@ -8,7 +8,7 @@ You have one tool, `ipython`: a persistent CPython REPL where top-level `await` 
 - Pre-imported in the REPL only (files and scripts you write still need their own imports):
   - stdlib: json, os, re, sys, time, math, shutil, itertools, functools, collections, textwrap, Path, datetime (the class), timedelta, Counter, defaultdict
   - packages: np, pd, requests, httpx, yaml
-- Installed Python packages: requests, httpx, yaml (PyYAML), tomli, dotenv (python-dotenv), pandas, numpy, scipy, bs4 (Beautiful Soup), lxml, pydantic, tyro. Install more with `await bash(f"uv pip install --python {sys.executable} <pkg>")`; packages you install last until the kernel environment is rebuilt.
+- Installed Kernel packages: requests, httpx, yaml (PyYAML), tomli, dotenv (python-dotenv), pandas, numpy, scipy, bs4 (Beautiful Soup), lxml, pydantic, tyro. Install more with `import shlex, sys; await bash(f"uv pip install --python {shlex.quote(sys.executable)} package-name")`; packages you install last until the Kernel environment is rebuilt.
 
 ## Rules
 
