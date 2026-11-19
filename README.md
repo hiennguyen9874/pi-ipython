@@ -91,6 +91,20 @@ To pre-import all default packages, not just the common ones:
 }
 ```
 
+### Troubleshooting: `No module named 'hatchling'`
+
+With `python.source: "uv"`, the Kernel uses its own virtual environment, not the host project's `.venv`. But uv can still pick up settings from the enclosing project, especially when pi-ipython is installed locally under `.pi/git/`.
+
+If the runtime build fails with `ModuleNotFoundError: No module named 'hatchling'`, check the host project's `[tool.uv]` settings in `pyproject.toml` (or its `uv.toml`). A global `no-build-isolation = true` prevents uv from creating a separate build environment and installing the runtime's declared build dependency, `hatchling`. If only a specific package needs this behavior, remove the global setting and keep a package-specific exception, for example `no-build-isolation-package = ["flash-attn"]`.
+
+To test without uv's configuration files or the environment variable that disables build isolation, restart pi with:
+
+```bash
+env -u UV_NO_BUILD_ISOLATION UV_NO_CONFIG=1 pi
+```
+
+This also skips uv settings such as custom indexes and mirrors, so prefer fixing the specific setting. If the Kernel reuses an existing environment, it won't rebuild the runtime and this command won't test the build.
+
 ## Using other pi tools and MCP
 
 Tools from other extensions you load (including MCP servers) don't show up as separate tools for the model. The model calls them from Python with the `pi` object:
