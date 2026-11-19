@@ -153,7 +153,7 @@ Defaults:
 | Key | Default | What it does |
 |---|---|---|
 | `confirmEachCell` | `false` | Ask you to approve each Cell before it runs. |
-| `backgroundNotices` | `false` | When a `bash()` command that outlived its Cell finishes, send the model a `[bash-done pid:… exit:…]` notice. If the session is idle, the notice starts a new turn. Notices that arrive close together go out as one. After 5 wake-up turns in a row (or when you abort one), notices wait for your next message. TUI and RPC only. |
+| `backgroundNotices` | `false` | When a `bash()` command that outlived its Cell finishes, send the model a `[bash-done pid:… exit:…]` notice. If the session is idle, the notice starts a new turn. Notices that arrive close together go out as one. After 5 consecutive turns started by notices (or when you abort one), notices wait for your next message. TUI and RPC only. |
 | `python.source` | `"uv"` | `"uv"`: use a separate environment managed by uv. `"project"`: use your project's `<cwd>/.venv`, so Cells can import your project's packages (uv not required). |
 | `python.version` | `"3.13"` | Python version for the uv environment (3.11 or newer). |
 | `output.maxBytes` / `output.maxLines` | `51200` / `2000` | When a Cell prints more than this, only the end is shown. The full output is saved to a Spill file, and the result includes its path. |

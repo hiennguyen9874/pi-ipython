@@ -1046,12 +1046,12 @@ class ReplTest(unittest.TestCase):
                     self.assertEqual([e for e in again if e.get("event") in ("error", "host_request")], [])
 
     def test_result_read_before_notice_acceptance_withdraws_at_acceptance(self):
-        started = self.repl.execute("early", "from rlm import bash\nhandle = bash('printf early')\nhandle.pid")
+        started = self.repl.execute("early", "from rlm import bash\nhandle = bash('sleep 0.05; printf early')\nhandle.pid")
         notice = wait_for_host_request(self.repl, started)
         self.assertIsNone(one(self.repl.execute("early-read", "handle.poll().output"), "host_request"))
         reply_ok(self.repl, notice)
         withdrawal = wait_for_host_request(self.repl, [])["data"]
-        self.assertEqual(withdrawal, {"type": "bash.consumed", "pid": notice["data"]["pid"], "command": "printf early"})
+        self.assertEqual(withdrawal, {"type": "bash.consumed", "pid": notice["data"]["pid"], "command": notice["data"]["command"]})
 
     def test_detached_read_between_turns_keeps_bash_completion(self):
         # A watcher reading the handle with no cell running reaches nobody: the
@@ -1176,20 +1176,19 @@ class ReplTest(unittest.TestCase):
         }
         for label, snippet in snippets.items():
             with self.subTest(label=label):
-                command = f"printf {label}"
+                command = f"sleep 0.2; printf {label}"
                 events = self.repl.execute(
                     f"as-completed-{label}",
                     f"from rlm import bash\nimport asyncio\nhandle = bash({command!r})\n{snippet}",
                 )
+                request = wait_for_host_request(self.repl, events)
+                reply_ok(self.repl, request)
                 events += self.repl.execute(
                     f"as-completed-{label}-probe", "await asyncio.sleep(0.05)"
                 )
-                requests = [event for event in events if event.get("event") == "host_request"]
-                for request in requests:
-                    reply_ok(self.repl, request)
-                self.assertEqual(len(requests), 1)
-                self.assertEqual(requests[0]["data"]["type"], "bash.completed")
-                self.assertEqual(requests[0]["data"]["command"], command)
+                self.assertEqual(request["data"]["command"], command)
+                self.assertEqual(request["data"]["type"], "bash.completed")
+                self.assertLessEqual(sum(event.get("event") == "host_request" for event in events), 1)
                 self.assertFalse(any(event.get("event") == "error" for event in events))
 
     def test_background_task_await_does_not_suppress_bash_completion(self):
@@ -1327,7 +1326,7 @@ class ReplTest(unittest.TestCase):
         for reply in ({"status": "error", "error": "secret-host-error"}, {}, {"status": "ok"}):
             with self.subTest(reply=reply):
                 events = self.repl.execute(
-                    "ack-start", "from rlm import bash\nhandle = bash('printf secret-command')"
+                    "ack-start", "from rlm import bash\nhandle = bash('sleep 0.05; printf secret-command')"
                 )
                 request = wait_for_host_request(self.repl, events)
                 self.repl.send({"type": "host_reply", "id": request["id"], "data": reply})

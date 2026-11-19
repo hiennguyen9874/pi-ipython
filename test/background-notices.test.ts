@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fauxAssistantMessage, fauxToolCall, getSystemMessageText } from "@earendil-works/pi-ai";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { createHarness, type Harness, type HarnessOptions, resultText } from "./harness.ts";
 
 let h: Harness | undefined;
@@ -18,7 +18,7 @@ function noticesOn({ cwd }: { cwd: string }): void {
 	writeFileSync(join(cwd, ".pi", "pi-ipython.json"), JSON.stringify({ backgroundNotices: true }));
 }
 
-/** A session with notices on, in RPC mode (wake-ups need TUI or RPC). */
+/** A session with notices on, in RPC mode (notices need TUI or RPC). */
 function harness(options: HarnessOptions = {}): Promise<Harness> {
 	return createHarness({ setup: noticesOn, mode: "rpc", ...options });
 }
@@ -26,15 +26,11 @@ function harness(options: HarnessOptions = {}): Promise<Harness> {
 type Notice = { content: string; details?: unknown };
 
 function notices(harness: Harness): Notice[] {
-	return harness.session.messages.filter((m) => m.role === "custom" && m.customType === NOTICE_TYPE) as unknown as Notice[];
+	return harness.session.messages.filter((m) => m.role === "custom" && m.customType === NOTICE_TYPE && m.display) as unknown as Notice[];
 }
 
-async function waitFor(predicate: () => boolean, timeoutMs = 10_000): Promise<void> {
-	const deadline = Date.now() + timeoutMs;
-	while (!predicate()) {
-		if (Date.now() > deadline) throw new Error("timed out waiting");
-		await sleep(20);
-	}
+function waitFor(predicate: () => boolean, timeout = 10_000): Promise<void> {
+	return vi.waitFor(() => expect(predicate()).toBe(true), { timeout, interval: 20 });
 }
 
 const HANDLE_LINE = "Read its output with the handle's .output() or .tail(n), or `await` it.";
@@ -50,6 +46,50 @@ test("a Background command that finishes while idle wakes the model with a notic
 	expect(notices(h)[0]!.content).toBe(`[bash-done pid:${pid} exit:0]\n\nCommand: "sleep 1; printf hi"\n${HANDLE_LINE}`);
 	const last = h.session.messages.at(-1);
 	expect(last?.role === "assistant" && last.content).toEqual([{ type: "text", text: "noted" }]);
+});
+
+test("a command that finishes inside its Cell does not start a turn", async () => {
+	h = await harness();
+	await h.runCells("h = bash('printf hi')\nwhile not h._reaped:\n    await asyncio.sleep(0.01)");
+	await sleep(300);
+	expect(notices(h)).toEqual([]);
+	expect(h.session.isIdle).toBe(true);
+});
+
+test.each(["session_before_compact", "session_compact"] as const)("a notice queued in %s starts a turn after manual compaction", async (hook) => {
+	let entered!: () => void;
+	let release!: () => void;
+	const compactionEntered = new Promise<void>((resolve) => { entered = resolve; });
+	const releaseCompaction = new Promise<void>((resolve) => { release = resolve; });
+	h = await harness({ extensions: [(pi) => {
+		const holdCompaction = async () => {
+			entered();
+			await releaseCompaction;
+		};
+		if (hook === "session_before_compact") pi.on(hook, holdCompaction);
+		else pi.on(hook, holdCompaction);
+	}] });
+	await h.runCells("1");
+	await h.runCells("h = bash('while [ ! -f release ]; do sleep 0.02; done')\nh.pid");
+	h.session.settingsManager.applyOverrides({ compaction: { enabled: false, keepRecentTokens: 1 } });
+	const seen: string[] = [];
+	h.setResponses(Array.from({ length: 3 }, () => () => {
+		seen.push("response");
+		return fauxAssistantMessage("summary or notice response");
+	}));
+	const compaction = h.session.compact();
+	try {
+		await Promise.race([compactionEntered, compaction]);
+		writeFileSync(join(h.cwd, "release"), "");
+		await sleep(300);
+		expect(notices(h)).toEqual([]);
+	} finally {
+		release();
+		await compaction;
+	}
+	await waitFor(() => notices(h!).length === 1, 1_500);
+	await h.session.waitForIdle();
+	expect(seen.length).toBeGreaterThan(1);
 });
 
 test("the notice says when the command's timeout killed it", async () => {
@@ -68,7 +108,7 @@ test.each([
 	["the session runs in print mode", { mode: "print" as const }],
 ])("no notice and no turn when %s", async (_name, options) => {
 	h = await harness(options);
-	await h.runCells("h = bash('printf hi; touch finished')\nh.pid");
+	await h.runCells("h = bash('sleep 0.2; printf hi; touch finished')\nh.pid");
 	await waitFor(() => existsSync(join(h!.cwd, "finished")));
 	await sleep(1000);
 	const count = h.session.messages.length;
@@ -94,7 +134,7 @@ async function providerSystemPrompt(harness: Harness): Promise<string> {
 
 const PROMPT_RULE = "even after your turn has ended. For long commands, start `h = bash(...)` and end your turn";
 
-test("the prompt has the wake-up rule only when notices are on", async () => {
+test("the prompt has the notice rule only when notices are on", async () => {
 	h = await harness();
 	expect(await providerSystemPrompt(h)).toContain(PROMPT_RULE);
 	await h.dispose();
@@ -134,7 +174,31 @@ test("reading the handle before the notice is sent withdraws it", async () => {
 	expect(h.session.isIdle).toBe(true);
 });
 
-test("commands that finish close together wake the model once", async () => {
+test.each(["read", "shutdown"] as const)("a deferred notice is cancelled if the earlier prompt causes a %s", async (action) => {
+	let defer = true;
+	h = await harness({ extensions: [(pi) => {
+		pi.on("agent_settled", async () => {
+			if (!defer) return;
+			defer = false;
+			void pi.sendUserMessage("handle the completion first");
+			writeFileSync(join(h!.cwd, "release"), "");
+			// Let the notice reach pi while it is still dispatching the settled event.
+			await sleep(300);
+			if (action === "shutdown") await h!.session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+			h!.setResponses(action === "read" ? [
+				fauxAssistantMessage(fauxToolCall("ipython", { code: "h.output()" }), { stopReason: "toolUse" }),
+				fauxAssistantMessage("read"),
+				() => { throw new Error("unexpected notice turn"); },
+			] : [fauxAssistantMessage("ok")]);
+		});
+	}] });
+	await h.runCells("h = bash('while [ ! -f release ]; do sleep 0.02; done; printf hi')\nh.pid");
+	await h.session.waitForIdle();
+	expect(notices(h)).toEqual([]);
+	expect(h.session.messages.some((message) => message.role === "assistant" && message.stopReason === "error")).toBe(false);
+});
+
+test("commands that finish close together notify the model in one turn", async () => {
 	h = await harness();
 	await h.runCells("a = bash('sleep 0.6; printf a')\nb = bash('sleep 1.2; printf b')\n(a.pid, b.pid)");
 	h.setResponses([fauxAssistantMessage("noted")]);
@@ -147,20 +211,41 @@ test("commands that finish close together wake the model once", async () => {
 	expect(notice!.details).toMatchObject({ notices: [{ command: "sleep 0.6; printf a" }, { command: "sleep 1.2; printf b" }] });
 });
 
-test("after five wake-up turns in a row, notices wait for the user's next message", async () => {
+test("a user message does not pull a notice out of an unpaused batch", async () => {
+	h = await harness();
+	await h.runCells("a = bash('sleep 0.2; touch first-finished')\nb = bash('while [ ! -f release ]; do sleep 0.02; done')\n(a.pid, b.pid)");
+	await waitFor(() => existsSync(join(h!.cwd, "first-finished")));
+	await sleep(150);
+
+	h.setResponses([fauxAssistantMessage("ok"), fauxAssistantMessage("noted")]);
+	await h.session.prompt("hello");
+	expect(notices(h)).toEqual([]);
+
+	writeFileSync(join(h.cwd, "release"), "");
+	await waitFor(() => notices(h!).length === 1);
+	await h.session.waitForIdle();
+	expect(notices(h)[0]!.details).toMatchObject({ notices: [{ command: "sleep 0.2; touch first-finished" }, { command: expect.stringContaining("release") }] });
+});
+
+test("after five consecutive turns started by notices, notices wait for the user's next message", async () => {
 	const notified: string[] = [];
 	h = await harness({ ui: { notify: (message: string) => notified.push(message) } });
-	const startAnother = () => [
-		fauxAssistantMessage(fauxToolCall("ipython", { code: "h = bash('sleep 0.3')\nh.pid" }), { stopReason: "toolUse" }),
+	const startAnother = (command: string) => [
+		fauxAssistantMessage(fauxToolCall("ipython", { code: `h = bash(${JSON.stringify(command)})\nh.pid` }), { stopReason: "toolUse" }),
 		fauxAssistantMessage("waiting"),
 	];
 	await h.runCells("h = bash('sleep 0.5')\nh.pid");
-	h.setResponses(Array.from({ length: 5 }, startAnother).flat());
+	h.setResponses([
+		...Array.from({ length: 4 }, () => startAnother("sleep 0.3")).flat(),
+		...startAnother("while [ ! -f release ]; do sleep 0.02; done; touch finished"),
+	]);
 	await waitFor(() => notices(h!).length === 5, 20_000);
 	await h.session.waitForIdle();
 	await waitFor(() => notified.length === 1);
 	expect(notified[0]).toContain("paused");
-	await sleep(500);
+	writeFileSync(join(h.cwd, "release"), "");
+	await waitFor(() => existsSync(join(h!.cwd, "finished")));
+	await sleep(150);
 	expect(notices(h)).toHaveLength(5);
 
 	h.setResponses([fauxAssistantMessage("ok")]);

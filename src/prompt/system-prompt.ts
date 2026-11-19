@@ -3,7 +3,7 @@
 //
 // Adapted from Unharnessed (crates/uh-core/src/prompts/layers/core.md and
 // system_prompt.rs at HEAD; packages/coding-agent/src/core/prompts/rlm.ts at 7d442aafa),
-// without the spawn, factory, and memory sections; the bash wake-up rule only with Background-command notices on.
+// without the spawn, factory, and memory sections; the Background-command notice rule only when enabled.
 // Copyright (c) 2026 Unharnessed
 // Copyright (c) 2025-2026 Prime Intellect Ltd.
 // MIT License, see LICENSE.

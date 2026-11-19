@@ -12,7 +12,7 @@ afterEach(async () => {
 
 test("a Background command that finishes between Cells leaves no warning in the next Cell", async () => {
 	h = await createHarness();
-	await h.runCells("h = bash('echo hi; touch finished')");
+	await h.runCells("h = bash('sleep 0.2; echo hi; touch finished')");
 	while (!existsSync(join(h.cwd, "finished"))) await sleep(20);
 	// Let the runtime report the completion to the host while no Cell runs.
 	await sleep(500);

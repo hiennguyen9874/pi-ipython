@@ -6,13 +6,13 @@
 // Copyright (c) 2026 Unharnessed
 // MIT License, see LICENSE.
 
+import type { BeforeAgentStartEvent } from "@earendil-works/pi-coding-agent";
 import type { HostRequestHandler } from "../kernel/client.ts";
 
-export const BACKGROUND_NOTICE_TYPE = "ipython_bash_done";
+const BACKGROUND_NOTICE_TYPE = "ipython_bash_done";
 /** How long a notice may wait for the commands still running beside it, so they wake the model once. */
-export const NOTICE_BATCH_MS = 2 * 60 * 1000;
-/** Wake-up turns in a row, without a user message, before notices stop starting turns. */
-export const MAX_WAKE_TURNS = 5;
+const NOTICE_BATCH_MS = 2 * 60 * 1000;
+const MAX_NOTICE_TURNS = 5;
 
 const HANDLE_LINE = "Read its output with the handle's .output() or .tail(n), or `await` it.";
 const PAUSED_MESSAGE = "Background-command notices paused; they reach the model with your next message.";
@@ -22,32 +22,30 @@ interface Notice {
 	command: string;
 	exitCode: number;
 	timeoutSeconds?: number;
-	/** When the host accepted it (epoch ms). */
+	/** When the host accepted it, on the monotonic clock. */
 	receivedAt: number;
 }
 
-export interface NoticeMessage {
+interface NoticeMessage {
 	customType: typeof BACKGROUND_NOTICE_TYPE;
 	content: string;
 	display: true;
 	details: { notices: Omit<Notice, "receivedAt">[] };
 }
 
-export interface BackgroundNoticeHost {
+interface BackgroundNoticeHost {
 	/** Pi has no run, retry, or queued continuation. */
 	isIdle(): boolean;
 	/** Whether a `bash()` command of the current Kernel still runs. */
 	hasRunningCommand(): Promise<boolean>;
 	/** Send the message so that it starts a turn. */
-	wake(message: NoticeMessage): void;
+	send(message: NoticeMessage): void;
 	/** Tell the user. */
 	notify(message: string): void;
 }
 
-/** The run that is starting, as `before_agent_start` describes it. */
-export interface RunStart {
-	messageType: "user" | "custom";
-	message?: { customType?: string };
+export function isCancelledBackgroundNotice(message: { role: string; customType?: string; display?: boolean }): boolean {
+	return message.role === "custom" && message.customType === BACKGROUND_NOTICE_TYPE && message.display === false;
 }
 
 export class BackgroundNotices {
@@ -55,10 +53,12 @@ export class BackgroundNotices {
 	enabled = false;
 	/** Undelivered notices, oldest first. */
 	private queue: Notice[] = [];
-	private wakeTurns = 0;
+	private noticeTurns = 0;
 	private paused = false;
-	private inWakeTurn = false;
-	private timer?: ReturnType<typeof setTimeout>;
+	private inNoticeTurn = false;
+	private deadlineTimer?: ReturnType<typeof setTimeout>;
+	private compactionTimer?: ReturnType<typeof setTimeout>;
+	private dispatch?: { batch: Set<Notice>; details: NoticeMessage["details"] };
 	/** Serializes flushes: each awaits the Kernel's command list. */
 	private flushing: Promise<void> = Promise.resolve();
 
@@ -69,6 +69,7 @@ export class BackgroundNotices {
 			const notice = parseCompleted(data);
 			if (this.enabled) {
 				this.queue.push(notice);
+				if (this.queue.length === 1) this.armDeadline();
 				this.flush();
 			}
 			return {};
@@ -76,40 +77,93 @@ export class BackgroundNotices {
 		"bash.consumed": async (data) => {
 			const { pid, command } = parseIdentity(data);
 			// Pids are reused across handles: match the command too.
+			const oldest = this.queue[0];
 			this.queue = this.queue.filter((notice) => notice.pid !== pid || notice.command !== command);
+			if (oldest !== this.queue[0]) {
+				this.armDeadline();
+				this.flush();
+			}
 			return {};
 		},
 	};
 
-	/** A run starts. Returns the queued notices to add to a run the user started. */
-	onRunStart(run: RunStart): NoticeMessage | undefined {
-		this.inWakeTurn = run.messageType === "custom" && run.message?.customType === BACKGROUND_NOTICE_TYPE;
-		if (this.inWakeTurn) this.wakeTurns++;
-		if (run.messageType !== "user") return undefined;
-		this.wakeTurns = 0;
-		this.paused = false;
-		return this.take();
+	/** Pi may defer the send behind another prompt. Commit the batch only when pi starts its turn. */
+	onRunStart(run: BeforeAgentStartEvent, abort: () => void): NoticeMessage | undefined {
+		clearTimeout(this.compactionTimer); // The next settle now owns the retry.
+		this.inNoticeTurn = false;
+		if (run.messageType === "user") {
+			const wasPaused = this.paused;
+			this.noticeTurns = 0;
+			this.paused = false;
+			if (wasPaused && this.queue.length > 0) {
+				const batch = this.queue;
+				this.queue = [];
+				this.armDeadline();
+				return noticeMessage(batch);
+			}
+			return;
+		}
+		if (run.message.customType !== BACKGROUND_NOTICE_TYPE) return;
+		const dispatch = this.dispatch;
+		const selected = dispatch && run.message.details === dispatch.details ? dispatch.batch : undefined;
+		const batch = selected && !this.paused ? this.queue.filter((notice) => selected.has(notice)) : [];
+		if (selected) this.dispatch = undefined;
+		if (!selected || batch.length === 0) {
+			// Pi cannot retract its deferred trigger. Abort before the model sees it.
+			Object.assign(run.message, { content: "", display: false, details: undefined });
+			abort();
+			return;
+		}
+
+		this.queue = this.queue.filter((notice) => !selected.has(notice));
+		this.armDeadline();
+		Object.assign(run.message, noticeMessage(batch));
+		this.inNoticeTurn = true;
+		this.noticeTurns++;
 	}
 
-	/** Pi settled after a run. A wake-up turn the user aborted pauses notices until the user's next message. */
 	onSettled(aborted: boolean): void {
-		if (aborted && this.inWakeTurn) this.pause();
-		this.inWakeTurn = false;
+		if (this.inNoticeTurn && (aborted || this.noticeTurns >= MAX_NOTICE_TURNS)) this.pause();
+		this.inNoticeTurn = false;
 		this.flush();
 	}
 
-	/** The Kernel is gone, and its commands with it: drop their notices. */
-	drop(): void {
-		this.queue = [];
-		clearTimeout(this.timer);
+	/** Pi emits the manual success hook before clearing its busy flag. */
+	afterManualCompaction(): void {
+		if (this.paused || !this.enabled) return;
+		// shortcut: retry only the idle check while the remaining compaction hooks finish;
+		// remove when Pi exposes its post-compaction idle event to extensions.
+		clearTimeout(this.compactionTimer);
+		this.compactionTimer = setTimeout(() => {
+			if (this.host.isIdle()) this.flush();
+			else this.afterManualCompaction();
+		}, 25);
+		this.compactionTimer.unref();
 	}
 
-	/** A new session: nothing queued, no wake-up turns counted. */
+	drop(): void {
+		this.queue = [];
+		this.dispatch = undefined;
+		this.armDeadline();
+		clearTimeout(this.compactionTimer);
+	}
+
 	reset(): void {
 		this.drop();
-		this.wakeTurns = 0;
+		this.noticeTurns = 0;
 		this.paused = false;
-		this.inWakeTurn = false;
+		this.inNoticeTurn = false;
+	}
+
+	private armDeadline(): void {
+		clearTimeout(this.deadlineTimer);
+		const oldest = this.queue[0];
+		if (!oldest || this.paused) return;
+		const delay = Math.ceil(oldest.receivedAt + NOTICE_BATCH_MS - performance.now());
+		if (delay <= 0) return; // Already due; the caller or the next settle checks it.
+		// A slow Kernel list must not hold up an already-due batch.
+		this.deadlineTimer = setTimeout(() => void this.flushNow().catch(() => undefined), delay);
+		this.deadlineTimer.unref();
 	}
 
 	private flush(): void {
@@ -117,39 +171,32 @@ export class BackgroundNotices {
 	}
 
 	private async flushNow(): Promise<void> {
-		clearTimeout(this.timer);
-		if (!this.enabled || this.paused || this.queue.length === 0 || !this.host.isIdle()) return;
-		// Go once no command runs any more, or once the oldest notice has waited long enough.
-		const wait = this.queue[0]!.receivedAt + NOTICE_BATCH_MS - Date.now();
-		if (wait > 0 && await this.host.hasRunningCommand()) {
-			this.timer = setTimeout(() => this.flush(), wait);
-			this.timer.unref?.();
-			return;
-		}
-		if (this.queue.length === 0 || !this.host.isIdle()) return;
-		if (this.wakeTurns >= MAX_WAKE_TURNS) return this.pause();
-		this.host.wake(this.take()!);
+		const oldest = this.queue[0];
+		if (!oldest || this.paused || this.dispatch || !this.host.isIdle()) return;
+		const due = oldest.receivedAt + NOTICE_BATCH_MS;
+		if (performance.now() < due && await this.host.hasRunningCommand() && performance.now() < due) return;
+		if (this.queue[0] !== oldest || this.paused || this.dispatch || !this.host.isIdle()) return;
+		const message = noticeMessage(this.queue);
+		this.dispatch = { batch: new Set(this.queue), details: message.details };
+		this.host.send(message);
 	}
 
 	private pause(): void {
 		if (this.paused) return;
 		this.paused = true;
+		clearTimeout(this.deadlineTimer);
+		clearTimeout(this.compactionTimer);
 		this.host.notify(PAUSED_MESSAGE);
 	}
+}
 
-	/** Empty the queue into one message, or undefined when it is empty. */
-	private take(): NoticeMessage | undefined {
-		const notices = this.queue;
-		this.queue = [];
-		clearTimeout(this.timer);
-		if (notices.length === 0) return undefined;
-		return {
-			customType: BACKGROUND_NOTICE_TYPE,
-			content: `${notices.map(noticeText).join("\n\n")}\n${HANDLE_LINE}`,
-			display: true,
-			details: { notices: notices.map(({ receivedAt: _, ...notice }) => notice) },
-		};
-	}
+function noticeMessage(notices: Notice[]): NoticeMessage {
+	return {
+		customType: BACKGROUND_NOTICE_TYPE,
+		content: `${notices.map(noticeText).join("\n\n")}\n${HANDLE_LINE}`,
+		display: true,
+		details: { notices: notices.map(({ receivedAt: _, ...notice }) => notice) },
+	};
 }
 
 function noticeText({ pid, command, exitCode, timeoutSeconds }: Notice): string {
@@ -159,7 +206,7 @@ function noticeText({ pid, command, exitCode, timeoutSeconds }: Notice): string 
 
 function parseIdentity(data: Record<string, unknown>): { pid: number; command: string } {
 	const { pid, command } = data;
-	if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0) throw new Error(`${data.type} pid must be a positive integer`);
+	if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0 || pid > 0xffff_ffff) throw new Error(`${data.type} pid must be a positive integer`);
 	if (typeof command !== "string" || command === "") throw new Error(`${data.type} command must be a non-empty string`);
 	return { pid, command };
 }
@@ -167,13 +214,13 @@ function parseIdentity(data: Record<string, unknown>): { pid: number; command: s
 function parseCompleted(data: Record<string, unknown>): Notice {
 	const { exitCode, timeoutSeconds } = data;
 	if (typeof exitCode !== "number" || !Number.isSafeInteger(exitCode)) throw new Error("bash.completed exitCode must be an integer");
-	if (timeoutSeconds !== undefined && timeoutSeconds !== null && (typeof timeoutSeconds !== "number" || !(timeoutSeconds > 0))) {
+	if (timeoutSeconds !== undefined && timeoutSeconds !== null && (typeof timeoutSeconds !== "number" || !Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0)) {
 		throw new Error("bash.completed timeoutSeconds must be a positive number");
 	}
 	return {
 		...parseIdentity(data),
 		exitCode,
 		...(typeof timeoutSeconds === "number" ? { timeoutSeconds } : {}),
-		receivedAt: Date.now(),
+		receivedAt: performance.now(),
 	};
 }

@@ -10,7 +10,7 @@ import { KernelClient } from "./kernel/client.ts";
 import { hostJournalPath, reapDeadHosts } from "./kernel/orphans.ts";
 import { buildSystemPrompt } from "./prompt/system-prompt.ts";
 import { preludeNames } from "./kernel/prelude.ts";
-import { BackgroundNotices } from "./session/background-notices.ts";
+import { BackgroundNotices, isCancelledBackgroundNotice } from "./session/background-notices.ts";
 import { createIpythonTool, IPYTHON_TOOL_NAME, kernelBootstrapCode, STATE_LOST_NOTICE } from "./tool/ipython-tool.ts";
 
 export { STATE_LOST_NOTICE };
@@ -55,8 +55,7 @@ export default function piIpython(pi: ExtensionAPI): void {
 	const notices = new BackgroundNotices({
 		isIdle: () => isIdle(),
 		hasRunningCommand: () => kernel?.hasRunningCommand() ?? Promise.resolve(false),
-		// followUp: should a run start in between, the notice still waits for it to finish.
-		wake: (message) => pi.sendMessage(message, { triggerTurn: true, deliverAs: "followUp" }),
+		send: (message) => pi.sendMessage(message, { triggerTurn: true }),
 		notify: (message) => report(message, "info"),
 	});
 	const hostHandlers = notices.hostHandlers;
@@ -158,12 +157,12 @@ export default function piIpython(pi: ExtensionAPI): void {
 		}
 		forceExclusive();
 	});
-	pi.on("before_agent_start", (event) => {
+	pi.on("before_agent_start", (event, ctx) => {
 		promptOptions = event.systemPromptOptions;
 		// Own the provider projection below, instead of freezing a forced string for the whole run.
 		promptOptions.forceSystemPrompt = undefined;
 		forceExclusive();
-		const message = notices.onRunStart(event);
+		const message = notices.onRunStart(event, () => ctx.abort());
 		return message ? { message } : undefined;
 	});
 	pi.on("agent_settled", (event) => notices.onSettled(event.aborted));
@@ -206,7 +205,8 @@ export default function piIpython(pi: ExtensionAPI): void {
 		}
 	});
 	// Compaction summarises the conversation, but the Kernel keeps its namespace: tell the model what survived.
-	pi.on("session_compact", async () => {
+	pi.on("session_compact", async (event) => {
+		if (event.reason === "manual") notices.afterManualCompaction();
 		const current = kernel;
 		if (!current?.isRunning) return;
 		// `pi` and the prelude's names are re-created by the bootstrap, like `bash`, which the runtime already leaves out.
@@ -222,18 +222,21 @@ export default function piIpython(pi: ExtensionAPI): void {
 			{ triggerTurn: false },
 		);
 	});
+	pi.on("session_compact_failed", (event) => {
+		if (event.reason === "manual") notices.afterManualCompaction();
+	});
 	pi.on("context", (event) => {
 		const noticeId = (m: (typeof event.messages)[number]) => m.role === "custom" && m.customType === PYTHON_STATE_TYPE
 			? (m.details as { noticeId?: string } | undefined)?.noticeId
 			: undefined;
 		// A notice its Kernel did not outlive must not claim that Python state persisted.
-		const messages = voidedStateNotices.size === 0
-			? event.messages
-			: event.messages.filter((m) => !voidedStateNotices.has(noticeId(m) ?? ""));
+		const messages = event.messages.filter((m) =>
+			!isCancelledBackgroundNotice(m) && !voidedStateNotices.has(noticeId(m) ?? ""));
+		const changed = messages.length !== event.messages.length;
 		const notice = pendingStateNotice;
 		if (!notice || messages.some((m) => noticeId(m) === notice.id)) {
 			pendingStateNotice = undefined;
-			return messages === event.messages ? undefined : { messages };
+			return changed ? { messages } : undefined;
 		}
 		// Make the deferred notice visible to continuations and overflow retries without steering another turn.
 		return { messages: [...messages, {

@@ -272,6 +272,7 @@ class BashHandle:
         self._status: int | None = None
         self._status_known = threading.Event()
         self._reaped = False
+        self._reaped_in_creating_cell = False
         self._result: BashResult | None = None
         self._callbacks: list[Callable[[], None]] = []
         self._reap_callback: Callable[[], None] | None = None
@@ -588,6 +589,8 @@ class BashHandle:
             self._finalize(exit_code)
         with self._kill_lock:
             delivered = self._reap_group()
+            cell_finished = self._creating_cell_finished
+            self._reaped_in_creating_cell = cell_finished is not None and not cell_finished.is_set()
             self._reaped = True
             if not _IS_POSIX:
                 # Reaped: pid fallbacks are gone, so the handle may finally close.
@@ -758,8 +761,9 @@ class BashHandle:
         try:
             result = await self._wait()
             await self._wait_reaped()
-            # The cell may do other work before awaiting this handle. Do not classify
-            # it as detached until that whole cell has crossed its completion barrier.
+            # The watcher records the order even if the Cell blocked the event loop.
+            if self._reaped_in_creating_cell:
+                return
             await cell_finished.wait()
             if (
                 self._awaited_by_creating_cell
