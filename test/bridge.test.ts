@@ -11,6 +11,7 @@ import {
 import { Type } from "typebox";
 import { afterEach, expect, test } from "vitest";
 import { DEFAULT_PYTHON_VERSION, kernelVenvDir, venvPython } from "../src/kernel/bootstrap.ts";
+import { DEFAULT_PACKAGE_REQUIREMENTS } from "../src/kernel/packages.ts";
 import { createHarness, type Harness, resultText } from "./harness.ts";
 
 let h: Harness | undefined;
@@ -543,7 +544,7 @@ test.skipIf(process.platform === "win32")("pi exists with python.source: project
 		extensions,
 		setup: ({ cwd }) => {
 			mkdirSync(join(cwd, ".venv", "bin"), { recursive: true });
-			const python = venvPython(kernelVenvDir(DEFAULT_PYTHON_VERSION));
+			const python = venvPython(kernelVenvDir(DEFAULT_PYTHON_VERSION, DEFAULT_PACKAGE_REQUIREMENTS));
 			writeFileSync(join(cwd, ".venv", "bin", "python"), `#!/bin/sh\nexec '${python}' "$@"\n`, { mode: 0o755 });
 			mkdirSync(join(cwd, ".pi"));
 			writeFileSync(join(cwd, ".pi", "pi-ipython.json"), JSON.stringify({ python: { source: "project" } }));

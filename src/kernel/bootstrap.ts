@@ -31,14 +31,35 @@ export const RUNTIME_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.u
 
 export interface EnsureKernelPythonOptions {
 	pythonVersion?: string;
-	/** Venv directory. Defaults to `$PI_IPYTHON_VENV_DIR`, else `<agentDir>/pi-ipython/kernel-venv-<version>`. */
+	/** Kernel packages (uv requirements) installed after the runtime. */
+	packages?: readonly string[];
+	/** Venv directory. Defaults to `kernelVenvDir(pythonVersion, packages)`. */
 	venvDir?: string;
 }
 
-export function kernelVenvDir(pythonVersion: string): string {
+/**
+ * `$PI_IPYTHON_VENV_DIR`, else `<agentDir>/pi-ipython/kernel-venv-<version>`, suffixed with a hash of the
+ * package set when it is not empty: each package set gets its own venv, so sessions with different sets
+ * never rebuild each other's (ADR 0004).
+ */
+export function kernelVenvDir(pythonVersion: string, packages: readonly string[] = []): string {
 	const override = process.env.PI_IPYTHON_VENV_DIR;
-	if (override) return path.resolve(override);
-	return path.join(getAgentDir(), "pi-ipython", `kernel-venv-${pythonVersion}`);
+	const base = override ? path.resolve(override) : path.join(getAgentDir(), "pi-ipython", `kernel-venv-${pythonVersion}`);
+	const set = packageSet(packages);
+	return set.length === 0 ? base : `${base}-${createHash("sha256").update(set.join("\n")).digest("hex").slice(0, 8)}`;
+}
+
+/** Sorted and deduplicated, so order and repeats in config do not change the venv. */
+function packageSet(packages: readonly string[]): string[] {
+	return [...new Set(packages.map((p) => p.trim()))].sort();
+}
+
+/** `PATH` plus the directories uv is looked up in, so `bash("uv …")` in a Cell finds the uv that built the venv. */
+export function kernelPathEnv(): Record<string, string> {
+	const key = Object.keys(process.env).find((k) => k.toUpperCase() === "PATH") ?? "PATH";
+	const dirs = (process.env[key] ?? "").split(path.delimiter).filter(Boolean);
+	const uvDir = path.join(os.homedir(), ".local", "bin");
+	return { [key]: [...dirs, ...(dirs.includes(uvDir) ? [] : [uvDir])].join(path.delimiter) };
 }
 
 export function venvPython(venv: string): string {
@@ -66,19 +87,20 @@ const inFlight = new Map<string, Promise<string>>();
 /** Return the venv's Python, building the venv first when it is missing or stale. */
 export function ensureKernelPython(options: EnsureKernelPythonOptions = {}): Promise<string> {
 	const version = options.pythonVersion ?? DEFAULT_PYTHON_VERSION;
-	const venv = options.venvDir ?? kernelVenvDir(version);
-	const key = `${venv}\0${version}`;
+	const packages = packageSet(options.packages ?? []);
+	const venv = options.venvDir ?? kernelVenvDir(version, packages);
+	const key = `${venv}\0${version}\0${packages.join("\n")}`;
 	let promise = inFlight.get(key);
 	if (!promise) {
-		promise = ensureUncached(venv, version).finally(() => inFlight.delete(key));
+		promise = ensureUncached(venv, version, packages).finally(() => inFlight.delete(key));
 		inFlight.set(key, promise);
 	}
 	return promise;
 }
 
-async function ensureUncached(venv: string, version: string): Promise<string> {
+async function ensureUncached(venv: string, version: string, packages: string[]): Promise<string> {
 	const python = venvPython(venv);
-	const identity = await runtimeIdentity(version);
+	const identity = await runtimeIdentity(version, packages);
 	if (await isReady(venv, python, identity)) return python;
 
 	const release = await acquireLock(venv);
@@ -91,6 +113,13 @@ async function ensureUncached(venv: string, version: string): Promise<string> {
 		await run(uv, ["sync", "--project", RUNTIME_DIR, "--frozen", "--no-dev", "--no-editable", "--refresh-package", "pi-ipython-runtime", "--python", version], {
 			UV_PROJECT_ENVIRONMENT: venv,
 		});
+		if (packages.length > 0) {
+			try {
+				await run(uv, ["pip", "install", "--python", python, ...packages], {});
+			} catch (error) {
+				throw new Error(`Installing the Kernel packages failed; check python.packages in pi-ipython.json.\n${errorMessage(error)}`);
+			}
+		}
 		await writeFile(path.join(venv, MARKER_FILE), `${JSON.stringify({ identity })}\n`);
 	} catch (error) {
 		throw new Error(
@@ -112,8 +141,8 @@ async function isReady(venv: string, python: string, identity: string): Promise<
 	}
 }
 
-/** Hash of the Python version plus the runtime sources, so any runtime change rebuilds the venv. */
-async function runtimeIdentity(version: string): Promise<string> {
+/** Hash of the Python version, the Kernel packages, and the runtime sources, so any change rebuilds the venv. */
+async function runtimeIdentity(version: string, packages: readonly string[]): Promise<string> {
 	const files = [path.join(RUNTIME_DIR, "pyproject.toml"), path.join(RUNTIME_DIR, "uv.lock")];
 	const collect = async (dir: string): Promise<void> => {
 		for (const entry of await readdir(dir, { withFileTypes: true })) {
@@ -124,7 +153,7 @@ async function runtimeIdentity(version: string): Promise<string> {
 	};
 	await collect(path.join(RUNTIME_DIR, "src", "rlm"));
 	files.sort();
-	const hash = createHash("sha256").update(`python=${version}\0`);
+	const hash = createHash("sha256").update(`python=${version}\0packages=${packages.join("\n")}\0`);
 	for (const file of files) {
 		hash.update(path.relative(RUNTIME_DIR, file)).update("\0").update(await readFile(file)).update("\0");
 	}

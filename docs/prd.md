@@ -41,7 +41,7 @@ People who already run pi and want to try a Python-REPL-first agent on their own
 14. **Skills.** Markdown skills only. The model reads `SKILL.md` files with Python.
 15. **Safety.** The README states plainly that there is no sandbox and recommends a container. An optional `confirmEachCell` setting asks the user before each Cell runs.
 16. **TUI.** A simple renderer: highlighted Python code and truncated output.
-17. **Config.** `~/.pi/agent/pi-ipython.json` (global) merged with `.pi/pi-ipython.json` (project); project values win. Keys: `confirmEachCell`, `python.source` (`uv` | `project`), `python.version`, output limits, `piTools.list` and `piTools.search` (both default `true`, v3).
+17. **Config.** `~/.pi/agent/pi-ipython.json` (global) merged with `.pi/pi-ipython.json` (project); project values win. Keys: `confirmEachCell`, `python.source` (`uv` | `project`), `python.version`, output limits, `piTools.list` and `piTools.search` (both default `true`, v3), `python.defaultPackages` and `python.packages` (Kernel packages, uv only; see #48 and ADR 0004).
 
 ### v1.1: Harden the Kernel contract (#16)
 

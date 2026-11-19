@@ -3,6 +3,8 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fauxAssistantMessage, getSystemMessageText } from "@earendil-works/pi-ai";
 import { afterEach, expect, test } from "vitest";
+import { kernelVenvDir } from "../src/kernel/bootstrap.ts";
+import { DEFAULT_PACKAGE_REQUIREMENTS } from "../src/kernel/packages.ts";
 import { createHarness, type Harness, resultText } from "./harness.ts";
 
 let h: Harness | undefined;
@@ -11,7 +13,7 @@ afterEach(async () => {
 	h = undefined;
 });
 
-const managedVenv = process.env.PI_IPYTHON_VENV_DIR!;
+const managedVenv = kernelVenvDir("3.13", DEFAULT_PACKAGE_REQUIREMENTS);
 const whereCell = "import sys\n(sys.prefix, '%d.%d' % sys.version_info[:2])";
 
 function writeGlobalConfig(agentDir: string, config: unknown): void {
@@ -205,13 +207,14 @@ test("prelude.imports from global and project config concatenate, bind their nam
 
 test("with defaults on, configured imports get their own sub-line, without repeating a default statement", async () => {
 	h = await createHarness({
-		setup: (dirs) => writeConfigs(dirs, { prelude: { imports: ["from pathlib import Path", "import base64 as b64"] } }),
+		setup: (dirs) => writeConfigs(dirs, { prelude: { imports: ["from pathlib import Path", "import numpy as np", "import base64 as b64"] } }),
 	});
 	const prompt = await systemPrompt(h);
-	const section = prompt.slice(prompt.indexOf("- Pre-imported"), prompt.indexOf("## Rules")).trimEnd().split("\n");
+	const section = prompt.slice(prompt.indexOf("- Pre-imported"), prompt.indexOf("- Installed Python packages")).trimEnd().split("\n");
 	expect(section).toEqual([
 		"- Pre-imported in the REPL only (files and scripts you write still need their own imports):",
 		"  - stdlib: json, os, re, sys, time, math, shutil, itertools, functools, collections, textwrap, Path, datetime (the class), timedelta, Counter, defaultdict",
+		"  - packages: np, pd, requests, httpx, yaml",
 		"  - installed and configured for this project, use them where they fit: `import base64 as b64`",
 	]);
 });

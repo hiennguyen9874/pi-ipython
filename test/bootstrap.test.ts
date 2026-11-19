@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { expect, test } from "vitest";
+import { kernelVenvDir } from "../src/kernel/bootstrap.ts";
+import { DEFAULT_PACKAGE_REQUIREMENTS } from "../src/kernel/packages.ts";
 
 const exec = promisify(execFile);
 const harnessUrl = new URL("./harness.ts", import.meta.url).href;
@@ -25,7 +27,12 @@ test.each(["ownerless directory", "dead-owner directory", "dead-owner file"])(
 	async (kind) => {
 		const root = await mkdtemp(join(tmpdir(), "pi-ipython-lock-"));
 		const venv = join(root, "venv");
-		const lock = `${venv}.lock`;
+		// The sessions use the default package set, whose venv is `venv` plus that set's hash.
+		const previous = process.env.PI_IPYTHON_VENV_DIR;
+		process.env.PI_IPYTHON_VENV_DIR = venv;
+		const venvDir = kernelVenvDir("3.13", DEFAULT_PACKAGE_REQUIREMENTS);
+		process.env.PI_IPYTHON_VENV_DIR = previous;
+		const lock = `${venvDir}.lock`;
 		try {
 			if (kind === "dead-owner file") {
 				await writeFile(lock, "2147483647\n");
@@ -43,7 +50,7 @@ test.each(["ownerless directory", "dead-owner directory", "dead-owner file"])(
 				)),
 			);
 			for (const result of results) expect(result.status, JSON.stringify(result)).toBe("fulfilled");
-			expect(JSON.parse(await readFile(join(venv, ".pi-ipython-bootstrap.json"), "utf8")).identity)
+			expect(JSON.parse(await readFile(join(venvDir, ".pi-ipython-bootstrap.json"), "utf8")).identity)
 				.toMatch(/^sha256:/);
 			await expect(stat(lock)).rejects.toMatchObject({ code: "ENOENT" });
 		} finally {

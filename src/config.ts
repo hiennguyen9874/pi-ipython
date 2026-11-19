@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { CONFIG_DIR_NAME, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_PYTHON_VERSION } from "./kernel/bootstrap.ts";
+import { DEFAULT_PACKAGE_PRELUDE, DEFAULT_PACKAGE_REQUIREMENTS, isPackageRequirement } from "./kernel/packages.ts";
 import { DEFAULT_PRELUDE, preludeStatementNames } from "./kernel/prelude.ts";
 
 export const CONFIG_FILE_NAME = "pi-ipython.json";
@@ -13,16 +14,34 @@ export interface PiIpythonConfig {
 	confirmEachCell: boolean;
 	/** Background-command notices: a finished Background command can start a turn (TUI and RPC only). */
 	backgroundNotices: boolean;
-	python: { source: "uv" | "project"; version: string };
+	/** `packages` concatenates global then project entries; Kernel packages apply only with `source: "uv"`. */
+	python: { source: "uv" | "project"; version: string; defaultPackages: boolean; packages: string[] };
 	output: { maxBytes: number; maxLines: number };
 	piTools: { list: boolean; search: boolean };
 	/** `imports` concatenates global then project entries instead of the project winning. */
 	prelude: { defaults: boolean; imports: string[]; prompt: boolean };
 }
 
-/** The import statements the Kernel bootstrap runs: the defaults (unless turned off), then the configured imports. */
+/**
+ * The import statements the Kernel bootstrap runs: the defaults (unless turned off), plus the default packages'
+ * imports when those packages are installed, then the configured imports.
+ */
 export function effectivePrelude(config: PiIpythonConfig): string[] {
-	return [...new Set([...(config.prelude.defaults ? DEFAULT_PRELUDE : []), ...config.prelude.imports])];
+	const defaults = config.prelude.defaults
+		? [...DEFAULT_PRELUDE, ...(hasDefaultPackages(config) ? DEFAULT_PACKAGE_PRELUDE : [])]
+		: [];
+	return [...new Set([...defaults, ...config.prelude.imports])];
+}
+
+/** The Kernel packages to install: the defaults (unless turned off), then the configured ones; none outside uv mode. */
+export function effectivePackages(config: PiIpythonConfig): string[] {
+	if (config.python.source !== "uv") return [];
+	return [...new Set([...(config.python.defaultPackages ? DEFAULT_PACKAGE_REQUIREMENTS : []), ...config.python.packages])];
+}
+
+/** Whether the default packages' prelude applies: they are installed. */
+export function hasDefaultPackages(config: PiIpythonConfig): boolean {
+	return config.python.source === "uv" && config.python.defaultPackages;
 }
 
 export interface LoadedConfig {
@@ -46,6 +65,8 @@ const FIELDS: Record<string, { valid: (v: unknown) => boolean; expected: string 
 		},
 		expected: 'a Python version >=3.11 like "3.13"',
 	},
+	"python.defaultPackages": { valid: (v) => typeof v === "boolean", expected: "true or false" },
+	"python.packages": { valid: Array.isArray, expected: "an array of uv requirement strings" },
 	"output.maxBytes": { valid: isPositiveInt, expected: "a positive integer" },
 	"output.maxLines": { valid: isPositiveInt, expected: "a positive integer" },
 	"piTools.list": { valid: (v) => typeof v === "boolean", expected: "true or false" },
@@ -56,6 +77,7 @@ const FIELDS: Record<string, { valid: (v: unknown) => boolean; expected: string 
 };
 const SECTIONS = new Set(["python", "output", "piTools", "prelude"]);
 const IMPORT_EXPECTED = 'one "import …" or "from … import …" statement (absolute, without "*")';
+const PACKAGE_EXPECTED = 'a uv requirement string, not empty and not starting with "-"';
 
 export function configPaths(cwd: string, agentDir = getAgentDir()): { global: string; project: string } {
 	return {
@@ -73,11 +95,14 @@ export function loadConfig(cwd: string, agentDir = getAgentDir()): LoadedConfig 
 		if (raw) collect(raw, file, values, errors);
 	}
 	const get = <T>(key: string, fallback: T) => (values.has(key) ? (values.get(key) as T) : fallback);
+	const source = get<"uv" | "project">("python.source", "uv");
+	const packages = get<string[]>("python.packages", []);
+	if (source === "project" && packages.length > 0) errors.push('"python.packages" is ignored because python.source is "project"');
 	return {
 		config: {
 			confirmEachCell: get("confirmEachCell", false),
 			backgroundNotices: get("backgroundNotices", false),
-			python: { source: get("python.source", "uv"), version: get("python.version", DEFAULT_PYTHON_VERSION) },
+			python: { source, version: get("python.version", DEFAULT_PYTHON_VERSION), defaultPackages: get("python.defaultPackages", true), packages },
 			output: { maxBytes: get("output.maxBytes", DEFAULT_MAX_BYTES), maxLines: get("output.maxLines", DEFAULT_MAX_LINES) },
 			piTools: { list: get("piTools.list", true), search: get("piTools.search", true) },
 			prelude: { defaults: get("prelude.defaults", true), imports: get<string[]>("prelude.imports", []), prompt: get("prelude.prompt", true) },
@@ -114,6 +139,7 @@ function collect(raw: Record<string, unknown>, file: string, values: Map<string,
 		if (!field) errors.push(`${file}: unknown key "${key}"`);
 		else if (!field.valid(value)) errors.push(`${file}: "${key}" must be ${field.expected}, got ${JSON.stringify(value)}`);
 		else if (key === "prelude.imports") values.set(key, [...((values.get(key) as string[] | undefined) ?? []), ...validImports(value as unknown[], file, errors)]);
+		else if (key === "python.packages") values.set(key, [...((values.get(key) as string[] | undefined) ?? []), ...validPackages(value as unknown[], file, errors)]);
 		else values.set(key, value);
 	};
 	for (const [key, value] of Object.entries(raw)) {
@@ -128,6 +154,15 @@ function validImports(entries: unknown[], file: string, errors: string[]): strin
 	return entries.flatMap((entry, i) => {
 		if (typeof entry === "string" && preludeStatementNames(entry)) return [entry.trim()];
 		errors.push(`${file}: "prelude.imports[${i}]" must be ${IMPORT_EXPECTED}, got ${JSON.stringify(entry)}`);
+		return [];
+	});
+}
+
+/** Entries that are uv requirements; each other entry is reported and skipped. */
+function validPackages(entries: unknown[], file: string, errors: string[]): string[] {
+	return entries.flatMap((entry, i) => {
+		if (isPackageRequirement(entry)) return [entry.trim()];
+		errors.push(`${file}: "python.packages[${i}]" must be ${PACKAGE_EXPECTED}, got ${JSON.stringify(entry)}`);
 		return [];
 	});
 }

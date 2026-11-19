@@ -6,6 +6,8 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { afterEach, expect, test } from "vitest";
 import { STATE_LOST_NOTICE } from "../src/index.ts";
+import { kernelVenvDir } from "../src/kernel/bootstrap.ts";
+import { DEFAULT_PACKAGE_REQUIREMENTS } from "../src/kernel/packages.ts";
 import { createHarness, type Harness, kernelPids, resultText } from "./harness.ts";
 
 /** The State-loss notice as it appears in a JSON-stringified context. */
@@ -60,7 +62,8 @@ test("the venv is prepared at session start, before any Cell", async () => {
 	});
 
 	h = await createHarness();
-	expect(await waitFor(() => existsSync(join(venvRoot, "venv", ".pi-ipython-bootstrap.json")), 120_000)).toBe(true);
+	const venv = kernelVenvDir("3.13", DEFAULT_PACKAGE_REQUIREMENTS);
+	expect(await waitFor(() => existsSync(join(venv, ".pi-ipython-bootstrap.json")), 120_000)).toBe(true);
 	expect(kernelPids()).toEqual([]);
 }, 150_000);
 

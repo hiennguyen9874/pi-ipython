@@ -4,8 +4,8 @@ import { getCurrentSystemMessage } from "@earendil-works/pi-ai";
 import { type BeforeAgentStartEvent, type ExtensionAPI, getAgentDir, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { listPiTools } from "./bridge/pi-tool-listing.ts";
 import { answerHostRequest, bridgedTools } from "./bridge/pi-tools.ts";
-import { effectivePrelude, loadConfig, type PiIpythonConfig } from "./config.ts";
-import { ensureKernelPython, resolveProjectPython, RUNTIME_SRC_DIR } from "./kernel/bootstrap.ts";
+import { effectivePackages, effectivePrelude, hasDefaultPackages, loadConfig, type PiIpythonConfig } from "./config.ts";
+import { ensureKernelPython, kernelPathEnv, resolveProjectPython, RUNTIME_SRC_DIR } from "./kernel/bootstrap.ts";
 import { KernelClient } from "./kernel/client.ts";
 import { hostJournalPath, reapDeadHosts } from "./kernel/orphans.ts";
 import { buildSystemPrompt } from "./prompt/system-prompt.ts";
@@ -80,11 +80,13 @@ export default function piIpython(pi: ExtensionAPI): void {
 				getOutputLimits,
 			});
 		}
+		const packages = effectivePackages(config);
 		return new KernelClient({
 			cwd,
-			resolvePython: () => ensureKernelPython({ pythonVersion: version }),
+			resolvePython: () => ensureKernelPython({ pythonVersion: version, packages }),
 			bootstrapCode,
 			onBootstrapStderr,
+			env: kernelPathEnv(),
 			journalPath,
 			onLost,
 			hostHandlers,
@@ -149,7 +151,9 @@ export default function piIpython(pi: ExtensionAPI): void {
 		journalPath = hostJournalPath(journalDir);
 
 		// Warm the venv so the first Cell does not wait for it; a failure resurfaces on that Cell.
-		if (config.python.source === "uv") ensureKernelPython({ pythonVersion: config.python.version }).catch(() => undefined);
+		if (config.python.source === "uv") {
+			ensureKernelPython({ pythonVersion: config.python.version, packages: effectivePackages(config) }).catch(() => undefined);
+		}
 
 		// Summaries can contain Python state even when their Cells are not on this branch.
 		if (["resume", "fork"].includes(event.reason) || mayContainEarlierState(ctx.sessionManager.getBranch())) {
@@ -178,8 +182,9 @@ export default function piIpython(pi: ExtensionAPI): void {
 				promptOptions,
 				bridgedTools(pi.getAllTools(), IPYTHON_TOOL_NAME).length > 0 ? { search: config.piTools.search } : undefined,
 				// The prelude still runs with prompt off; only the model is not told about it.
-				config.prelude.prompt ? config.prelude : undefined,
+				config.prelude.prompt ? { ...config.prelude, packages: hasDefaultPackages(config) } : undefined,
 				notices.enabled,
+				config.python.source === "uv" ? effectivePackages(config) : undefined,
 			),
 			...(current?.toolsAdded ? { toolsAdded: current.toolsAdded } : {}),
 			timestamp: current?.timestamp ?? Date.now(),

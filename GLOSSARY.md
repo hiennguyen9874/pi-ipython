@@ -44,6 +44,10 @@ _Avoid_: host tool, extension tool
 One call a Cell makes to a Pi tool, subject to pi's tool hooks and permission checks.
 _Avoid_: nested call, host request, tool bridge call
 
+**Kernel package**:
+A third-party Python package installed for the Kernel from config (a default or a configured one). A package the model installs during a session is not a Kernel package and can be lost.
+_Avoid_: dependency, extra, pip package
+
 **Python state**:
 The user-defined names (variables, functions, imports) living in the Kernel's namespace between Cells.
 _Avoid_: Kernel memory, variables, notebook state

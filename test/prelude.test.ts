@@ -46,6 +46,7 @@ test("the system prompt names the default prelude, scoped to the REPL", async ()
 	expect(prompt).toContain("- Pre-imported in the REPL only (files and scripts you write still need their own imports):\n  - stdlib: json, os,");
 	for (const name of preludeNames(DEFAULT_PRELUDE)) expect(prompt).toMatch(new RegExp(`stdlib: .*\\b${name}\\b`));
 	expect(prompt).toContain("datetime (the class)");
+	expect(prompt).toContain("  - packages: np, pd, requests, httpx, yaml\n");
 });
 
 test("the Python-state notice leaves prelude names out, even re-imported ones", async () => {
