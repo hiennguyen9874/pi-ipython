@@ -10,6 +10,7 @@ import { KernelClient } from "./kernel/client.ts";
 import { hostJournalPath, reapDeadHosts } from "./kernel/orphans.ts";
 import { buildSystemPrompt } from "./prompt/system-prompt.ts";
 import { preludeNames } from "./kernel/prelude.ts";
+import { BackgroundNotices } from "./session/background-notices.ts";
 import { createIpythonTool, IPYTHON_TOOL_NAME, kernelBootstrapCode, STATE_LOST_NOTICE } from "./tool/ipython-tool.ts";
 
 export { STATE_LOST_NOTICE };
@@ -36,23 +37,29 @@ export default function piIpython(pi: ExtensionAPI): void {
 	const onLost = (error: Error) => {
 		unannouncedStateLoss = error.message;
 		voidPendingStateNotice();
+		notices.drop();
 	};
 
 	/** The prelude statements of the current config. */
 	const prelude = (): readonly string[] => effectivePrelude(config);
 	/** Reports to the user: a UI notification, or stderr without a UI. Set on session start. */
-	let report = (message: string, _type: "error" | "warning") => console.error(message);
+	let report = (message: string, _type: "error" | "warning" | "info") => console.error(message);
+	/** Whether pi has no run going. Set on session start. */
+	let isIdle = () => false;
 	const onBootstrapStderr = (stderr: string) => {
 		for (const line of stderr.split("\n").filter((l) => l.trim())) report(`pi-ipython prelude: ${line}`, "warning");
 	};
 
-	// The runtime reports a finished Background command (`bash.completed`) and a later read of its handle
-	// (`bash.consumed`). No notice reaches the model, so both are acknowledged and dropped; any other reply
-	// makes the runtime print a warning into background output.
-	const hostHandlers = {
-		"bash.completed": async () => ({}),
-		"bash.consumed": async () => ({}),
-	};
+	// Answering `bash.completed` and `bash.consumed` at any time keeps the runtime from printing a warning
+	// into background output; with notices off, both are acknowledged and dropped.
+	const notices = new BackgroundNotices({
+		isIdle: () => isIdle(),
+		hasRunningCommand: () => kernel?.hasRunningCommand() ?? Promise.resolve(false),
+		// followUp: should a run start in between, the notice still waits for it to finish.
+		wake: (message) => pi.sendMessage(message, { triggerTurn: true, deliverAs: "followUp" }),
+		notify: (message) => report(message, "info"),
+	});
+	const hostHandlers = notices.hostHandlers;
 
 	const getOutputLimits = () => config.output;
 
@@ -99,6 +106,7 @@ export default function piIpython(pi: ExtensionAPI): void {
 			getKernel: () => (kernel ??= createKernel()),
 			killKernel: async () => {
 				voidPendingStateNotice();
+				notices.drop();
 				await kernel?.shutdown();
 				kernel = undefined;
 			},
@@ -130,6 +138,10 @@ export default function piIpython(pi: ExtensionAPI): void {
 			if (ctx.hasUI) ctx.ui.notify(message, type);
 			else console.error(message);
 		};
+		isIdle = () => ctx.isIdle();
+		notices.reset();
+		// Print and JSON modes exit once the prompt is done: nothing could start the turn.
+		notices.enabled = config.backgroundNotices && (ctx.mode === "tui" || ctx.mode === "rpc");
 		for (const error of loaded.errors) report(`pi-ipython config: ${error}`, "error");
 
 		// Kernels of pi hosts that died without shutting them down.
@@ -151,7 +163,10 @@ export default function piIpython(pi: ExtensionAPI): void {
 		// Own the provider projection below, instead of freezing a forced string for the whole run.
 		promptOptions.forceSystemPrompt = undefined;
 		forceExclusive();
+		const message = notices.onRunStart(event);
+		return message ? { message } : undefined;
 	});
+	pi.on("agent_settled", (event) => notices.onSettled(event.aborted));
 	// MCP can register tools after before_agent_start, including while a Cell waits for readiness.
 	// Project one leading prompt from the live callable set before every provider request,
 	// preserving the current declarations while leaving the persisted transcript untouched.
@@ -165,6 +180,7 @@ export default function piIpython(pi: ExtensionAPI): void {
 				bridgedTools(pi.getAllTools(), IPYTHON_TOOL_NAME).length > 0 ? { search: config.piTools.search } : undefined,
 				// The prelude still runs with prompt off; only the model is not told about it.
 				config.prelude.prompt ? config.prelude : undefined,
+				notices.enabled,
 			),
 			...(current?.toolsAdded ? { toolsAdded: current.toolsAdded } : {}),
 			timestamp: current?.timestamp ?? Date.now(),
@@ -179,6 +195,7 @@ export default function piIpython(pi: ExtensionAPI): void {
 			? await ctx.ui.select("Branch switched. Python state may not match this branch.", [KEEP_KERNEL, RESTART_KERNEL])
 			: KEEP_KERNEL;
 		if (choice === RESTART_KERNEL) {
+			notices.drop();
 			await kernel.shutdown();
 			kernel = undefined;
 			unannouncedStateLoss = undefined;
@@ -230,6 +247,7 @@ export default function piIpython(pi: ExtensionAPI): void {
 	});
 	pi.on("session_shutdown", async () => {
 		pendingStateNotice = undefined;
+		notices.drop();
 		await kernel?.shutdown();
 		kernel = undefined;
 	});

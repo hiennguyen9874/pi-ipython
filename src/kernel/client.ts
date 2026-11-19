@@ -27,6 +27,8 @@ const ABORT_GRACE_MS = 1_000;
 // How long the next Cell waits for an interrupted Cell to finish, re-sending interrupts, before it is busy.
 const BUSY_WAIT_MS = 5_000;
 const BUSY_INTERRUPT_INTERVAL_MS = 500;
+// A stuck listing counts as no running command rather than holding notices back.
+const ACTIVITY_TIMEOUT_MS = 5_000;
 const MAX_STDERR_TAIL_CHARS = 8 * 1024;
 // A line that cannot complete within this ceiling is corruption, not output worth buffering until OOM.
 const MAX_PROTOCOL_LINE_CHARS = 32 * 1024 * 1024;
@@ -163,6 +165,8 @@ export class KernelClient {
 	private generation = 0;
 	/** The process that finished starting; losing any other one is a failed start. */
 	private readyChild?: ChildProcess;
+	/** Out-of-band requests (`bash_activity`), answered by a `done` with their id; undefined when the Kernel is gone. */
+	private readonly outOfBand = new Map<string, (frame: Record<string, unknown> | undefined) => void>();
 
 	constructor(private readonly options: KernelClientOptions) {
 		this.background = this.newBuffer();
@@ -212,6 +216,23 @@ export class KernelClient {
 		} catch {
 			return null;
 		}
+	}
+
+	/**
+	 * Whether a `bash()` command started in this Kernel is still running. False when no Kernel is
+	 * ready or the listing fails. Answered beside a running Cell; never starts a Kernel.
+	 */
+	async hasRunningCommand(): Promise<boolean> {
+		if (!this.child || this.child !== this.readyChild) return false;
+		const id = randomUUID().replaceAll("-", "");
+		const answered = new Promise<Record<string, unknown> | undefined>((resolve) => this.outOfBand.set(id, resolve));
+		this.write({ type: "bash_activity", action: "list", id }).catch(() => undefined);
+		const timeout = new AbortController();
+		const frame = await Promise.race([answered, delay(ACTIVITY_TIMEOUT_MS, timeout.signal).then(() => undefined)]);
+		timeout.abort();
+		this.outOfBand.delete(id);
+		const activities = frame?.status === "ok" && Array.isArray(frame.activities) ? frame.activities : [];
+		return activities.some((row) => typeof row === "object" && row !== null && (row as Record<string, unknown>).status === "running");
 	}
 
 	/** Raise KeyboardInterrupt in the running Cell. */
@@ -353,6 +374,12 @@ export class KernelClient {
 		}
 		if (type === "host_request") {
 			this.answerHostRequest(event.id as string, event.data);
+			return;
+		}
+		const outOfBand = type === "done" && typeof event.id === "string" ? this.outOfBand.get(event.id) : undefined;
+		if (outOfBand) {
+			this.outOfBand.delete(event.id as string);
+			outOfBand(event);
 			return;
 		}
 		const cell = this.active;
@@ -563,6 +590,8 @@ export class KernelClient {
 	private failPending(error: Error): void {
 		this.ready?.reject(error);
 		this.ready = undefined;
+		for (const answer of this.outOfBand.values()) answer(undefined);
+		this.outOfBand.clear();
 		const cell = this.active;
 		this.clearActive();
 		if (cell && !cell.settled) {

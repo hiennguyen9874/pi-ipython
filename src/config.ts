@@ -11,6 +11,8 @@ export const CONFIG_FILE_NAME = "pi-ipython.json";
 
 export interface PiIpythonConfig {
 	confirmEachCell: boolean;
+	/** Background-command notices: a finished Background command can start a turn (TUI and RPC only). */
+	backgroundNotices: boolean;
 	python: { source: "uv" | "project"; version: string };
 	output: { maxBytes: number; maxLines: number };
 	piTools: { list: boolean; search: boolean };
@@ -34,6 +36,7 @@ const isPositiveInt = (v: unknown) => Number.isInteger(v) && (v as number) > 0;
 /** Every supported key (dotted path), with its validator and a description of valid values. */
 const FIELDS: Record<string, { valid: (v: unknown) => boolean; expected: string }> = {
 	confirmEachCell: { valid: (v) => typeof v === "boolean", expected: "true or false" },
+	backgroundNotices: { valid: (v) => typeof v === "boolean", expected: "true or false" },
 	"python.source": { valid: (v) => v === "uv" || v === "project", expected: '"uv" or "project"' },
 	"python.version": {
 		valid: (v) => {
@@ -73,6 +76,7 @@ export function loadConfig(cwd: string, agentDir = getAgentDir()): LoadedConfig 
 	return {
 		config: {
 			confirmEachCell: get("confirmEachCell", false),
+			backgroundNotices: get("backgroundNotices", false),
 			python: { source: get("python.source", "uv"), version: get("python.version", DEFAULT_PYTHON_VERSION) },
 			output: { maxBytes: get("output.maxBytes", DEFAULT_MAX_BYTES), maxLines: get("output.maxLines", DEFAULT_MAX_LINES) },
 			piTools: { list: get("piTools.list", true), search: get("piTools.search", true) },

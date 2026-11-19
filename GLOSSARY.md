@@ -20,6 +20,10 @@ _Avoid_: Script, snippet, execution
 A `bash()` command still running after the Cell that started it has ended.
 _Avoid_: detached bash, background job, async bash
 
+**Background-command notice**:
+The message telling the model that a Background command finished, which can start a turn while the session is idle.
+_Avoid_: bash-done message, wake-up, completion event
+
 **Background output**:
 Output with no owning Cell (threads, subprocesses, tasks of finished Cells), reported with the next Cell.
 _Avoid_: unattributed output, orphan output

@@ -3,7 +3,7 @@
 //
 // Adapted from Unharnessed (crates/uh-core/src/prompts/layers/core.md and
 // system_prompt.rs at HEAD; packages/coding-agent/src/core/prompts/rlm.ts at 7d442aafa),
-// without the spawn, factory, memory, and bash wake-up sections.
+// without the spawn, factory, and memory sections; the bash wake-up rule only with Background-command notices on.
 // Copyright (c) 2026 Unharnessed
 // Copyright (c) 2025-2026 Prime Intellect Ltd.
 // MIT License, see LICENSE.
@@ -29,15 +29,19 @@ const PI_TOOLS_TAIL = `  - \`await pi.describe(name)\`: a tool's full \`descript
   - \`await pi.tool(name, args: dict | None = None)\`: call a tool; returns a dict for tools with an output schema, otherwise text, and raises \`pi.ToolError\` on failure
   - Before first using a tool, call \`await pi.describe(name)\` to read its schema, guidelines, and returns.`;
 
-const RULES_PROMPT = `## Rules
+/** Only with Background-command notices on. */
+const BACKGROUND_NOTICE_RULE = `- A \`bash()\` command still running when its Cell ends sends you a \`[bash-done …]\` message when it finishes, even after your turn has ended. For long commands, start \`h = bash(...)\` and end your turn; don't \`sleep\` or \`await\` just to hold the turn open.`;
+
+const RULES_HEAD = `## Rules
 
 - The REPL runs plain Python, not IPython: \`%magic\` commands and \`!cmd\` shell escapes are not supported. Use \`bash()\` to run programs.
 - Keep in mind that each tool call is a round trip: steps that do not need a result you have not seen yet can go in one call.
 - Run programs with \`bash()\`, not \`subprocess\` or \`os.system\`. Write logic, loops and parsing in Python; use \`bash()\` only to call programs.
 - A \`bash()\` command is a Python string: use \`r'...'\` when it contains backslashes, and double literal braces (\`{{ }}\`) in f-strings.
 - Read, search, and edit files with Python.
-- \`os.chdir()\` and \`os.environ\` changes persist and apply to later \`bash()\` calls.
-- Store what you read or compute in named variables instead of reading it again.
+- \`os.chdir()\` and \`os.environ\` changes persist and apply to later \`bash()\` calls.`;
+
+const RULES_TAIL = `- Store what you read or compute in named variables instead of reading it again.
 - Python variables survive compaction, but not a Kernel restart.
 - Run an external project through its own environment (\`uv run\`, \`.venv/bin/python\`, its documented commands); do not install its dependencies into the kernel.
 - When you are done, stop calling tools and give the final answer, with any assumption you made.`;
@@ -78,11 +82,15 @@ function preludePrompt({ defaults, imports }: PromptPrelude): string | undefined
 	].join("\n");
 }
 
-/** `piTools` is set when a Pi tool is callable; `search` is whether `pi.search` is on. Without `prelude`, the prompt does not mention it. */
+/**
+ * `piTools` is set when a Pi tool is callable; `search` is whether `pi.search` is on. Without `prelude`, the prompt
+ * does not mention it. `backgroundNotices` adds the rule for commands that outlive their Cell.
+ */
 export function buildSystemPrompt(
 	options: Pick<BuildSystemPromptOptions, "cwd" | "contextFiles" | "skills">,
 	piTools: { search: boolean } | undefined,
 	prelude?: PromptPrelude,
+	backgroundNotices = false,
 ): string {
 	const preludeLine = prelude && preludePrompt(prelude);
 	const functions = [
@@ -90,7 +98,8 @@ export function buildSystemPrompt(
 		...(preludeLine ? [preludeLine] : []),
 		...(piTools ? [PI_TOOLS_HEAD, ...(piTools.search ? [PI_SEARCH_PROMPT] : []), PI_TOOLS_TAIL] : []),
 	].join("\n");
-	const parts = [functions, RULES_PROMPT];
+	const rules = [RULES_HEAD, ...(backgroundNotices ? [BACKGROUND_NOTICE_RULE] : []), RULES_TAIL].join("\n");
+	const parts = [functions, rules];
 
 	const contextFiles = options.contextFiles ?? [];
 	if (contextFiles.length > 0) {
