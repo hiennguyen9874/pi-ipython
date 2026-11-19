@@ -54,6 +54,8 @@ export default function piIpython(pi: ExtensionAPI): void {
 		"bash.consumed": async () => ({}),
 	};
 
+	const getOutputLimits = () => config.output;
+
 	const createKernel = (): KernelClient => {
 		const { source, version } = config.python;
 		const bootstrapCode = kernelBootstrapCode(prelude());
@@ -69,6 +71,7 @@ export default function piIpython(pi: ExtensionAPI): void {
 				journalPath,
 				onLost,
 				hostHandlers,
+				getOutputLimits,
 			});
 		}
 		return new KernelClient({
@@ -79,6 +82,7 @@ export default function piIpython(pi: ExtensionAPI): void {
 			journalPath,
 			onLost,
 			hostHandlers,
+			getOutputLimits,
 		});
 	};
 
@@ -98,7 +102,7 @@ export default function piIpython(pi: ExtensionAPI): void {
 				await kernel?.shutdown();
 				kernel = undefined;
 			},
-			getOutputLimits: () => config.output,
+			getOutputLimits,
 			getConfirmEachCell: () => config.confirmEachCell,
 			takeStateLoss: () => {
 				const cause = unannouncedStateLoss;

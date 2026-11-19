@@ -8,12 +8,14 @@
 // MIT License, see LICENSE.
 
 import { randomUUID } from "node:crypto";
-import { writeFileSync } from "node:fs";
+import { closeSync, openSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import {
+	DEFAULT_MAX_BYTES,
+	DEFAULT_MAX_LINES,
 	type ExtensionToolContext,
 	formatSize,
 	type ToolDefinition,
@@ -22,7 +24,8 @@ import {
 	truncateTail,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { type CellResult, type KernelClient, KernelBusyError } from "../kernel/client.ts";
+import { type CellOutput, type CellResult, disposeCellOutput, type KernelClient, KernelBusyError } from "../kernel/client.ts";
+import { OutputBuffer, writeAll } from "../kernel/output-buffer.ts";
 import { preludeCode } from "../kernel/prelude.ts";
 import { renderCellCall, renderCellResult } from "../render/cell-renderer.ts";
 
@@ -78,8 +81,8 @@ const ipythonSchema = Type.Object({
 	code: Type.String({ description: "Python code to run in the persistent Kernel." }),
 });
 
-export interface IpythonToolDetails extends CellResult {
-	/** Set when the text was truncated: the temp file holding the full text. */
+export interface IpythonToolDetails extends Omit<CellResult, "output"> {
+	/** Set when the text was truncated: the Spill file holding the full text. */
 	fullOutputPath?: string;
 	/** Truncation notice, including a failed attempt to save the full output. */
 	outputWarning?: string;
@@ -123,55 +126,122 @@ function stateLostResult(cause: string, cellRan = false) {
 	return { content: [{ type: "text" as const, text }], details, isError: true };
 }
 
-/** Model-facing text: stdout, then stderr (labelled), then the trailing expression's repr, then the traceback. */
-export function formatCellResult(r: CellResult): string {
-	const parts: string[] = [];
-	if (r.stdout) parts.push(r.stdout.replace(/\n$/, ""));
-	if (r.stderr) parts.push(`[stderr]\n${r.stderr.replace(/\n$/, "")}`);
-	if (r.result !== undefined) parts.push(r.result);
+/** A piece of the model-facing text: literal text, or a stream without its trailing newline. */
+type Segment = string | OutputBuffer;
+
+const BACKGROUND_HEADING = "[background output]";
+
+/**
+ * Model-facing text as segments: stdout, then stderr (labelled), then the trailing expression's repr,
+ * then the traceback, then Background output (labelled), one per line.
+ */
+function cellSegments(r: CellResult): { segments: Segment[]; backgroundSegment?: number } {
+	const o = r.output ?? textOutput(r);
+	const parts: Segment[][] = [];
+	if (o.stdout.totalBytes) parts.push([o.stdout]);
+	if (o.stderr.totalBytes) parts.push(["[stderr]\n", o.stderr]);
+	if (r.result !== undefined) parts.push([r.result]);
 	if (r.error) {
 		const traceback = r.error.traceback.join("").replace(/\n$/, "");
-		parts.push(traceback || `${r.error.ename}: ${r.error.evalue}`);
+		parts.push([traceback || `${r.error.ename}: ${r.error.evalue}`]);
 	}
-	if (r.status === "aborted") parts.push("[Cell aborted]");
-	if (r.backgroundOutput) parts.push(`[background output]\n${r.backgroundOutput.replace(/\n$/, "")}`);
-	return parts.join("\n") || "(no output)";
+	if (r.status === "aborted") parts.push(["[Cell aborted]"]);
+	const hasBackground = o.background.totalBytes > 0;
+	if (hasBackground) parts.push([`${BACKGROUND_HEADING}\n`, o.background]);
+	const segments = parts.flatMap((part, i) => (i === 0 ? part : ["\n", ...part]));
+	return { segments, backgroundSegment: hasBackground ? segments.length - 2 : undefined };
 }
 
-/** Keep the tail within the limits (tracebacks and results come last); spill the full text to a temp file. */
-export function truncateCellText(
-	text: string,
+/** A result's streams from its text alone, for results without `output`. */
+function textOutput(r: CellResult): CellOutput {
+	const buffer = (text: string) => {
+		const b = new OutputBuffer(Number.MAX_SAFE_INTEGER / 4);
+		b.append(text);
+		return b;
+	};
+	return { stdout: buffer(r.stdout), stderr: buffer(r.stderr), background: buffer(r.backgroundOutput) };
+}
+
+/**
+ * The model-facing text, its tail kept within the limits (tracebacks and results come last), with the
+ * full text written to a Spill file when cut. Reads stream tails and spools, never whole streams.
+ */
+export function composeCellText(
+	r: CellResult,
 	limits: TruncationOptions,
-	backgroundOutput = "",
 ): { text: string; fullOutputPath?: string; outputWarning?: string } {
-	const t = truncateTail(text, limits);
-	if (!t.truncated) return { text };
+	const { segments, backgroundSegment } = cellSegments(r);
+	let tail = "";
+	let totalBytes = 0;
+	let newlines = 0;
+	let backgroundStart = -1;
+	for (const [i, segment] of segments.entries()) {
+		if (i === backgroundSegment) backgroundStart = tail.length;
+		if (typeof segment === "string") {
+			tail += segment;
+			totalBytes += Buffer.byteLength(segment);
+			newlines += countNewlines(segment);
+		} else {
+			const drop = segment.endsWithNewline ? 1 : 0;
+			tail += drop ? segment.tail.slice(0, -1) : segment.tail;
+			totalBytes += segment.totalBytes - drop;
+			newlines += segment.newlines - drop;
+		}
+	}
+	if (totalBytes === 0) return { text: "(no output)" };
+	const maxBytes = limits.maxBytes ?? DEFAULT_MAX_BYTES;
+	const maxLines = limits.maxLines ?? DEFAULT_MAX_LINES;
+	const totalLines = newlines + (tail.endsWith("\n") ? 0 : 1);
+	if (totalLines <= maxLines && totalBytes <= maxBytes) return { text: tail };
+
+	// Each stream's tail is long enough that cutting the joined tails equals cutting the full text.
+	const t = truncateTail(tail, { maxBytes, maxLines });
 	let content = t.content;
 	let shown = t.lastLinePartial
 		? `the last ${formatSize(t.outputBytes)} of the last line`
-		: `the last ${t.outputLines} of ${t.totalLines} lines`;
-	const heading = "[background output]";
-	const background = backgroundOutput.replace(/\n$/, "");
-	const backgroundStart = text.length - background.length - heading.length - 1;
-	if (backgroundOutput && text.length - content.length > backgroundStart) {
+		: `the last ${t.outputLines} of ${totalLines} lines`;
+	if (backgroundStart >= 0 && tail.length - content.length > backgroundStart) {
 		// The tail starts inside the background section: restore its attribution, reserving space.
-		const tail = truncateTail(background, {
-			maxLines: Math.max(0, t.maxLines - 1),
-			maxBytes: Math.max(0, t.maxBytes - Buffer.byteLength(heading) - 1),
+		const background = truncateTail(tail.slice(backgroundStart + BACKGROUND_HEADING.length + 1), {
+			maxLines: Math.max(0, maxLines - 1),
+			maxBytes: Math.max(0, maxBytes - Buffer.byteLength(BACKGROUND_HEADING) - 1),
 		});
-		content = tail.content ? `${heading}\n${tail.content}` : heading;
-		shown = `the tail of background output (${formatSize(tail.outputBytes)})`;
+		content = background.content ? `${BACKGROUND_HEADING}\n${background.content}` : BACKGROUND_HEADING;
+		shown = `the tail of background output (${formatSize(background.outputBytes)})`;
 	}
 	const fullOutputPath = join(tmpdir(), `pi-ipython-${randomUUID()}.log`);
 	try {
-		writeFileSync(fullOutputPath, text, { mode: 0o600, flag: "wx" });
+		writeSpillFile(fullOutputPath, segments);
 	} catch (error) {
 		const reason = error instanceof Error ? error.message : String(error);
-		const outputWarning = `[Output truncated (${formatSize(t.totalBytes)} total): showing ${shown}. Full output could not be saved: ${reason}]`;
+		const outputWarning = `[Output truncated (${formatSize(totalBytes)} total): showing ${shown}. Full output could not be saved: ${reason}]`;
 		return { text: `${content}\n\n${outputWarning}`, outputWarning };
 	}
-	const outputWarning = `[Output truncated (${formatSize(t.totalBytes)} total): showing ${shown}. Full output: ${fullOutputPath}]`;
+	const outputWarning = `[Output truncated (${formatSize(totalBytes)} total): showing ${shown}. Full output: ${fullOutputPath}]`;
 	return { text: `${content}\n\n${outputWarning}`, fullOutputPath, outputWarning };
+}
+
+/** Write the segments to a new Spill file; a partial file is removed. */
+function writeSpillFile(path: string, segments: Segment[]): void {
+	// `wx` never follows a link someone else placed at the path.
+	const fd = openSync(path, "wx", 0o600);
+	try {
+		for (const segment of segments) {
+			if (typeof segment === "string") writeAll(fd, Buffer.from(segment, "utf8"));
+			else segment.writeTo(fd, true);
+		}
+	} catch (error) {
+		closeSync(fd);
+		rmSync(path, { force: true });
+		throw error;
+	}
+	closeSync(fd);
+}
+
+function countNewlines(text: string): number {
+	let count = 0;
+	for (let i = text.indexOf("\n"); i !== -1; i = text.indexOf("\n", i + 1)) count++;
+	return count;
 }
 
 export function createIpythonTool({
@@ -245,12 +315,20 @@ export function createIpythonTool({
 				}
 			}
 			const outputLimits = getOutputLimits();
-			const truncated = truncateCellText(formatCellResult(r), outputLimits, r.backgroundOutput);
+			let composed: ReturnType<typeof composeCellText>;
+			try {
+				composed = composeCellText(r, outputLimits);
+			} finally {
+				disposeCellOutput(r.output);
+			}
+			const { output: _output, ...result } = r;
+			// Image notices stay visible whatever the output limits cut.
+			const text = r.imageNotice ? `${composed.text}\n\n${r.imageNotice}` : composed.text;
 			const images: ImageContent[] = r.images.map((i) => ({ type: "image", ...i }));
-			const content: (TextContent | ImageContent)[] = [{ type: "text", text: truncated.text }, ...images];
+			const content: (TextContent | ImageContent)[] = [{ type: "text", text }, ...images];
 			return {
 				content,
-				details: { ...r, fullOutputPath: truncated.fullOutputPath, outputWarning: truncated.outputWarning, outputLimits },
+				details: { ...result, fullOutputPath: composed.fullOutputPath, outputWarning: composed.outputWarning, outputLimits },
 				isError: r.status !== "ok",
 			};
 		},

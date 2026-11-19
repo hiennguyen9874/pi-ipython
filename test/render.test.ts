@@ -217,3 +217,10 @@ test("an image the terminal does not draw is shown as a placeholder", async () =
 	expect(text).toContain("plotted");
 	expect(text).toMatch(/image\/png/i);
 });
+
+test("dropped images show their notice", async () => {
+	h = await createHarness();
+	const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+	const [r] = await h.runCells(`from rlm.repl import emit\nfor _ in range(9): emit({'image/png': '${png}'})`);
+	expect(plain(renderRow(h, r!, { showImages: false }))).toContain("[1 image dropped: over the 8-image limit]");
+});

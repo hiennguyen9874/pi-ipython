@@ -12,7 +12,12 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
 import { fileURLToPath } from "node:url";
+import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncateTail } from "@earendil-works/pi-coding-agent";
+import { type CellImage, collectImages, ImageCollector } from "./images.ts";
 import { ORPHAN_JOURNAL_ENV, reapKernel, recordProcess } from "./orphans.ts";
+import { OutputBuffer } from "./output-buffer.ts";
+
+export type { CellImage } from "./images.ts";
 
 export const REPL_PROTOCOL_VERSION = 3;
 const READY_TIMEOUT_MS = 30_000;
@@ -52,19 +57,31 @@ export interface CellError {
 	traceback: string[];
 }
 
-export interface CellImage {
-	mimeType: string;
-	/** base64 */
-	data: string;
+/** The full text of each stream of a Cell's result. Whoever holds it disposes it. */
+export interface CellOutput {
+	stdout: OutputBuffer;
+	stderr: OutputBuffer;
+	background: OutputBuffer;
+}
+
+export function disposeCellOutput(output: CellOutput | undefined): void {
+	output?.stdout.dispose();
+	output?.stderr.dispose();
+	output?.background.dispose();
 }
 
 export interface CellResult {
+	/** The tail of stdout (see OutputBuffer), the whole text when short. */
 	stdout: string;
 	stderr: string;
-	/** Images emitted by this Cell or buffered from background displays. */
+	/** The last images emitted by this Cell or buffered from background displays, fitted to send. */
 	images: CellImage[];
-	/** stdout/stderr with no owning Cell (threads, subprocesses, tasks of finished Cells) since the last Cell. */
+	/** Why images were dropped, if any were. */
+	imageNotice?: string;
+	/** The tail of Background output (stdout/stderr with no owning Cell) since the last Cell. */
 	backgroundOutput: string;
+	/** The full text of each stream, absent from results no Kernel produced. Dispose it after use. */
+	output?: CellOutput;
 	/** repr of the trailing expression, when it is not None. */
 	result?: string;
 	error?: CellError;
@@ -90,6 +107,8 @@ export interface KernelClientOptions {
 	onLost?: (error: Error) => void;
 	/** Handlers for host request types the runtime sends on its own (keyed by `type`), answered whether or not a Cell runs. */
 	hostHandlers?: Readonly<Record<string, HostRequestHandler>>;
+	/** The output limits: memory kept per stream is derived from them. */
+	getOutputLimits?: () => { maxBytes?: number; maxLines?: number };
 }
 
 /** Answers one `host_request`: resolves with the reply's result, rejects with its error. */
@@ -104,9 +123,9 @@ interface ActiveCell {
 	started: number;
 	signal?: AbortSignal;
 	onHostRequest?: HostRequestHandler;
-	stdout: string;
-	stderr: string;
-	images: CellImage[];
+	stdout: OutputBuffer;
+	stderr: OutputBuffer;
+	images: ImageCollector;
 	result?: string;
 	error?: CellError;
 	names?: string[];
@@ -115,7 +134,7 @@ interface ActiveCell {
 	/** Resolves when the Cell is no longer active. */
 	finished: Promise<void>;
 	markFinished: () => void;
-	resolve: (result: CellResult) => void;
+	resolve: (result: CellResult | Promise<CellResult>) => void;
 	reject: (error: Error) => void;
 }
 
@@ -128,15 +147,16 @@ export class KernelClient {
 	/** Serializes requests: the runtime runs one at a time. */
 	private queue: Promise<unknown> = Promise.resolve();
 	private stderrTail = "";
-	// shortcut: buffer in memory like Cell stdout; spool during execution if streaming volume needs a memory bound.
-	private backgroundOutput = "";
-	private backgroundImages: CellImage[] = [];
+	private background: OutputBuffer;
+	private backgroundImages = new ImageCollector();
 	/** Bumped by every shutdown so a stale in-flight start never keeps its process. */
 	private generation = 0;
 	/** The process that finished starting; losing any other one is a failed start. */
 	private readyChild?: ChildProcess;
 
-	constructor(private readonly options: KernelClientOptions) {}
+	constructor(private readonly options: KernelClientOptions) {
+		this.background = this.newBuffer();
+	}
 
 	/** True while a Kernel process exists (starting or running). */
 	get isRunning(): boolean {
@@ -174,6 +194,7 @@ export class KernelClient {
 		try {
 			await this.starting;
 			const result = await this.request({ type: "list_names" }, signal);
+			disposeCellOutput(result.output);
 			return result.status === "ok" ? (result.names ?? []) : null;
 		} catch {
 			return null;
@@ -195,6 +216,7 @@ export class KernelClient {
 		this.readyChild = undefined;
 		this.starting = undefined;
 		this.failPending(new Error("Kernel was shut down"));
+		this.resetBackground();
 		if (!child || child.exitCode !== null || child.signalCode !== null) return;
 		const exited = new Promise((resolve) => child.once("exit", resolve));
 		const timer = setTimeout(() => child.kill("SIGKILL"), SHUTDOWN_TIMEOUT_MS);
@@ -209,8 +231,7 @@ export class KernelClient {
 		if (generation !== this.generation) throw new Error("Kernel was shut down during startup");
 
 		this.stderrTail = "";
-		this.backgroundOutput = "";
-		this.backgroundImages = [];
+		this.resetBackground();
 		const args = process.platform === "win32"
 			? [fileURLToPath(new URL("./windows-kernel.py", import.meta.url))]
 			: ["-m", "rlm.repl"];
@@ -250,6 +271,7 @@ export class KernelClient {
 			}
 			if (this.options.bootstrapCode) {
 				const result = await this.request({ type: "execute", code: this.options.bootstrapCode });
+				disposeCellOutput(result.output);
 				if (result.status !== "ok") {
 					const details = [result.stderr, result.error?.traceback.join("")].filter(Boolean).join("\n");
 					throw new Error(`Failed to initialize the Kernel runtime:\n${details}`);
@@ -329,15 +351,14 @@ export class KernelClient {
 		if (!cell || event.id !== cell.id || cell.settled) {
 			// Output without this Cell's id (threads, subprocesses, other Cells) is not credited to it:
 			// it is buffered and reported as background output with the next finished Cell.
-			// Keep the full text, just like owned stdout/stderr, so the tool can spill it losslessly.
-			if (type === "stdout" || type === "stderr") this.backgroundOutput += asString(event.text);
-			else if (type === "display") this.backgroundImages.push(...imagesFromDisplay(event.data));
+			if (type === "stdout" || type === "stderr") this.background.append(asString(event.text));
+			else if (type === "display") for (const image of imagesFromDisplay(event.data)) this.backgroundImages.push(image);
 			return;
 		}
-		if (type === "stdout") cell.stdout += asString(event.text);
-		else if (type === "stderr") cell.stderr += asString(event.text);
+		if (type === "stdout") cell.stdout.append(asString(event.text));
+		else if (type === "stderr") cell.stderr.append(asString(event.text));
 		else if (type === "result") cell.result = asString(event.text);
-		else if (type === "display") cell.images.push(...imagesFromDisplay(event.data));
+		else if (type === "display") for (const image of imagesFromDisplay(event.data)) cell.images.push(image);
 		else if (type === "error") {
 			cell.error = {
 				ename: asString(event.ename) || "Error",
@@ -388,23 +409,40 @@ export class KernelClient {
 		cell.settled = true;
 		// Namespace inspection must leave background output for the next model-visible Cell.
 		const isCell = cell.requestType === "execute";
-		const backgroundOutput = isCell ? this.backgroundOutput : "";
-		const images = isCell ? [...cell.images, ...this.backgroundImages] : cell.images;
+		const background = isCell ? this.background : this.newBuffer();
+		const collectors = isCell ? [cell.images, this.backgroundImages] : [cell.images];
 		if (isCell) {
-			this.backgroundOutput = "";
-			this.backgroundImages = [];
+			this.background = this.newBuffer();
+			this.backgroundImages = new ImageCollector();
 		}
-		cell.resolve({
-			stdout: cell.stdout,
-			stderr: cell.stderr,
-			images,
-			backgroundOutput,
+		const result: CellResult = {
+			stdout: cell.stdout.tail,
+			stderr: cell.stderr.tail,
+			images: [],
+			backgroundOutput: background.tail,
+			output: { stdout: cell.stdout, stderr: cell.stderr, background },
 			result: cell.result,
 			error: cell.error,
 			names: cell.names,
 			status: cell.signal?.aborted ? "aborted" : status,
 			durationMs: Date.now() - cell.started,
-		});
+		};
+		cell.resolve(collectImages(collectors).then(({ images, notice }) => ({
+			...result,
+			images,
+			...(notice ? { imageNotice: notice } : {}),
+		})));
+	}
+
+	private newBuffer(): OutputBuffer {
+		return new OutputBuffer(this.options.getOutputLimits?.().maxBytes ?? DEFAULT_MAX_BYTES);
+	}
+
+	/** Drop Background output of a Kernel that is gone. */
+	private resetBackground(): void {
+		this.background.dispose();
+		this.background = this.newBuffer();
+		this.backgroundImages = new ImageCollector();
 	}
 
 	private clearActive(): void {
@@ -459,9 +497,9 @@ export class KernelClient {
 				started: Date.now(),
 				signal,
 				onHostRequest,
-				stdout: "",
-				stderr: "",
-				images: [],
+				stdout: this.newBuffer(),
+				stderr: this.newBuffer(),
+				images: new ImageCollector(),
 				settled: false,
 				finished,
 				markFinished,
@@ -487,7 +525,7 @@ export class KernelClient {
 	/** The Kernel process died or broke the protocol: drop it; the next Cell starts a fresh one. */
 	private lose(child: ChildProcess, error: Error): void {
 		if (this.child !== child) return;
-		const stderr = this.active?.stderr;
+		const stderr = this.active ? this.stderrForError(this.active.stderr) : "";
 		if (stderr) error = new Error(`${error.message}\n\n[Cell stderr]\n${stderr}`, { cause: error });
 		this.child = undefined;
 		this.starting = undefined;
@@ -504,7 +542,17 @@ export class KernelClient {
 		this.ready = undefined;
 		const cell = this.active;
 		this.clearActive();
-		if (cell && !cell.settled) cell.reject(error);
+		if (cell && !cell.settled) {
+			cell.stdout.dispose();
+			cell.stderr.dispose();
+			cell.reject(error);
+		}
+	}
+
+	/** The tail of a Cell's stderr, cut to the output limits. */
+	private stderrForError(stderr: OutputBuffer): string {
+		const limits = this.options.getOutputLimits?.() ?? {};
+		return truncateTail(stderr.tail, { maxBytes: limits.maxBytes ?? DEFAULT_MAX_BYTES, maxLines: limits.maxLines ?? DEFAULT_MAX_LINES }).content;
 	}
 
 	private write(request: Record<string, unknown>): Promise<void> {

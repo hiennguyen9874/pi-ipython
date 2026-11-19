@@ -96,6 +96,7 @@ export function renderCellResult(
 			container.addChild(expanded ? new Text(text, 0, 0) : new TailPreview(text, theme, context, heading));
 		}
 		if (d.status === "aborted") add(theme.fg("warning", "Cell aborted"));
+		if (d.imageNotice) add(theme.fg("warning", d.imageNotice));
 		if (d.outputWarning) add(theme.fg("warning", d.outputWarning));
 		else if (d.fullOutputPath) add(theme.fg("warning", `[Output truncated. Full output: ${d.fullOutputPath}]`));
 	}
