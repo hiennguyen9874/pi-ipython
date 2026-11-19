@@ -46,6 +46,14 @@ export default function piIpython(pi: ExtensionAPI): void {
 		for (const line of stderr.split("\n").filter((l) => l.trim())) report(`pi-ipython prelude: ${line}`, "warning");
 	};
 
+	// The runtime reports a finished Background command (`bash.completed`) and a later read of its handle
+	// (`bash.consumed`). No notice reaches the model, so both are acknowledged and dropped; any other reply
+	// makes the runtime print a warning into background output.
+	const hostHandlers = {
+		"bash.completed": async () => ({}),
+		"bash.consumed": async () => ({}),
+	};
+
 	const createKernel = (): KernelClient => {
 		const { source, version } = config.python;
 		const bootstrapCode = kernelBootstrapCode(prelude());
@@ -60,6 +68,7 @@ export default function piIpython(pi: ExtensionAPI): void {
 				env: { PYTHONPATH: pythonPath },
 				journalPath,
 				onLost,
+				hostHandlers,
 			});
 		}
 		return new KernelClient({
@@ -69,6 +78,7 @@ export default function piIpython(pi: ExtensionAPI): void {
 			onBootstrapStderr,
 			journalPath,
 			onLost,
+			hostHandlers,
 		});
 	};
 

@@ -11,6 +11,8 @@
 
 ### Fixed
 
+- A Background command (a `bash()` handle that outlives its Cell) that finishes no longer adds a misleading `Background bash completion follow-up … was not accepted` warning to the next Cell's background output. The host now acknowledges the runtime's `bash.completed` and `bash.consumed` requests whether or not a Cell is running, without notifying the model; other host requests from finished Cells are still rejected. Real-session regressions cover completion between Cells and during another Cell. (#49)
+
 - State-loss notice review fixes: collapsed Cell-loss diagnostics now show a bounded stderr preview while keeping the exit cause visible and preserving the full expanded/model result. `/tree` Keep and dismissed choices now send hidden branch notices, matching the other lifecycle notices. Real-session regressions cover large-stderr crashes and hidden Keep/dismiss notices. (#42)
 
 - State-loss notices no longer imply a Kernel existed or that external effects were undone. Lifecycle notices are hidden from the UI but still reach the model; `/tree` restart gives a short confirmation, and Cell loss results are concise and expandable. Branch summaries and compaction entries trigger conservative warnings on session start; a clean `/new` remains quiet. (#42)

@@ -16,6 +16,10 @@ _Avoid_: rlm, shim
 One unit of Python code the model submits to the Kernel in a single `ipython` tool call.
 _Avoid_: Script, snippet, execution
 
+**Background command**:
+A `bash()` command still running after the Cell that started it has ended.
+_Avoid_: detached bash, background job, async bash
+
 **Kernel replacement**:
 The Kernel process that ran earlier Cells is gone for any reason (crash, protocol break, user kill, user restart, new session), so the next Cell runs in a different process.
 _Avoid_: restart, reset, crash (as the umbrella term)

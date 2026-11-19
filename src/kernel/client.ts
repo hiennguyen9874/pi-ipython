@@ -88,9 +88,11 @@ export interface KernelClientOptions {
 	journalPath?: string;
 	/** A ready Kernel process died or broke the protocol (not a shutdown, not a failed start). */
 	onLost?: (error: Error) => void;
+	/** Handlers for host request types the runtime sends on its own (keyed by `type`), answered whether or not a Cell runs. */
+	hostHandlers?: Readonly<Record<string, HostRequestHandler>>;
 }
 
-/** Answers one `host_request` of the running Cell: resolves with the reply's result, rejects with its error. */
+/** Answers one `host_request`: resolves with the reply's result, rejects with its error. */
 export type HostRequestHandler = (data: Record<string, unknown>) => Promise<unknown>;
 
 /** Requests that run in order and end with a `done` frame. */
@@ -350,22 +352,26 @@ export class KernelClient {
 	}
 
 	/**
-	 * Route a host request to the running Cell's handler and reply. Every request gets a reply, so the
-	 * awaiting Python fails instead of hanging; requests arrive without a Cell id, so they go to the
-	 * Cell running now, and none is answered while no Cell's tool call is running.
+	 * Route a host request to its handler and reply. Every request gets a reply, so the awaiting Python
+	 * fails instead of hanging. Types in `hostHandlers` are answered at any time. The rest arrive without
+	 * a Cell id, so they go to the Cell running now, and none is answered while no Cell's tool call is running.
 	 */
 	private answerHostRequest(id: string, data: unknown): void {
 		const child = this.child;
 		const cell = this.active;
-		const handler = cell && !cell.settled ? cell.onHostRequest : undefined;
+		const cellHandler = cell && !cell.settled ? cell.onHostRequest : undefined;
 		const reply = (data: Record<string, unknown>) => {
 			// A reply must never reach a replacement Kernel.
 			if (this.child === child) this.write({ type: "host_reply", id, data }).catch(() => undefined);
 		};
 		const answer = async () => {
-			if (!handler) throw new Error("host requests are only answered while a Cell runs");
 			if (typeof data !== "object" || data === null || Array.isArray(data)) throw new Error("host request data must be an object");
-			return handler(data as Record<string, unknown>);
+			const request = data as Record<string, unknown>;
+			const hostHandlers = this.options.hostHandlers ?? {};
+			const type = request.type;
+			const handler = typeof type === "string" && Object.hasOwn(hostHandlers, type) ? hostHandlers[type] : cellHandler;
+			if (!handler) throw new Error("host requests are only answered while a Cell runs");
+			return handler(request);
 		};
 		answer().then(
 			(result) => reply({ status: "ok", result: result ?? null }),
