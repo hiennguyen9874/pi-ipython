@@ -1,5 +1,5 @@
 // One stream of Cell output with bounded memory: a tail in memory, the full text spooled to a file
-// once the tail has to drop text.
+// once an output limit is crossed.
 //
 // Adapted from pi's OutputAccumulator (packages/coding-agent/src/core/tools/output-accumulator.ts),
 // which pi does not export: the input is decoded text, and the spool is written synchronously so a
@@ -20,54 +20,66 @@ export interface OutputBufferSnapshot {
 	truncated: boolean;
 	totalBytes: number;
 	totalLines: number;
-	/** The spool holding the full output, once the tail had to drop text. */
+	/** The spool holding the full output once a limit was crossed. */
 	spoolPath?: string;
 }
 
 /**
- * Output text kept to a tail of at least `2 × maxBytes`. Any tail cut to the output limits from
- * the text, alone or after other text, equals the same cut of the full output: a line that starts
- * before the kept tail is longer than `maxBytes`, so a cut stops before reaching it.
+ * Keep twice the output limits, with room to strip a trailing newline. A later cut to the
+ * actual limits will stop before reaching any incomplete first line.
  */
 export class OutputBuffer {
 	private text = "";
 	private textBytes = 0;
+	private textNewlines = 0;
+	private pendingHigh = "";
 	private trimmed = false;
 	private fd?: number;
 	private spoolPath?: string;
-	/** Why the full output is lost: the spool could not be written. */
-	spoolError?: string;
+	private spoolError?: string;
 	totalBytes = 0;
 	newlines = 0;
 	endsWithNewline = false;
 	private readonly keepBytes: number;
+	private readonly keepLines: number;
 
-	constructor(maxBytes: number) {
-		this.keepBytes = Math.max(2 * maxBytes, 1);
+	constructor(private readonly maxBytes: number, private readonly maxLines: number) {
+		// Formatting strips one newline; truncateTail also excludes a final newline from line widths.
+		this.keepBytes = Math.max(2 * maxBytes, maxBytes + 3);
+		this.keepLines = Math.max(2 * maxLines, maxLines + 2);
 	}
 
 	append(text: string): void {
 		if (!text) return;
-		const bytes = Buffer.byteLength(text);
+		const previousHigh = this.pendingHigh;
+		const last = text.charCodeAt(text.length - 1);
+		this.pendingHigh = isHighSurrogate(last) ? text.slice(-1) : "";
+		// Two separately encoded surrogate halves take six bytes; together they take four.
+		const bytes = Buffer.byteLength(text) - (previousHigh && isLowSurrogate(text.charCodeAt(0)) ? 2 : 0);
+		const newlines = countNewlines(text);
 		this.totalBytes += bytes;
-		for (let i = text.indexOf("\n"); i !== -1; i = text.indexOf("\n", i + 1)) this.newlines++;
-		this.endsWithNewline = text.endsWith("\n");
-		if (this.fd !== undefined) this.writeSpool(text);
+		this.newlines += newlines;
+		this.endsWithNewline = last === 10;
+		if (this.fd !== undefined) {
+			this.writeSpool(previousHigh + (this.pendingHigh ? text.slice(0, -1) : text));
+		}
 		this.text += text;
 		this.textBytes += bytes;
-		// Trim with slack so the cost of trimming stays amortized.
-		if (this.textBytes > 2 * this.keepBytes) this.trim();
+		this.textNewlines += newlines;
+		if (this.fd === undefined && !this.spoolError && (this.totalBytes > this.maxBytes || this.totalLines > this.maxLines)) {
+			this.openSpool();
+		}
+		// Batch trims so the cost stays amortized; snapshots compact to the retained limits.
+		if (this.textBytes > 2 * this.keepBytes || this.textNewlines > 2 * this.keepLines) this.trim();
 	}
 
-	/** The kept tail, at most `2 × maxBytes` once text was dropped. */
 	get tail(): string {
-		if (this.trimmed && this.textBytes > this.keepBytes) this.trim();
+		if (this.textBytes > this.keepBytes || this.textNewlines > this.keepLines) this.trim();
 		return this.text;
 	}
 
-	/** True when the tail is the whole output. */
-	get complete(): boolean {
-		return !this.trimmed;
+	private get totalLines(): number {
+		return this.newlines + (this.totalBytes > 0 && !this.endsWithNewline ? 1 : 0);
 	}
 
 	snapshot(): OutputBufferSnapshot {
@@ -75,7 +87,7 @@ export class OutputBuffer {
 			tail: this.tail,
 			truncated: this.trimmed,
 			totalBytes: this.totalBytes,
-			totalLines: this.newlines + (this.totalBytes > 0 && !this.endsWithNewline ? 1 : 0),
+			totalLines: this.totalLines,
 			spoolPath: this.spoolPath,
 		};
 	}
@@ -83,12 +95,13 @@ export class OutputBuffer {
 	/** Write the full output to `fd`, without one trailing newline when `dropTrailingNewline`. Throws when it is lost. */
 	writeTo(fd: number, dropTrailingNewline = false): void {
 		const drop = dropTrailingNewline && this.endsWithNewline ? 1 : 0;
+		if (this.spoolError) throw new Error(this.spoolError);
 		if (!this.trimmed) {
 			writeAll(fd, Buffer.from(drop ? this.text.slice(0, -1) : this.text, "utf8"));
 			return;
 		}
-		if (this.fd === undefined) throw new Error(this.spoolError ?? "the full output was not kept");
-		const end = this.totalBytes - drop;
+		if (this.fd === undefined) throw new Error("the full output was not kept");
+		const end = this.totalBytes - drop - (this.pendingHigh ? 3 : 0);
 		const chunk = Buffer.alloc(Math.min(COPY_CHUNK_BYTES, Math.max(end, 1)));
 		for (let position = 0; position < end;) {
 			const read = readSync(this.fd, chunk, 0, Math.min(chunk.length, end - position), position);
@@ -96,6 +109,7 @@ export class OutputBuffer {
 			writeAll(fd, chunk.subarray(0, read));
 			position += read;
 		}
+		if (this.pendingHigh) writeAll(fd, Buffer.from(this.pendingHigh, "utf8"));
 	}
 
 	/** Close and delete the spool. */
@@ -104,13 +118,28 @@ export class OutputBuffer {
 	}
 
 	private trim(): void {
-		// Text is dropped from memory only once the full output is safe on disk.
-		if (!this.trimmed && this.spoolError === undefined) this.openSpool();
-		const buffer = Buffer.from(this.text, "utf8");
-		let start = buffer.length - this.keepBytes;
-		while (start < buffer.length && (buffer[start]! & 0xc0) === 0x80) start++;
-		this.text = buffer.subarray(start).toString("utf8");
-		this.textBytes = buffer.length - start;
+		let start = this.text.length;
+		let bytes = 0;
+		let newlines = 0;
+		let lines = 0;
+		while (start > 0 && bytes < this.keepBytes) {
+			const char = this.text.charCodeAt(start - 1);
+			if (char === 10) {
+				if (start !== this.text.length && ++lines === this.keepLines) break;
+				newlines++;
+			}
+			start--;
+			if (isLowSurrogate(char) && isHighSurrogate(this.text.charCodeAt(start - 1))) {
+				start--;
+				bytes += 4;
+			} else {
+				bytes += char < 0x80 ? 1 : char < 0x800 ? 2 : 3;
+			}
+		}
+		if (start === 0) return;
+		this.text = this.text.slice(start);
+		this.textBytes = bytes;
+		this.textNewlines = newlines;
 		this.trimmed = true;
 	}
 
@@ -124,7 +153,7 @@ export class OutputBuffer {
 			this.spoolError = errorMessage(error);
 			return;
 		}
-		this.writeSpool(this.text);
+		this.writeSpool(this.pendingHigh ? this.text.slice(0, -1) : this.text);
 	}
 
 	private writeSpool(text: string): void {
@@ -143,14 +172,36 @@ export class OutputBuffer {
 			} catch {}
 			this.fd = undefined;
 		}
-		if (this.spoolPath) rmSync(this.spoolPath, { force: true });
-		this.spoolPath = undefined;
+		if (this.spoolPath) {
+			try {
+				rmSync(this.spoolPath, { force: true });
+				this.spoolPath = undefined;
+			} catch {} // Retry on disposal if a failed write triggered this cleanup.
+		}
 	}
 }
 
 /** writeSync may write less than asked. */
 export function writeAll(fd: number, data: Buffer): void {
-	for (let offset = 0; offset < data.length;) offset += writeSync(fd, data, offset, data.length - offset);
+	for (let offset = 0; offset < data.length;) {
+		const written = writeSync(fd, data, offset, data.length - offset);
+		if (written === 0) throw new Error("could not write output");
+		offset += written;
+	}
+}
+
+export function countNewlines(text: string): number {
+	let count = 0;
+	for (let i = text.indexOf("\n"); i !== -1; i = text.indexOf("\n", i + 1)) count++;
+	return count;
+}
+
+function isHighSurrogate(char: number): boolean {
+	return char >= 0xd800 && char <= 0xdbff;
+}
+
+function isLowSurrogate(char: number): boolean {
+	return char >= 0xdc00 && char <= 0xdfff;
 }
 
 function errorMessage(error: unknown): string {

@@ -25,7 +25,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { type CellOutput, type CellResult, disposeCellOutput, type KernelClient, KernelBusyError } from "../kernel/client.ts";
-import { OutputBuffer, writeAll } from "../kernel/output-buffer.ts";
+import { countNewlines, OutputBuffer, writeAll } from "../kernel/output-buffer.ts";
 import { preludeCode } from "../kernel/prelude.ts";
 import { renderCellCall, renderCellResult } from "../render/cell-renderer.ts";
 
@@ -155,7 +155,7 @@ function cellSegments(r: CellResult): { segments: Segment[]; backgroundSegment?:
 /** A result's streams from its text alone, for results without `output`. */
 function textOutput(r: CellResult): CellOutput {
 	const buffer = (text: string) => {
-		const b = new OutputBuffer(Number.MAX_SAFE_INTEGER / 4);
+		const b = new OutputBuffer(Infinity, Infinity);
 		b.append(text);
 		return b;
 	};
@@ -188,7 +188,11 @@ export function composeCellText(
 			newlines += segment.newlines - drop;
 		}
 	}
-	if (totalBytes === 0) return { text: "(no output)" };
+	if (totalBytes === 0) {
+		tail = "(no output)";
+		totalBytes = tail.length;
+		segments.splice(0, segments.length, tail);
+	}
 	const maxBytes = limits.maxBytes ?? DEFAULT_MAX_BYTES;
 	const maxLines = limits.maxLines ?? DEFAULT_MAX_LINES;
 	const totalLines = newlines + (tail.endsWith("\n") ? 0 : 1);
@@ -231,17 +235,16 @@ function writeSpillFile(path: string, segments: Segment[]): void {
 			else segment.writeTo(fd, true);
 		}
 	} catch (error) {
-		closeSync(fd);
-		rmSync(path, { force: true });
+		try { closeSync(fd); } catch {}
+		try { rmSync(path, { force: true }); } catch {}
 		throw error;
 	}
-	closeSync(fd);
-}
-
-function countNewlines(text: string): number {
-	let count = 0;
-	for (let i = text.indexOf("\n"); i !== -1; i = text.indexOf("\n", i + 1)) count++;
-	return count;
+	try {
+		closeSync(fd);
+	} catch (error) {
+		try { rmSync(path, { force: true }); } catch {}
+		throw error;
+	}
 }
 
 export function createIpythonTool({
@@ -254,7 +257,7 @@ export function createIpythonTool({
 	describePiTools,
 }: IpythonToolOptions): ToolDefinition<typeof ipythonSchema, IpythonToolDetails> {
 	const description =
-		"Run Python code in a persistent Python Kernel. Variables, functions, and imports persist between calls. Top-level `await` works. The output contains stdout, stderr, the repr of the trailing expression, and errors with tracebacks. Long output is truncated to its tail, with the full text saved to a temp file. Images emitted with `from rlm.repl import emit; emit({'image/png': base64_str})` are returned as images. Output from background threads, tasks, and subprocesses is reported under [background output] in the next result.";
+		"Run Python code in a persistent Python Kernel. Variables, functions, and imports persist between calls. Top-level `await` works. The output contains stdout, stderr, the repr of the trailing expression, and errors with tracebacks. Long output is truncated to its tail, with the full text saved to a Spill file. Images emitted with `from rlm.repl import emit; emit({'image/png': base64_str})` are returned as images. Output from background threads, tasks, and subprocesses is reported under [background output] in the next result.";
 	return {
 		name: IPYTHON_TOOL_NAME,
 		label: "ipython",

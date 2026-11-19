@@ -34,8 +34,8 @@ People who already run pi and want to try a Python-REPL-first agent on their own
 7. **Branch switch (`/tree`).** The user is asked "Keep Kernel" or "Restart Kernel". With no UI, the Kernel is kept and the model gets a notice that Python state may not match the branch.
 8. **Interrupt.** User abort sends an interrupt. If the Kernel is still busy when the next Cell arrives, the user chooses between waiting and killing the Kernel (which loses Python state).
 9. **Python-state notice.** After every compaction while a Kernel is running, a `[python-state]` message lists up to 50 eligible live names from `list_names`, within 2,000 UTF-16 code units overall. It identifies omitted names and filtering, or reports when listing fails.
-10. **Output limits.** Pi's standard 50KB / 2000-line truncation. When output is cut, the full text is saved to a temp file and the result gives its path.
-11. **Images.** `emit({"image/png": ...})` and other model-accepted image MIME types are returned as image content in the tool result.
+10. **Output limits.** Pi's standard 50KB / 2000-line truncation. When output is cut, the full text is saved to a Spill file and the result gives its path.
+11. **Images.** `emit({"image/png": ...})` and other model-accepted image MIME types are returned as image content. Each result keeps at most the last eight images, including Background displays. Images that cannot be fitted to pi's size limit are dropped, with a notice.
 12. **Background output.** Output not attributed to any Cell (asyncio tasks, threads, subprocesses) is buffered and attached to the next Cell's result under "background output".
 13. **System prompt.** Pi's prompt is replaced by an Unharnessed-derived REPL prompt, plus AGENTS.md/context files, the skills list, cwd, and date. It must not suggest IPython magics or `!cmd`.
 14. **Skills.** Markdown skills only. The model reads `SKILL.md` files with Python.

@@ -14,57 +14,63 @@ export interface CellImage {
 }
 
 interface Entry {
-	/** The image as emitted, until it is fitted or dropped. */
 	raw?: CellImage;
-	/** The fitted image, or undefined when it is too large to send. */
 	fitted: Promise<CellImage | undefined>;
+	resolve: (image: CellImage | undefined) => void;
 }
 
-/** Keeps the last images pushed, fitting each one as it arrives; older ones are dropped unfitted. */
 export class ImageCollector {
 	private entries: Entry[] = [];
-	private chain: Promise<unknown> = Promise.resolve();
-	/** Images dropped to stay within the per-result limit. */
-	overLimit = 0;
+	private settling: Entry[] = [];
+	private fitting = false;
+	private overLimit = 0;
 
-	push(image: CellImage): void {
-		if (this.entries.length === MAX_IMAGES_PER_RESULT) this.drop(this.entries.shift()!);
-		const entry: Entry = { raw: image, fitted: Promise.resolve(undefined) };
-		// One at a time, so a burst of images never holds more than the kept ones in memory.
-		entry.fitted = this.chain.then(async () => {
-			const raw = entry.raw;
-			entry.raw = undefined;
-			return raw && fitImage(raw);
-		});
-		this.chain = entry.fitted;
-		this.entries.push(entry);
+	push(raw: CellImage): void {
+		if (this.entries.length === MAX_IMAGES_PER_RESULT) {
+			this.entries.shift();
+			this.overLimit++;
+		}
+		let resolve!: Entry["resolve"];
+		const fitted = new Promise<CellImage | undefined>((done) => { resolve = done; });
+		this.entries.push({ raw, fitted, resolve });
+		if (!this.fitting) void this.fitPending();
 	}
 
-	/** Hand over the kept images and the count dropped so far. */
-	take(): { entries: Promise<CellImage | undefined>[]; overLimit: number } {
-		return { entries: this.entries.map((e) => e.fitted), overLimit: this.overLimit };
+	/** Freeze this result; new Background output goes into the next one. */
+	async take(): Promise<{ images: CellImage[]; notice?: string }> {
+		this.settling = this.entries;
+		const overLimit = this.overLimit;
+		this.reset();
+		const fitted = await Promise.all(this.settling.map((entry) => entry.fitted));
+		this.settling = [];
+		const images = fitted.filter((image): image is CellImage => image !== undefined);
+		const tooLarge = fitted.length - images.length;
+		const notices = [
+			...(overLimit ? [`[${plural(overLimit)} dropped: over the ${MAX_IMAGES_PER_RESULT}-image limit]`] : []),
+			...(tooLarge ? [`[${plural(tooLarge)} dropped: too large to send]`] : []),
+		];
+		return { images, notice: notices.length ? notices.join("\n") : undefined };
 	}
 
-	private drop(entry: Entry): void {
-		entry.raw = undefined;
-		this.overLimit++;
+	reset(): void {
+		this.entries = [];
+		this.overLimit = 0;
 	}
-}
 
-/** The last images of all collectors (in order), and a notice for the ones dropped. */
-export async function collectImages(collectors: ImageCollector[]): Promise<{ images: CellImage[]; notice?: string }> {
-	const taken = collectors.map((c) => c.take());
-	const all = taken.flatMap((t) => t.entries);
-	const kept = all.slice(-MAX_IMAGES_PER_RESULT);
-	const overLimit = taken.reduce((n, t) => n + t.overLimit, 0) + all.length - kept.length;
-	const fitted = await Promise.all(kept);
-	const images = fitted.filter((image): image is CellImage => image !== undefined);
-	const tooLarge = fitted.length - images.length;
-	const notices = [
-		...(overLimit ? [`[${plural(overLimit)} dropped: over the ${MAX_IMAGES_PER_RESULT}-image limit]`] : []),
-		...(tooLarge ? [`[${plural(tooLarge)} dropped: too large to send]`] : []),
-	];
-	return { images, notice: notices.length ? notices.join("\n") : undefined };
+	private async fitPending(): Promise<void> {
+		this.fitting = true;
+		try {
+			for (;;) {
+				const entry = this.settling.find((e) => e.raw) ?? this.entries.find((e) => e.raw);
+				if (!entry) return;
+				const raw = entry.raw!;
+				entry.raw = undefined;
+				entry.resolve(await fitImage(raw));
+			}
+		} finally {
+			this.fitting = false;
+		}
+	}
 }
 
 /** The image resized to fit, the original when resizing fails but it already fits, or undefined. */

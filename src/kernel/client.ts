@@ -13,7 +13,7 @@ import { randomUUID } from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncateTail } from "@earendil-works/pi-coding-agent";
-import { type CellImage, collectImages, ImageCollector } from "./images.ts";
+import { type CellImage, ImageCollector } from "./images.ts";
 import { ORPHAN_JOURNAL_ENV, reapKernel, recordProcess } from "./orphans.ts";
 import { OutputBuffer } from "./output-buffer.ts";
 
@@ -125,7 +125,6 @@ interface ActiveCell {
 	onHostRequest?: HostRequestHandler;
 	stdout: OutputBuffer;
 	stderr: OutputBuffer;
-	images: ImageCollector;
 	result?: string;
 	error?: CellError;
 	names?: string[];
@@ -148,7 +147,7 @@ export class KernelClient {
 	private queue: Promise<unknown> = Promise.resolve();
 	private stderrTail = "";
 	private background: OutputBuffer;
-	private backgroundImages = new ImageCollector();
+	private readonly images = new ImageCollector();
 	/** Bumped by every shutdown so a stale in-flight start never keeps its process. */
 	private generation = 0;
 	/** The process that finished starting; losing any other one is a failed start. */
@@ -352,14 +351,15 @@ export class KernelClient {
 			// Output without this Cell's id (threads, subprocesses, other Cells) is not credited to it:
 			// it is buffered and reported as background output with the next finished Cell.
 			if (type === "stdout" || type === "stderr") this.background.append(asString(event.text));
-			else if (type === "display") for (const image of imagesFromDisplay(event.data)) this.backgroundImages.push(image);
+			else if (type === "display") for (const image of imagesFromDisplay(event.data)) this.images.push(image);
 			return;
 		}
 		if (type === "stdout") cell.stdout.append(asString(event.text));
 		else if (type === "stderr") cell.stderr.append(asString(event.text));
 		else if (type === "result") cell.result = asString(event.text);
-		else if (type === "display") for (const image of imagesFromDisplay(event.data)) cell.images.push(image);
-		else if (type === "error") {
+		else if (type === "display" && cell.requestType === "execute") {
+			for (const image of imagesFromDisplay(event.data)) this.images.push(image);
+		} else if (type === "error") {
 			cell.error = {
 				ename: asString(event.ename) || "Error",
 				evalue: asString(event.evalue),
@@ -410,11 +410,7 @@ export class KernelClient {
 		// Namespace inspection must leave background output for the next model-visible Cell.
 		const isCell = cell.requestType === "execute";
 		const background = isCell ? this.background : this.newBuffer();
-		const collectors = isCell ? [cell.images, this.backgroundImages] : [cell.images];
-		if (isCell) {
-			this.background = this.newBuffer();
-			this.backgroundImages = new ImageCollector();
-		}
+		if (isCell) this.background = this.newBuffer();
 		const result: CellResult = {
 			stdout: cell.stdout.tail,
 			stderr: cell.stderr.tail,
@@ -427,22 +423,23 @@ export class KernelClient {
 			status: cell.signal?.aborted ? "aborted" : status,
 			durationMs: Date.now() - cell.started,
 		};
-		cell.resolve(collectImages(collectors).then(({ images, notice }) => ({
+		cell.resolve(isCell ? this.images.take().then(({ images, notice }) => ({
 			...result,
 			images,
 			...(notice ? { imageNotice: notice } : {}),
-		})));
+		})) : result);
 	}
 
 	private newBuffer(): OutputBuffer {
-		return new OutputBuffer(this.options.getOutputLimits?.().maxBytes ?? DEFAULT_MAX_BYTES);
+		const limits = this.options.getOutputLimits?.();
+		return new OutputBuffer(limits?.maxBytes ?? DEFAULT_MAX_BYTES, limits?.maxLines ?? DEFAULT_MAX_LINES);
 	}
 
 	/** Drop Background output of a Kernel that is gone. */
 	private resetBackground(): void {
 		this.background.dispose();
 		this.background = this.newBuffer();
-		this.backgroundImages = new ImageCollector();
+		this.images.reset();
 	}
 
 	private clearActive(): void {
@@ -499,7 +496,6 @@ export class KernelClient {
 				onHostRequest,
 				stdout: this.newBuffer(),
 				stderr: this.newBuffer(),
-				images: new ImageCollector(),
 				settled: false,
 				finished,
 				markFinished,
@@ -530,6 +526,7 @@ export class KernelClient {
 		this.child = undefined;
 		this.starting = undefined;
 		this.failPending(error);
+		this.resetBackground();
 		if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
 		if (this.readyChild === child) {
 			this.readyChild = undefined;

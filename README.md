@@ -154,7 +154,7 @@ Defaults:
 | `confirmEachCell` | `false` | Ask you to approve each Cell before it runs. |
 | `python.source` | `"uv"` | `"uv"`: use a separate environment managed by uv. `"project"`: use your project's `<cwd>/.venv`, so Cells can import your project's packages (uv not required). |
 | `python.version` | `"3.13"` | Python version for the uv environment (3.11 or newer). |
-| `output.maxBytes` / `output.maxLines` | `51200` / `2000` | When a Cell prints more than this, only the end is shown. The full output is saved to a temp file, and the result includes its path. |
+| `output.maxBytes` / `output.maxLines` | `51200` / `2000` | When a Cell prints more than this, only the end is shown. The full output is saved to a Spill file, and the result includes its path. |
 | `prelude.defaults` | `true` | Load the [ready-made imports](#what-changes-when-its-enabled). |
 | `prelude.imports` | `[]` | Extra imports for every Kernel, e.g. `"import numpy as np"`. See the rules below. |
 | `prelude.prompt` | `true` | List the prelude in the system prompt. With `false` the imports still run, just without telling the model. |

@@ -1,4 +1,5 @@
-import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import fs, { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import { afterEach, expect, test, vi } from "vitest";
@@ -13,7 +14,7 @@ afterEach(async () => {
 
 const fullOutputPath = (text: string) => text.match(/Full output: (\S+)\]$/)?.[1];
 
-test("output over the line limit is truncated to its tail, with the full text in a temp file", async () => {
+test("output over the line limit is truncated to its tail, with the full text in a Spill file", async () => {
 	h = await createHarness();
 	const [r] = await h.runCells("for i in range(3000): print(f'line {i}')");
 	const text = resultText(r!);
@@ -40,6 +41,59 @@ test("output limits come from config", async () => {
 	const text = resultText(r!);
 	expect(text.startsWith(`${"z".repeat(50)}\n\n[Output truncated`)).toBe(true);
 	expect(readFileSync(fullOutputPath(text)!, "utf8")).toContain("x".repeat(50));
+});
+
+test("the line limit opens a spool during the Cell and bounds the retained tail", async () => {
+	h = await createHarness({
+		setup: ({ cwd }) => {
+			mkdirSync(join(cwd, ".pi"));
+			writeFileSync(join(cwd, ".pi", "pi-ipython.json"), JSON.stringify({ output: { maxLines: 2 } }));
+		},
+	});
+	const temp = join(h.cwd, "spools");
+	mkdirSync(temp);
+	for (const key of ["TMPDIR", "TMP", "TEMP"]) vi.stubEnv(key, temp);
+	const [r] = await h.runCells(
+		"from pathlib import Path\nimport time\nfor i in range(3): print(i)\nfor _ in range(100):\n    if list(Path('spools').glob('pi-ipython-spool-*')): break\n    time.sleep(0.01)\nelse: raise AssertionError('no spool after crossing the line limit')\nfor i in range(3, 30): print(i)",
+	);
+	expect(r?.isError).toBe(false);
+	const text = resultText(r!);
+	expect(text).toMatch(/^28\n29\n\n\[Output truncated .*last 2 of 30 lines/);
+	expect((r!.details as { stdout: string }).stdout).toBe("26\n27\n28\n29\n");
+	expect(readFileSync(fullOutputPath(text)!, "utf8")).toBe(Array.from({ length: 30 }, (_, i) => i).join("\n"));
+});
+
+test("small byte limits preserve the partial-line notice and spooled Unicode across frames", async () => {
+	h = await createHarness({
+		setup: ({ cwd }) => {
+			mkdirSync(join(cwd, ".pi"));
+			writeFileSync(join(cwd, ".pi", "pi-ipython.json"), JSON.stringify({ output: { maxBytes: 1 } }));
+		},
+	});
+	const results = await h.runCells(
+		"print('a😀', end='')",
+		"print('prefix', end='')\nprint('\\ud83d', end='')\nprint('\\ude00', end='')",
+		"import sys\nprint('prefix\\n\\n', file=sys.stderr)",
+	);
+	for (const [r, full] of [[results[0]!, "a😀"], [results[1]!, "prefix😀"]] as const) {
+		const text = resultText(r);
+		expect(text).toContain("showing the last 0B of the last line");
+		expect(readFileSync(fullOutputPath(text)!, "utf8")).toBe(full);
+	}
+	expect(resultText(results[2]!)).toMatch(/^\n\n\[Output truncated .*last 1 of 3 lines/);
+});
+
+test("a one-line limit preserves the suffix when the stream ends with a blank line", async () => {
+	h = await createHarness({
+		setup: ({ cwd }) => {
+			mkdirSync(join(cwd, ".pi"));
+			writeFileSync(join(cwd, ".pi", "pi-ipython.json"), JSON.stringify({ output: { maxBytes: 4, maxLines: 1 } }));
+		},
+	});
+	const [blank, empty] = await h.runCells("print('\\na\\n😀\\n界\\n')", "pass");
+	expect(resultText(blank!)).toMatch(/^界\n\n\[Output truncated .*last 1 of 4 lines/);
+	expect(resultText(empty!)).toMatch(/^put\)\n\n\[Output truncated .*last 4B of the last line/);
+	expect(readFileSync(fullOutputPath(resultText(empty!))!, "utf8")).toBe("(no output)");
 });
 
 test("output at the limit is returned unchanged", async () => {
@@ -217,7 +271,7 @@ test("intermediate spools are removed: only the final spill file remains, and no
 	const [r] = await h.runCells(`import sys\n${NUMBERED_LINES_CODE(20_000)}\nfor i in range(20_000): print(i, file=sys.stderr)`);
 	expect(readdirSync(temp).map((name) => join(temp, name))).toEqual([fullOutputPath(resultText(r!))]);
 	rmSync(fullOutputPath(resultText(r!))!);
-	await h.runCells(`import os, sys\n${NUMBERED_LINES_CODE(20_000)}\nsys.stdout.flush()\nos._exit(3)`);
+	await h.runCells(`import os, threading\nfrom pathlib import Path\ndef noisy():\n    ${NUMBERED_LINES_CODE(20_000)}\nt = threading.Thread(target=noisy)\nt.start()\nt.join()\nassert list(Path('temp').glob('pi-ipython-spool-*'))\n${NUMBERED_LINES_CODE(20_000)}\nos._exit(3)`);
 	expect(readdirSync(temp)).toEqual([]);
 });
 
@@ -232,10 +286,57 @@ test("a spool failure mid-Cell keeps the tail and reports that the full output c
 	expect(r?.details).not.toHaveProperty("fullOutputPath", expect.any(String));
 });
 
+test("a write and cleanup failure after opening the spool does not fail the Cell", async () => {
+	h = await createHarness();
+	await h.runCells("ready = True");
+	const temp = join(h.cwd, "spools");
+	mkdirSync(temp);
+	for (const key of ["TMPDIR", "TMP", "TEMP"]) vi.stubEnv(key, temp);
+	let spoolFd: number | undefined;
+	let spoolWrites = 0;
+	let failedRemoval = false;
+	const { openSync, writeSync, rmSync } = fs;
+	const open = vi.spyOn(fs, "openSync").mockImplementation((path, flags, mode) => {
+		const fd = openSync(path, flags, mode);
+		if (String(path).includes("pi-ipython-spool-")) spoolFd = fd;
+		return fd;
+	});
+	const write = vi.spyOn(fs, "writeSync").mockImplementation(new Proxy(writeSync, {
+		apply(target, thisArg, args) {
+			if (args[0] === spoolFd && ++spoolWrites === 2) {
+				spoolFd = undefined;
+				throw new Error("spool disk full");
+			}
+			return Reflect.apply(target, thisArg, args);
+		},
+	}));
+	const remove = vi.spyOn(fs, "rmSync").mockImplementation((path, options) => {
+		if (!failedRemoval && String(path).includes("pi-ipython-spool-")) {
+			failedRemoval = true;
+			throw new Error("spool removal temporarily denied");
+		}
+		rmSync(path, options);
+	});
+	syncBuiltinESMExports();
+	try {
+		const [r] = await h.runCells(NUMBERED_LINES_CODE(3000) + "\nprint('still ok')");
+		expect(r?.isError).toBe(false);
+		expect(resultText(r!)).toContain("still ok");
+		expect(resultText(r!)).toContain("Full output could not be saved: spool disk full");
+		expect(failedRemoval).toBe(true);
+		expect(readdirSync(temp)).toEqual([]);
+	} finally {
+		open.mockRestore();
+		write.mockRestore();
+		remove.mockRestore();
+		syncBuiltinESMExports();
+	}
+});
+
 test("a result keeps the last 8 images, counting background images, and says how many were dropped", async () => {
 	h = await createHarness();
 	const [r, expected] = await h.runCells(
-		`${PNG_HELPER}\nimport threading\nfor i in range(6): emit({'image/png': png(i)})\nt = threading.Thread(target=lambda: [emit({'image/png': png(i)}) for i in range(6, 10)])\nt.start()\nt.join()\nprint('plotted')`,
+		`${PNG_HELPER}\nimport threading\nfor i in range(5):\n    t = threading.Thread(target=lambda: emit({'image/png': png(2*i)}))\n    t.start()\n    t.join()\n    emit({'image/png': png(2*i + 1)})\nprint('plotted')`,
 		"' '.join(png(i) for i in range(2, 10))",
 	);
 	const images = r!.content.filter((b): b is ImageContent => b.type === "image").map((b) => b.data);

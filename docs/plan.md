@@ -35,7 +35,7 @@ test/                   # vitest integration tests (real Kernel)
 | State-lost notice | `session_start` with reason `resume`/`fork`/`new` → `pi.sendMessage` (`deliverAs: "nextTurn"`) |
 | Abort / interrupt | tool `execute(signal)` → protocol `interrupt` |
 | Busy Kernel / confirm each Cell | `ctx.ui` select/confirm inside `execute` |
-| Truncation | pi output truncation helpers, with full output written to a temp file |
+| Truncation | pi output truncation helpers, with full output written to a Spill file |
 | Rendering | `renderCall` / `renderResult` on the tool definition |
 | Bridged calls (v3) | `ctx.executeTool` inside the running Cell's `execute`, answering the Kernel's `host_request` |
 | Callable set (v3) | activate bridged `direct` tools alongside `ipython` and hide their declarations via `prepareLoadout` → `hiddenDeclarations`; `pi.getAllTools()` for discovery |
