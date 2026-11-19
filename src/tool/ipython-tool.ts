@@ -16,6 +16,7 @@ import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import {
 	DEFAULT_MAX_BYTES,
 	DEFAULT_MAX_LINES,
+	type AgentToolUpdateCallback,
 	type ExtensionToolContext,
 	formatSize,
 	type ToolDefinition,
@@ -88,6 +89,8 @@ export interface IpythonToolDetails extends Omit<CellResult, "output"> {
 	outputWarning?: string;
 	/** Raw-text limits shared by model output and the TUI renderer. */
 	outputLimits?: TruncationOptions;
+	/** Set on partial updates while the Cell runs; its streams are tails cut to `outputLimits`. */
+	running?: true;
 	/** True when this result carries the State-loss notice. */
 	stateLost?: boolean;
 	stateLossCause?: string;
@@ -165,10 +168,12 @@ function textOutput(r: CellResult): CellOutput {
 /**
  * The model-facing text, its tail kept within the limits (tracebacks and results come last), with the
  * full text written to a Spill file when cut. Reads stream tails and spools, never whole streams.
+ * `live` is for a running Cell: the notice counts output so far, and no Spill file is written.
  */
 export function composeCellText(
 	r: CellResult,
 	limits: TruncationOptions,
+	{ live = false } = {},
 ): { text: string; fullOutputPath?: string; outputWarning?: string } {
 	const { segments, backgroundSegment } = cellSegments(r);
 	let tail = "";
@@ -213,6 +218,10 @@ export function composeCellText(
 		content = background.content ? `${BACKGROUND_HEADING}\n${background.content}` : BACKGROUND_HEADING;
 		shown = `the tail of background output (${formatSize(background.outputBytes)})`;
 	}
+	if (live) {
+		const outputWarning = `[Output truncated (${formatSize(totalBytes)} so far): showing ${shown}]`;
+		return { text: `${content}\n\n${outputWarning}`, outputWarning };
+	}
 	const fullOutputPath = join(tmpdir(), `pi-ipython-${randomUUID()}.log`);
 	try {
 		writeSpillFile(fullOutputPath, segments);
@@ -223,6 +232,69 @@ export function composeCellText(
 	}
 	const outputWarning = `[Output truncated (${formatSize(totalBytes)} total): showing ${shown}. Full output: ${fullOutputPath}]`;
 	return { text: `${content}\n\n${outputWarning}`, fullOutputPath, outputWarning };
+}
+
+// The same throttle as pi's bash tool (BASH_UPDATE_THROTTLE_MS, not exported).
+const LIVE_UPDATE_INTERVAL_MS = 100;
+
+/** A running Cell's streams (none yet when undefined) as a partial update: tails cut to the limits, no Spill file. */
+function liveResult(output: CellOutput | undefined, limits: TruncationOptions, started: number) {
+	const cut = (b: OutputBuffer | undefined) => (b ? truncateTail(b.tail, limits).content : "");
+	const details: IpythonToolDetails = {
+		stdout: cut(output?.stdout),
+		stderr: cut(output?.stderr),
+		backgroundOutput: cut(output?.background),
+		images: [],
+		status: "ok",
+		durationMs: Date.now() - started,
+		outputLimits: limits,
+		running: true,
+	};
+	if (!output || output.stdout.totalBytes + output.stderr.totalBytes + output.background.totalBytes === 0) {
+		return { content: [], details };
+	}
+	const r: CellResult = { stdout: "", stderr: "", images: [], backgroundOutput: "", output, status: "ok", durationMs: 0 };
+	return { content: [{ type: "text" as const, text: composeCellText(r, limits, { live: true }).text }], details };
+}
+
+/**
+ * Throttled partial updates for one Cell: the first at once, then at most one per interval while its
+ * output grows. None after `close`, so none outlives the tool call.
+ */
+function liveUpdates(onUpdate: AgentToolUpdateCallback<IpythonToolDetails>, limits: TruncationOptions) {
+	const started = Date.now();
+	let output: CellOutput | undefined;
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	let lastAt = 0;
+	let closed = false;
+	const emit = () => {
+		timer = undefined;
+		if (closed) return;
+		lastAt = Date.now();
+		try {
+			onUpdate(liveResult(output, limits, started));
+		} catch {} // Progress must never fail the Cell.
+	};
+	return {
+		/** Like pi's bash tool: an update with no output marks the start. */
+		start: emit,
+		notify(current: CellOutput) {
+			if (closed) return;
+			output = current;
+			const wait = LIVE_UPDATE_INTERVAL_MS - (Date.now() - lastAt);
+			if (wait <= 0) {
+				clearTimeout(timer);
+				emit();
+			} else {
+				timer ??= setTimeout(emit, wait);
+			}
+		},
+		close() {
+			closed = true;
+			clearTimeout(timer);
+			output = undefined;
+		},
+	};
 }
 
 /** Write the segments to a new Spill file; a partial file is removed. */
@@ -278,7 +350,7 @@ export function createIpythonTool({
 		},
 		renderCall: renderCellCall,
 		renderResult: renderCellResult,
-		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			// Never run a Cell written against Python state that is already gone (ADR 0003).
 			const lostCause = takeStateLoss();
 			if (lostCause !== undefined) return stateLostResult(lostCause);
@@ -287,35 +359,42 @@ export function createIpythonTool({
 				if (!(await ctx.ui.confirm("Run this Python Cell?", params.code, { signal }))) throw new Error(CELL_REJECTED_ERROR);
 			}
 			let r: CellResult;
-			for (;;) {
-				// A dialog may have outlived the Kernel whose state this Cell assumes.
-				const cause = takeStateLoss();
-				if (cause !== undefined) return stateLostResult(cause);
-				try {
-					r = await getKernel().execute(
-						params.code,
-						signal,
-						answerHostRequest && ((data) => answerHostRequest(data, ctx, signal)),
-					);
-					break;
-				} catch (error) {
-					if (!(error instanceof KernelBusyError) || signal?.aborted) {
-						// This Cell's Kernel died under it: its own error tells the model. Never replay it.
-						const cause = takeStateLoss();
-						if (cause !== undefined) return stateLostResult(cause, true);
-						throw error;
+			const live = onUpdate && liveUpdates(onUpdate, getOutputLimits());
+			live?.start();
+			try {
+				for (;;) {
+					// A dialog may have outlived the Kernel whose state this Cell assumes.
+					const cause = takeStateLoss();
+					if (cause !== undefined) return stateLostResult(cause);
+					try {
+						r = await getKernel().execute(
+							params.code,
+							signal,
+							answerHostRequest && ((data) => answerHostRequest(data, ctx, signal)),
+							live?.notify,
+						);
+						break;
+					} catch (error) {
+						if (!(error instanceof KernelBusyError) || signal?.aborted) {
+							// This Cell's Kernel died under it: its own error tells the model. Never replay it.
+							const cause = takeStateLoss();
+							if (cause !== undefined) return stateLostResult(cause, true);
+							throw error;
+						}
+						// Like the branch-switch choice, only the TUI prompts; elsewhere the model gets the busy error.
+						const choice = ctx.mode === "tui" && ctx.hasUI
+							? await ctx.ui.select(BUSY_KERNEL_PROMPT, [BUSY_KERNEL_WAIT_CHOICE, BUSY_KERNEL_KILL_CHOICE], { signal })
+							: undefined;
+						if (choice === BUSY_KERNEL_WAIT_CHOICE) continue;
+						if (choice !== BUSY_KERNEL_KILL_CHOICE) throw error;
+						await killKernel();
+						takeStateLoss();
+						// The Cell was written for the killed Kernel's state (ADR 0003).
+						return stateLostResult(KERNEL_KILLED_CAUSE);
 					}
-					// Like the branch-switch choice, only the TUI prompts; elsewhere the model gets the busy error.
-					const choice = ctx.mode === "tui" && ctx.hasUI
-						? await ctx.ui.select(BUSY_KERNEL_PROMPT, [BUSY_KERNEL_WAIT_CHOICE, BUSY_KERNEL_KILL_CHOICE], { signal })
-						: undefined;
-					if (choice === BUSY_KERNEL_WAIT_CHOICE) continue;
-					if (choice !== BUSY_KERNEL_KILL_CHOICE) throw error;
-					await killKernel();
-					takeStateLoss();
-					// The Cell was written for the killed Kernel's state (ADR 0003).
-					return stateLostResult(KERNEL_KILLED_CAUSE);
 				}
+			} finally {
+				live?.close();
 			}
 			const outputLimits = getOutputLimits();
 			let composed: ReturnType<typeof composeCellText>;

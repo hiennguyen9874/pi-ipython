@@ -8,6 +8,7 @@
 - `prelude` config: `prelude.defaults: false` drops the default imports, and `prelude.imports` adds import statements (global and project entries concatenate). Entries that are not a single absolute import statement are reported and skipped; an import that fails in the Kernel is reported as a warning and the rest still run. (#45)
 - The prompt's prelude line names the stdlib defaults instead of repeating their import statements and says they exist only in the REPL, so files and scripts the model writes keep their own imports. Configured imports get their own sub-line, marked as installed for the project, so the model uses them instead of probing or installing alternatives. (#46)
 - `prelude.prompt: false` leaves the prelude out of the system prompt while the Kernel still runs it. (#47)
+- A running Cell streams its output live to the TUI: stdout, stderr and Background output appear as they arrive, collapsed to their tail, with a `Running… 12.3s` line. Partial updates are throttled to one every 100 ms like pi's bash tool, cut to the output limits, write no Spill file, and stop when the Cell's result is returned. The model never sees them, and the final result is unchanged. RPC clients get the tail as text, with a `[Output truncated (… so far): …]` notice when cut. (#23)
 
 ### Fixed
 

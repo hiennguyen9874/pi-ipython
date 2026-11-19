@@ -114,6 +114,9 @@ export interface KernelClientOptions {
 /** Answers one `host_request`: resolves with the reply's result, rejects with its error. */
 export type HostRequestHandler = (data: Record<string, unknown>) => Promise<unknown>;
 
+/** Told that a running Cell's output grew, with its streams so far. Read them before the Cell's result is used. */
+export type CellOutputListener = (output: CellOutput) => void;
+
 /** Requests that run in order and end with a `done` frame. */
 type KernelRequest = { type: "execute"; code: string } | { type: "list_names" };
 
@@ -123,6 +126,7 @@ interface ActiveCell {
 	started: number;
 	signal?: AbortSignal;
 	onHostRequest?: HostRequestHandler;
+	onOutput?: CellOutputListener;
 	stdout: OutputBuffer;
 	stderr: OutputBuffer;
 	result?: string;
@@ -178,10 +182,13 @@ export class KernelClient {
 		return this.starting;
 	}
 
-	/** Run one Cell, starting the Kernel first if needed. `onHostRequest` answers its host requests while it runs. */
-	async execute(code: string, signal?: AbortSignal, onHostRequest?: HostRequestHandler): Promise<CellResult> {
+	/**
+	 * Run one Cell, starting the Kernel first if needed. `onHostRequest` answers its host requests while it runs;
+	 * `onOutput` hears of its output (its own and Background output) until its tool call returns.
+	 */
+	async execute(code: string, signal?: AbortSignal, onHostRequest?: HostRequestHandler, onOutput?: CellOutputListener): Promise<CellResult> {
 		await this.start();
-		return this.request({ type: "execute", code }, signal, onHostRequest);
+		return this.request({ type: "execute", code }, signal, onHostRequest, onOutput);
 	}
 
 	/**
@@ -350,13 +357,17 @@ export class KernelClient {
 		if (!cell || event.id !== cell.id || cell.settled) {
 			// Output without this Cell's id (threads, subprocesses, other Cells) is not credited to it:
 			// it is buffered and reported as background output with the next finished Cell.
-			if (type === "stdout" || type === "stderr") this.background.append(asString(event.text));
-			else if (type === "display") for (const image of imagesFromDisplay(event.data)) this.images.push(image);
+			if (type === "stdout" || type === "stderr") {
+				this.background.append(asString(event.text));
+				// It is reported with the running Cell.
+				if (cell && !cell.settled && cell.requestType === "execute") this.notifyOutput(cell);
+			} else if (type === "display") for (const image of imagesFromDisplay(event.data)) this.images.push(image);
 			return;
 		}
-		if (type === "stdout") cell.stdout.append(asString(event.text));
-		else if (type === "stderr") cell.stderr.append(asString(event.text));
-		else if (type === "result") cell.result = asString(event.text);
+		if (type === "stdout" || type === "stderr") {
+			cell[type].append(asString(event.text));
+			this.notifyOutput(cell);
+		} else if (type === "result") cell.result = asString(event.text);
 		else if (type === "display" && cell.requestType === "execute") {
 			for (const image of imagesFromDisplay(event.data)) this.images.push(image);
 		} else if (type === "error") {
@@ -430,6 +441,10 @@ export class KernelClient {
 		})) : result);
 	}
 
+	private notifyOutput(cell: ActiveCell): void {
+		cell.onOutput?.({ stdout: cell.stdout, stderr: cell.stderr, background: this.background });
+	}
+
 	private newBuffer(): OutputBuffer {
 		const limits = this.options.getOutputLimits?.();
 		return new OutputBuffer(limits?.maxBytes ?? DEFAULT_MAX_BYTES, limits?.maxLines ?? DEFAULT_MAX_LINES);
@@ -459,13 +474,23 @@ export class KernelClient {
 		}
 	}
 
-	private request(request: KernelRequest, signal?: AbortSignal, onHostRequest?: HostRequestHandler): Promise<CellResult> {
-		const run = this.queue.then(() => this.send(request, signal, onHostRequest));
+	private request(
+		request: KernelRequest,
+		signal?: AbortSignal,
+		onHostRequest?: HostRequestHandler,
+		onOutput?: CellOutputListener,
+	): Promise<CellResult> {
+		const run = this.queue.then(() => this.send(request, signal, onHostRequest, onOutput));
 		this.queue = run.catch(() => undefined);
 		return run;
 	}
 
-	private async send(request: KernelRequest, signal?: AbortSignal, onHostRequest?: HostRequestHandler): Promise<CellResult> {
+	private async send(
+		request: KernelRequest,
+		signal?: AbortSignal,
+		onHostRequest?: HostRequestHandler,
+		onOutput?: CellOutputListener,
+	): Promise<CellResult> {
 		await this.waitUntilIdle(signal);
 		if (signal?.aborted) {
 			return { stdout: "", stderr: "", images: [], backgroundOutput: "", status: "aborted", durationMs: 0 };
@@ -494,6 +519,7 @@ export class KernelClient {
 				started: Date.now(),
 				signal,
 				onHostRequest,
+				onOutput,
 				stdout: this.newBuffer(),
 				stderr: this.newBuffer(),
 				settled: false,
