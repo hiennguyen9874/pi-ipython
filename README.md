@@ -89,7 +89,7 @@ The two added sections:
   - The rule about `[bash-done …]` notices appears only when `backgroundNotices` is on (TUI and RPC).
 
   `<ipython>` goes before `<docs>`. If `<docs>` is missing, it goes before the first of `<addendum>`, `<project_context>`, `<skills>`, `<cwd>`, or at the end. To change this, set `systemPrompt.ipythonAfter` and `systemPrompt.ipythonBefore` (see [Configuration](#configuration)).
-  - Another extension that also inserts before `<docs>` ends up before or after `<ipython>` depending on load order (pi loads local extensions before packages). If that extension's text should always follow `<ipython>`, set `"systemPrompt": { "ipythonAfter": ["rules"] }`. `<ipython>` then goes right after `</rules>`, ahead of anything added after `<rules>`. Prompts without `<rules>` (`SYSTEM.md` / `--system-prompt`) fall back to `ipythonBefore`.
+  - Another extension that also inserts before `<docs>` ends up before or after `<ipython>` depending on load order (pi loads local extensions before packages). Set `"systemPrompt": { "ipythonAfter": ["rules"] }` to put `<ipython>` ahead of extensions that insert before `<docs>`. A later handler that inserts directly after `</rules>` can still put its text first. Prompts without `<rules>` (`SYSTEM.md` / `--system-prompt`) fall back to `ipythonBefore`.
 - `<skills>`: your skills list, with a note telling the model to read `SKILL.md` with Python. pi leaves the list out because no file-reading tool is active. It goes before `<cwd>`. Without skills (or with `--no-skills`) the section is skipped.
 
 A section that is already in the prompt is not added again.
@@ -213,7 +213,7 @@ There are two config files:
 - **Global:** `~/.pi/agent/pi-ipython.json`
 - **Project:** `.pi/pi-ipython.json`
 
-Project values override global ones key by key. The exceptions are `prelude.imports` and `python.packages`: global and project lists are combined (trusted projects only for `python.packages`). If a file has a bad value or an unknown key, you get a warning and that entry is skipped. Everything else still applies.
+Project values override global ones key by key. The exceptions are `prelude.imports` and `python.packages`: global and project lists are combined (trusted projects only for `python.packages`). Bad values and unknown keys are reported with the file and key. An invalid entry is skipped, except when an invalid `systemPrompt` value wins the merge: then both placement settings use their defaults.
 
 Defaults:
 

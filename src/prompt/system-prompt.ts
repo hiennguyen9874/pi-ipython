@@ -9,9 +9,9 @@
 // MIT License, see LICENSE.
 
 import { formatSkillsForPrompt, type Skill } from "@earendil-works/pi-coding-agent";
-import { DEFAULT_IPYTHON_BEFORE } from "../config.ts";
 import { DEFAULT_PACKAGE_PRELUDE } from "../kernel/packages.ts";
 import { DEFAULT_PRELUDE, preludeNames } from "../kernel/prelude.ts";
+import { SECTION_TAG_NAME } from "./section-tag.ts";
 
 const CORE_PROMPT = `You have one tool, \`ipython\`: a persistent CPython REPL where top-level \`await\` works. Every other capability is a Python function in that REPL. Variables, functions, and imports persist between calls.
 
@@ -140,7 +140,8 @@ function sectionRanges(prompt: string): Map<string, { start: number; end: number
 		return " ".repeat(line.length);
 	});
 	const ranges = new Map<string, { start: number; end: number }>();
-	for (const match of unfenced.matchAll(/^<([a-z][a-z0-9_-]*)>(?:[^\r\n]*|\r?\n[\s\S]*?^)<\/\1>[ \t]*(?=\r?$)/gm)) {
+	const completeSection = new RegExp(String.raw`^<(${SECTION_TAG_NAME})>(?:[^\r\n]*|\r?\n[\s\S]*?^)</\1>[ \t]*(?=\r?$)`, "gm");
+	for (const match of unfenced.matchAll(completeSection)) {
 		const name = match[1]!;
 		if (!ranges.has(name)) ranges.set(name, { start: match.index, end: match.index + match[0].length });
 	}
@@ -148,47 +149,38 @@ function sectionRanges(prompt: string): Map<string, { start: number; end: number
 }
 
 /** Where to insert a section: right after the first of `after` present, else before the first of `before`. */
-export interface SectionPlacement {
+interface SectionPlacement {
 	after?: readonly string[];
 	before: readonly string[];
 }
 
-/**
- * Insert `<name>` right after the first of `after` present, else before the first of `before` present,
- * else at the end; leave a prompt that has it alone.
- */
 function insertSection(prompt: string, name: string, content: string, { after = [], before }: SectionPlacement): string {
 	const ranges = sectionRanges(prompt);
 	if (ranges.has(name)) return prompt;
 	const section = `<${name}>\n${content}\n</${name}>`;
 	for (const marker of after) {
 		const range = ranges.get(marker);
-		if (range === undefined) continue;
-		const rest = prompt.slice(range.end).replace(/^(?:[ \t]*\r?\n)+/, "");
-		return `${prompt.slice(0, range.end)}\n\n${section}${rest ? `\n\n${rest}` : ""}`;
+		if (!range) continue;
+		const tail = prompt.slice(range.end);
+		// Reuse existing line breaks instead of collapsing spacing from another extension.
+		const separator = !tail || /^\r?\n[ \t]*\r?\n/.test(tail) ? "" : "\n";
+		return `${prompt.slice(0, range.end)}\n\n${section}${separator}${tail}`;
 	}
 	for (const marker of before) {
 		const range = ranges.get(marker);
-		if (range !== undefined) return `${prompt.slice(0, range.start)}${section}\n\n${prompt.slice(range.start)}`;
+		if (range) return `${prompt.slice(0, range.start)}${section}\n\n${prompt.slice(range.start)}`;
 	}
 	return prompt.trim() ? `${prompt.trimEnd()}\n\n${section}` : section;
 }
 
-/** By default `<ipython>` goes before pi's `<docs>`, or the next section pi renders after it. */
-const DEFAULT_IPYTHON_PLACEMENT: SectionPlacement = { before: DEFAULT_IPYTHON_BEFORE };
-
-/**
- * Add the `<ipython>` section at `placement` (default: before pi's `<docs>` or the next section pi renders
- * after it) and the skills list before `<cwd>`, keeping everything pi and other extensions put in `systemPrompt`.
- */
+/** Add the skills list before `<cwd>`, then place `<ipython>` using the complete set of sections. */
 export function extendSystemPrompt(
 	systemPrompt: string,
 	skills: readonly Skill[],
 	options: IpythonPromptOptions,
-	placement: SectionPlacement = DEFAULT_IPYTHON_PLACEMENT,
+	placement: SectionPlacement,
 ): string {
-	let prompt = insertSection(systemPrompt, "ipython", ipythonSection(options), placement);
 	const skillsContent = skillsSection(skills);
-	if (skillsContent) prompt = insertSection(prompt, "skills", skillsContent, { before: ["cwd"] });
-	return prompt;
+	const prompt = skillsContent ? insertSection(systemPrompt, "skills", skillsContent, { before: ["cwd"] }) : systemPrompt;
+	return insertSection(prompt, "ipython", ipythonSection(options), placement);
 }

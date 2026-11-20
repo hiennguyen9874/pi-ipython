@@ -8,7 +8,7 @@
 
 ### Added
 
-- `systemPrompt.ipythonAfter` / `systemPrompt.ipythonBefore` config: choose where `<ipython>` goes in pi's prompt. It goes right after the first `ipythonAfter` section present, else before the first `ipythonBefore` section present (default `docs`, `addendum`, `project_context`, `skills`, `cwd`, the previous behavior), else at the end. With `"ipythonAfter": ["rules"]`, sections other extensions insert after `<rules>` always follow `<ipython>`, whatever the extension load order. (#55)
+- `systemPrompt.ipythonAfter` / `systemPrompt.ipythonBefore` config: choose where `<ipython>` goes in pi's prompt. It goes right after the first `ipythonAfter` section present, else before the first `ipythonBefore` section present (default `docs`, `addendum`, `project_context`, `skills`, `cwd`, the previous behavior), else at the end. With `"ipythonAfter": ["rules"]`, `<ipython>` comes before sections other extensions insert before `<docs>`. A later handler can still insert directly after `</rules>`. (#55)
 - A default prelude of stdlib imports (`json`, `os`, `re`, `sys`, `time`, `math`, `shutil`, `itertools`, `functools`, `collections`, `textwrap`, `Path`, `datetime`, `timedelta`, `Counter`, `defaultdict`) runs in every Kernel, including after a Kernel replacement, so Cells can use them without importing. The system prompt lists the prelude, and the Python-state notice leaves its names out like other bootstrap names. (#44)
 - `prelude` config: `prelude.defaults: false` drops the default imports, and `prelude.imports` adds import statements (global and project entries concatenate). Entries that are not a single absolute import statement are reported and skipped; an import that fails in the Kernel is reported as a warning and the rest still run. (#45)
 - The prompt's prelude line names the stdlib defaults instead of repeating their import statements and says they exist only in the REPL, so files and scripts the model writes keep their own imports. Configured imports get their own sub-line, marked as installed for the project, so the model uses them instead of probing or installing alternatives. (#46)
@@ -18,6 +18,8 @@
 - A running Cell streams its output live to the TUI: stdout, stderr and Background output appear as they arrive, collapsed to their tail, with a `Running… 12.3s` line. Partial updates are throttled to one every 100 ms like pi's bash tool, cut to the output limits, write no Spill file, and stop when the Cell's result is returned. The model never sees them, and the final result is unchanged. RPC clients get the tail as text, with a `[Output truncated (… so far): …]` notice when cut. (#23)
 
 ### Fixed
+
+- Prompt placement review fixes: both placement settings can use the generated `<skills>` section as an anchor. Inserting after an anchor preserves existing blank lines. An invalid effective placement setting reports the file and key and restores both placement defaults. (#55)
 
 - System prompt review fixes: the frozen prompt no longer advertises hidden tools if another extension activates them before the run. Fenced examples in `SYSTEM.md` and `APPEND_SYSTEM.md` no longer interfere with prompt section insertion. The `ipython` description and `pi.tools()` now omit registered tools the Kernel cannot call. (#24)
 

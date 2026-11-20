@@ -1,5 +1,5 @@
 // Config: `<agentDir>/pi-ipython.json` (global) merged with `<cwd>/.pi/pi-ipython.json` (project).
-// Project values win per key. An invalid file or value is reported and skipped, so defaults still apply.
+// Project values win per key. Invalid values are reported and usually skipped.
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -7,6 +7,7 @@ import { CONFIG_DIR_NAME, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, getAgentDir } fr
 import { DEFAULT_PYTHON_VERSION } from "./kernel/bootstrap.ts";
 import { DEFAULT_PACKAGE_PRELUDE, DEFAULT_PACKAGE_REQUIREMENTS, redactPackageUrls } from "./kernel/packages.ts";
 import { DEFAULT_PRELUDE, preludeStatementNames } from "./kernel/prelude.ts";
+import { SECTION_TAG_NAME } from "./prompt/section-tag.ts";
 
 export const CONFIG_FILE_NAME = "pi-ipython.json";
 
@@ -28,7 +29,7 @@ export interface PiIpythonConfig {
 }
 
 /** pi's sections that follow its `<rules>`, in render order: the default `systemPrompt.ipythonBefore`. */
-export const DEFAULT_IPYTHON_BEFORE: readonly string[] = ["docs", "addendum", "project_context", "skills", "cwd"];
+const DEFAULT_IPYTHON_BEFORE: readonly string[] = ["docs", "addendum", "project_context", "skills", "cwd"];
 
 /**
  * The import statements the Kernel bootstrap runs: the defaults (unless turned off), plus the default packages'
@@ -60,8 +61,12 @@ export interface LoadedConfig {
 }
 
 const isPositiveInt = (v: unknown) => Number.isInteger(v) && (v as number) > 0;
+const sectionTagName = new RegExp(`^${SECTION_TAG_NAME}$`);
 const isSectionNames = (v: unknown) =>
-	Array.isArray(v) && v.every((name) => typeof name === "string" && /^[a-z][a-z0-9_-]*$/.test(name));
+	Array.isArray(v) && v.every((name) => typeof name === "string" && sectionTagName.test(name));
+const PROMPT_AFTER = "systemPrompt.ipythonAfter";
+const PROMPT_BEFORE = "systemPrompt.ipythonBefore";
+const INVALID_PLACEMENT = Symbol("invalid prompt placement");
 const SECTION_NAMES_EXPECTED = 'an array of section tag names like "rules" (lowercase letters, digits, "_" or "-")';
 
 /** Every supported key (dotted path), with its validator and a description of valid values. */
@@ -86,8 +91,8 @@ const FIELDS: Record<string, { valid: (v: unknown) => boolean; expected: string 
 	"prelude.defaults": { valid: (v) => typeof v === "boolean", expected: "true or false" },
 	"prelude.imports": { valid: Array.isArray, expected: "an array of import statements" },
 	"prelude.prompt": { valid: (v) => typeof v === "boolean", expected: "true or false" },
-	"systemPrompt.ipythonAfter": { valid: isSectionNames, expected: SECTION_NAMES_EXPECTED },
-	"systemPrompt.ipythonBefore": { valid: isSectionNames, expected: SECTION_NAMES_EXPECTED },
+	[PROMPT_AFTER]: { valid: isSectionNames, expected: SECTION_NAMES_EXPECTED },
+	[PROMPT_BEFORE]: { valid: isSectionNames, expected: SECTION_NAMES_EXPECTED },
 };
 const SECTIONS = new Set(["python", "output", "piTools", "prelude", "systemPrompt"]);
 const IMPORT_EXPECTED = 'one "import …" or "from … import …" statement (absolute, without "*")';
@@ -112,6 +117,7 @@ export function loadConfig(cwd: string, agentDir = getAgentDir(), projectTrusted
 	const hasPackages = (raw: Record<string, unknown> | undefined) =>
 		isPlainObject(raw?.python) && Object.hasOwn(raw.python, "packages");
 	const get = <T>(key: string, fallback: T) => (values.has(key) ? (values.get(key) as T) : fallback);
+	const invalidPlacement = values.get(PROMPT_AFTER) === INVALID_PLACEMENT || values.get(PROMPT_BEFORE) === INVALID_PLACEMENT;
 	const source = get<"uv" | "project">("python.source", "uv");
 	const packages = get<string[]>("python.packages", []);
 	if (source === "project" && (hasPackages(global) || hasPackages(project))) {
@@ -128,8 +134,8 @@ export function loadConfig(cwd: string, agentDir = getAgentDir(), projectTrusted
 			piTools: { list: get("piTools.list", true), search: get("piTools.search", true) },
 			prelude: { defaults: get("prelude.defaults", true), imports: get<string[]>("prelude.imports", []), prompt: get("prelude.prompt", true) },
 			systemPrompt: {
-				ipythonAfter: get<string[]>("systemPrompt.ipythonAfter", []),
-				ipythonBefore: get<string[]>("systemPrompt.ipythonBefore", [...DEFAULT_IPYTHON_BEFORE]),
+				ipythonAfter: invalidPlacement ? [] : get<string[]>(PROMPT_AFTER, []),
+				ipythonBefore: invalidPlacement ? [...DEFAULT_IPYTHON_BEFORE] : get<string[]>(PROMPT_BEFORE, [...DEFAULT_IPYTHON_BEFORE]),
 			},
 		},
 		errors,
@@ -167,6 +173,7 @@ function collect(raw: Record<string, unknown>, file: string, values: Map<string,
 		else if (!field.valid(value)) {
 			const shown = JSON.stringify(value);
 			errors.push(`${file}: "${key}" must be ${field.expected}, got ${key === "python.packages" ? redactPackageUrls(shown) : shown}`);
+			if (key === PROMPT_AFTER || key === PROMPT_BEFORE) values.set(key, INVALID_PLACEMENT);
 		} else if (key === "prelude.imports" || key === "python.packages") {
 			const validate = key === "prelude.imports" ? validImports : validPackages;
 			values.set(key, [...((values.get(key) as string[] | undefined) ?? []), ...validate(value as unknown[], file, errors)]);
@@ -174,8 +181,13 @@ function collect(raw: Record<string, unknown>, file: string, values: Map<string,
 	};
 	for (const [key, value] of Object.entries(raw)) {
 		if (!SECTIONS.has(key)) check(key, value);
-		else if (!isPlainObject(value)) errors.push(`${file}: "${key}" must be an object`);
-		else for (const [sub, subValue] of Object.entries(value)) check(`${key}.${sub}`, subValue);
+		else if (!isPlainObject(value)) {
+			errors.push(`${file}: "${key}" must be an object`);
+			if (key === "systemPrompt") {
+				values.set(PROMPT_AFTER, INVALID_PLACEMENT);
+				values.set(PROMPT_BEFORE, INVALID_PLACEMENT);
+			}
+		} else for (const [sub, subValue] of Object.entries(value)) check(`${key}.${sub}`, subValue);
 	}
 }
 
