@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-20
+
+### Added
+
+- GitHub Actions now runs type checks and the TypeScript and Python tests, then packs the npm tarball. Pushing a matching version tag publishes that tarball through npm Trusted Publishing.
+
+## [0.1.0] - 2026-11-20
+
+First public npm release. Install with `pi install npm:pi-ipython`.
+
 ### Changed
 
 - pi-ipython now adds to pi's system prompt instead of replacing it (ADR 0005). Each run, it inserts an `<ipython>` section (the REPL's functions and rules) before `<docs>` and the skills list before `<cwd>` into the prompt pi and earlier extensions built, and returns that as the run's prompt. `SYSTEM.md`, `APPEND_SYSTEM.md`, pi's own sections, and other extensions' edits of `event.systemPrompt` are kept, whether those extensions run before or after pi-ipython. The `pi` API section moves to the `ipython` tool description, where it still follows the live callable set every turn. The prompt no longer includes the date. (#24)
