@@ -118,13 +118,15 @@ export default function piIpython(pi: ExtensionAPI): void {
 				return cause;
 			},
 			answerHostRequest: (data, ctx, signal) => {
-				return answerHostRequest(data, forceExclusive(), ctx, signal, config.piTools.search);
+				const bridged = forceExclusive();
+				const callable = new Set(ctx.tools.map((tool) => tool.name));
+				return answerHostRequest(data, bridged.filter((tool) => callable.has(tool.name)), ctx, signal, config.piTools.search);
 			},
 			// The pi API while a Pi tool is callable, then the Listed Pi tools.
 			describePiTools: (loadout) => {
-				const callable = new Set(bridgedTools(pi.getAllTools(), IPYTHON_TOOL_NAME).map((tool) => tool.name));
-				if (callable.size === 0) return undefined;
-				const listed = config.piTools.list ? listPiTools(loadout, callable) : undefined;
+				const bridged = new Set(bridgedTools(pi.getAllTools(), IPYTHON_TOOL_NAME).map((tool) => tool.name));
+				if (!loadout.callable.some((tool) => bridged.has(tool.name))) return undefined;
+				const listed = config.piTools.list ? listPiTools(loadout, bridged) : undefined;
 				return [piToolsSection(config.piTools.search), ...(listed ? [listed] : [])].join("\n\n");
 			},
 		}),
@@ -174,7 +176,13 @@ export default function piIpython(pi: ExtensionAPI): void {
 		forceExclusive();
 		const message = notices.onRunStart(event, () => ctx.abort());
 		const packageLabels = await warmPackageLabels;
-		const systemPrompt = extendSystemPrompt(event.systemPrompt, event.systemPromptOptions.skills ?? [], {
+		const options = event.systemPromptOptions;
+		// pi reconciles the hook's snapshot with the live loadout only after this handler returns.
+		if (options.forceSystemPrompt === undefined) {
+			options.selectedTools = pi.getActiveTools();
+			options.hiddenTools = [...new Set([...options.hiddenTools, ...options.selectedTools.filter((name) => name !== IPYTHON_TOOL_NAME)])];
+		}
+		const systemPrompt = extendSystemPrompt(event.systemPrompt, options.skills ?? [], {
 			// The prelude still runs with prompt off; only the model is not told about it.
 			prelude: config.prelude.prompt ? { ...config.prelude, includeDefaultPackageImports: hasDefaultPackages(config) } : undefined,
 			backgroundNotices: notices.enabled,

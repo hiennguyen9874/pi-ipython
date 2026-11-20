@@ -79,7 +79,7 @@ What happens to the rest:
 - `SYSTEM.md` / `--system-prompt` replaces pi's opening text, `<tools>`, `<rules>`, and `<docs>`, as usual. `<ipython>` is still added.
 - `APPEND_SYSTEM.md` / `--append-system-prompt`, `AGENTS.md` files, and cwd stay.
 - Other extensions that edit `event.systemPrompt` in `before_agent_start` keep their changes, whether they run before or after pi-ipython.
-- pi-ipython returns the prompt as `systemPrompt`, so it stays fixed for the whole run. An extension that runs after it and only changes `systemPromptOptions` (`sections`, `promptGuidelines`) has no effect, and one that returns a prompt without using `event.systemPrompt` removes pi-ipython's sections.
+- pi-ipython returns the prompt as `systemPrompt`, so it stays fixed for the whole run. Later edits to `systemPromptOptions.sections` or `promptGuidelines` do not change the forced text. A later handler can replace it by returning a prompt without using `event.systemPrompt`, or restore pi's structured prompt by clearing `forceSystemPrompt`.
 - The `pi` API for other tools is described in the `ipython` tool description, not the system prompt, so it can change during a run.
 
 ## Kernel packages

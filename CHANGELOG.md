@@ -18,6 +18,8 @@
 
 ### Fixed
 
+- System prompt review fixes: the frozen prompt no longer advertises hidden tools if another extension activates them before the run. Fenced examples in `SYSTEM.md` and `APPEND_SYSTEM.md` no longer interfere with prompt section insertion. The `ipython` description and `pi.tools()` now omit registered tools the Kernel cannot call. (#24)
+
 - Kernel package review fixes: ignore untrusted project requirements, list only verified package names in the prompt, and redact URLs from install errors. Reject incompatible runtime dependencies before marking a venv ready. Use the full package-set hash and keep the Python version in overridden paths. The install example works without the default prelude and with interpreter paths containing spaces. Project mode warns even when `python.packages` is empty. (#48)
 
 - Background-command notices no longer start turns for commands that finish inside their own Cell. Notices can resume after manual compaction, respect the two-minute batch deadline even if the Kernel's command list is slow, and stay withdrawable until delivery. Shutdown and Kernel replacement discard pending notices. A user message only takes queued notices when delivery is paused, and the pause is announced as soon as the fifth consecutive notice-started turn settles. Malformed notices with out-of-range PIDs or non-finite timeouts are rejected. (#26)

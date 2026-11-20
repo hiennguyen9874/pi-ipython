@@ -125,19 +125,34 @@ function skillsSection(skills: readonly Skill[]): string | undefined {
 	return `Read a skill's SKILL.md with Python at its listed location, e.g. \`open(location).read()\`.\n${listed}`;
 }
 
-/** Where pi's sections start: `<name>` alone on a line. */
-function sectionStart(prompt: string, name: string): number | undefined {
-	const match = new RegExp(`(?:^|\\n)<${name}>\\n`).exec(prompt);
-	if (!match) return undefined;
-	return match[0].startsWith("\n") ? match.index + 1 : match.index;
+/** Start offsets of complete sections, ignoring Markdown examples without changing offsets. */
+function sectionStarts(prompt: string): Map<string, number> {
+	let fence: string | undefined;
+	const unfenced = prompt.replace(/[^\r\n]+/g, (line) => {
+		const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+		if (fence) {
+			if (marker && marker[1]!.startsWith(fence) && !marker[2]!.trim()) fence = undefined;
+			return " ".repeat(line.length);
+		}
+		if (!marker) return line;
+		fence = marker[1];
+		return " ".repeat(line.length);
+	});
+	const starts = new Map<string, number>();
+	for (const match of unfenced.matchAll(/^<([a-z][a-z0-9_-]*)>(?:[^\r\n]*|\r?\n[\s\S]*?^)<\/\1>[ \t]*(?=\r?$)/gm)) {
+		const name = match[1]!;
+		if (!starts.has(name)) starts.set(name, match.index);
+	}
+	return starts;
 }
 
 /** Insert `<name>` before the first of `before` present, else at the end; leave a prompt that has it alone. */
 function insertSection(prompt: string, name: string, content: string, before: readonly string[]): string {
-	if (sectionStart(prompt, name) !== undefined) return prompt;
+	const starts = sectionStarts(prompt);
+	if (starts.has(name)) return prompt;
 	const section = `<${name}>\n${content}\n</${name}>`;
 	for (const marker of before) {
-		const at = sectionStart(prompt, marker);
+		const at = starts.get(marker);
 		if (at !== undefined) return `${prompt.slice(0, at)}${section}\n\n${prompt.slice(at)}`;
 	}
 	return prompt.trim() ? `${prompt.trimEnd()}\n\n${section}` : section;

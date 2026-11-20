@@ -352,9 +352,9 @@ export function createIpythonTool({
 		reachesTools: () => "all",
 		// Other active tools are there only for Bridged calls: the model sees only ipython.
 		prepareLoadout: (loadout) => {
-			const listed = describePiTools?.(loadout);
+			const piGuidance = describePiTools?.(loadout);
 			return {
-				...(listed === undefined ? {} : { descriptions: { [IPYTHON_TOOL_NAME]: `${description}\n\n${listed}` } }),
+				...(piGuidance === undefined ? {} : { descriptions: { [IPYTHON_TOOL_NAME]: `${description}\n\n${piGuidance}` } }),
 				hiddenDeclarations: loadout.declared.map((tool) => tool.name).filter((name) => name !== IPYTHON_TOOL_NAME),
 			};
 		},
