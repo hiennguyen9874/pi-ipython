@@ -47,7 +47,7 @@ test/                   # vitest integration tests (real Kernel)
 3. **Venv bootstrap.** uv venv with Python 3.13 (configurable) and the project-`.venv` option, warmed at `session_start`, Kernel started lazily.
 4. **`ipython` tool, end to end.** Register the tool, make it exclusive, shape results (stdout, stderr, result, error, duration), apply truncation with the temp-file path.
 5. **Config loading.** Global and project JSON merge, the documented keys, and validation errors shown in the UI.
-6. **System prompt.** Unharnessed-derived prompt plus context files, skills list, cwd, and date. Since #24 (ADR 0005) it extends pi's prompt instead of replacing it.
+6. **System prompt.** Unharnessed-derived REPL guidance and skills list extend pi's prompt (#24, ADR 0005), preserving pi's context files and cwd.
 7. **Session lifecycle.** Kill on shutdown, state-lost notice on new/resume/fork, no orphan processes (orphan journal).
 8. **Branch switch handling.** The keep/restart prompt on `/tree`, with a no-UI fallback.
 9. **Interrupt and busy Kernel.** Abort → interrupt. A still-busy Kernel → a wait-or-kill choice.

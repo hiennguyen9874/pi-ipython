@@ -44,10 +44,6 @@ async function providerRequest(harness: Harness): Promise<ProviderRequest> {
 	return request!;
 }
 
-async function providerSystemPrompt(harness: Harness): Promise<string> {
-	return (await providerRequest(harness)).prompt;
-}
-
 /** The `pi` section of the `ipython` description, or undefined without one. */
 function piSection(description: string): string | undefined {
 	const start = description.indexOf("- `pi`:");
@@ -75,7 +71,7 @@ test("pi's prompt gets an ipython section before docs and the skills list before
 			writeFileSync(skillPath, "---\nname: csv-tricks\ndescription: Parse CSV files fast.\n---\nUse pandas.\n");
 		},
 	});
-	const prompt = await providerSystemPrompt(h);
+	const { prompt } = await providerRequest(h);
 
 	expect(prompt.startsWith("You are a coding assistant running inside pi")).toBe(true);
 	const order = ["<tools>", "<rules>", "<ipython>\nYou have one tool, `ipython`", "<docs>", "<project_context>", "<skills>", "<cwd>"]
@@ -94,7 +90,7 @@ test("pi's prompt gets an ipython section before docs and the skills list before
 
 test("the prompt names no tool other than ipython and warns against magics and !cmd", async () => {
 	h = await createHarness();
-	const prompt = await providerSystemPrompt(h);
+	const { prompt } = await providerRequest(h);
 
 	for (const tool of ["read", "write", "edit", "grep", "find", "ls", "codemode"]) {
 		expect(prompt).not.toMatch(new RegExp(`\\b${tool} tool\\b|\`${tool}\``));
@@ -111,6 +107,19 @@ test("the prompt names no tool other than ipython and warns against magics and !
 	expect(`${section(prompt, "ipython")}\n`).toBe(baseline);
 });
 
+test("exclusive tool selection is reflected in the prompt even when another extension activates bash", async () => {
+	h = await createHarness({
+		extensions: [(pi) => {
+			pi.on("session_start", () => { pi.setActiveTools(["bash"]); });
+		}],
+	});
+	expect(h.session.getActiveToolNames()).toEqual(["bash"]);
+	const { prompt } = await providerRequest(h);
+	expect(section(prompt, "tools")).toContain("- ipython:");
+	expect(section(prompt, "tools")).not.toContain("- bash:");
+	expect(section(prompt, "rules")).not.toContain("Use bash");
+});
+
 test.each(["before", "after"] as const)("an extension editing systemPrompt %s pi-ipython keeps its edit next to the ipython section", async (order) => {
 	const guidelines = (pi: ExtensionAPI) => {
 		pi.on("before_agent_start", (event) => ({
@@ -118,7 +127,7 @@ test.each(["before", "after"] as const)("an extension editing systemPrompt %s pi
 		}));
 	};
 	h = await createHarness(order === "before" ? { extensionsBefore: [guidelines] } : { extensions: [guidelines] });
-	const prompt = await providerSystemPrompt(h);
+	const { prompt } = await providerRequest(h);
 
 	expect(prompt).toContain("<guidelines>\nBe kind.\n</guidelines>");
 	expect(prompt.split("<ipython>\n")).toHaveLength(2);
@@ -133,7 +142,7 @@ test("SYSTEM.md replaces pi's opening, tools, rules, and docs; the ipython secti
 			writeFileSync(join(agentDir, "APPEND_SYSTEM.md"), "Always cite your sources.");
 		},
 	});
-	const prompt = await providerSystemPrompt(h);
+	const { prompt } = await providerRequest(h);
 
 	expect(prompt.startsWith("You are a careful data analyst.")).toBe(true);
 	for (const name of ["tools", "rules", "docs"]) expect(prompt).not.toContain(`<${name}>`);
@@ -142,6 +151,43 @@ test("SYSTEM.md replaces pi's opening, tools, rules, and docs; the ipython secti
 	expect(prompt.indexOf("<ipython>\nYou have one tool")).toBeGreaterThan(0);
 	expect(prompt.indexOf("<ipython>")).toBeLessThan(prompt.indexOf("<addendum>"));
 	expect(prompt.indexOf("</ipython>")).toBeLessThan(prompt.indexOf("<cwd>"));
+});
+
+test("section examples in custom prompts stay intact and do not affect insertion", async () => {
+	const custom = "~~~xml\r\n<ipython>\r\nExample only.\r\n</ipython>\r\n~~~";
+	const append = "```xml\n<docs>\nExample docs.\n</docs>\n```";
+	h = await createHarness({
+		setup: ({ agentDir }) => {
+			writeFileSync(join(agentDir, "SYSTEM.md"), custom);
+			writeFileSync(join(agentDir, "APPEND_SYSTEM.md"), append);
+		},
+	});
+	const { prompt } = await providerRequest(h);
+	const ipython = prompt.indexOf("<ipython>\nYou have one tool");
+	expect(ipython).toBeGreaterThan(0);
+	expect(ipython).toBeLessThan(prompt.indexOf("<addendum>"));
+	expect(prompt.startsWith(custom)).toBe(true);
+	expect(section(prompt, "addendum")).toBe(append);
+});
+
+test("complete sections in an earlier forced prompt are recognized without duplication", async () => {
+	const ipython = "<ipython>Custom REPL instructions.</ipython>";
+	const cwd = "<cwd>\r\n/custom\r\n</cwd>";
+	h = await createHarness({
+		setup: ({ agentDir }) => {
+			const skillDir = join(agentDir, "skills", "csv-tricks");
+			mkdirSync(skillDir, { recursive: true });
+			writeFileSync(join(skillDir, "SKILL.md"), "---\nname: csv-tricks\ndescription: Parse CSV files fast.\n---\nUse pandas.\n");
+		},
+		extensionsBefore: [(pi) => {
+			pi.on("before_agent_start", () => ({ systemPrompt: `${ipython}\r\n\r\n${cwd}` }));
+		}],
+	});
+	const { prompt } = await providerRequest(h);
+	expect(prompt.match(/<ipython>/g)).toEqual(["<ipython>"]);
+	expect(prompt).toContain(ipython);
+	expect(prompt.indexOf("<skills>")).toBeGreaterThan(0);
+	expect(prompt.indexOf("</skills>")).toBeLessThan(prompt.indexOf(cwd));
 });
 
 test.each(["direct", "codemode", "deferred"] as const)("the ipython description explains pi discovery for %s tools; the prompt never mentions pi", async (exposure) => {

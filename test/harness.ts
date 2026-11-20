@@ -42,6 +42,8 @@ export interface HarnessOptions {
 	entries?: FileEntry[];
 	/** Defaults to `{ type: "session_start", reason: "startup" }`. */
 	sessionStartEvent?: { type: "session_start"; reason: "startup" | "reload" | "new" | "resume" | "fork" };
+	/** SDK tool allowlist, equivalent to --tools. */
+	tools?: string[];
 	/** Other extensions loaded after pi-ipython, e.g. ones registering Pi tools. */
 	extensions?: InlineExtension[];
 	/** Other extensions loaded before pi-ipython. */
@@ -138,14 +140,12 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 		agentDir,
 		settingsManager,
 		extensionFactories: [
-			...(options.extensionsBefore ?? []).map((extension, i) => typeof extension === "function"
-				? { name: `test-extension-before-${i}`, factory: extension }
-				: extension),
+			...(options.extensionsBefore ?? []),
 			{ name: "pi-ipython", factory: piIpython },
-			...(options.extensions ?? []).map((extension, i) => typeof extension === "function"
-				? { name: `test-extension-${i}`, factory: extension }
-				: extension),
-		],
+			...(options.extensions ?? []),
+		].map((extension, i) => typeof extension === "function"
+			? { name: `test-extension-${i}`, factory: extension }
+			: extension),
 	});
 	await resourceLoader.reload();
 
@@ -154,6 +154,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 		agentDir,
 		model: faux.getModel(),
 		thinkingLevel: "off",
+		tools: options.tools,
 		modelRuntime,
 		resourceLoader,
 		settingsManager,

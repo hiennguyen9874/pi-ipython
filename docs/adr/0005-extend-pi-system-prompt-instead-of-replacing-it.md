@@ -11,5 +11,5 @@ pi-ipython no longer builds its own system prompt. In `before_agent_start` it ta
 ## Consequences
 
 - The prompt is forced, so it stays fixed for the whole run and pi's per-section patching is off. Everything that can change within a run (whether any Pi tool is callable, and the `pi` API) is in the `ipython` tool description, which `prepareLoadout` refreshes every turn.
-- An extension that runs after pi-ipython and changes `sections` or `promptGuidelines`, or returns a prompt that ignores `event.systemPrompt`, loses the other's changes. Extensions that edit `event.systemPrompt` compose in either order.
+- Later edits to `sections` or `promptGuidelines` do not change the forced text. A later handler can replace it by returning a prompt that ignores `event.systemPrompt`, or restore structured rendering by clearing `forceSystemPrompt`. Extensions that edit `event.systemPrompt` compose in either order.
 - The session transcript records pi's structured prompt without the inserted sections. `ctx.getSystemPrompt()` during a run returns the forced text.

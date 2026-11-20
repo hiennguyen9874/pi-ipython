@@ -96,6 +96,30 @@ test.each(["direct", "codemode", "deferred"])("builtin:mcp tools with %s exposur
 	});
 });
 
+test("registered direct MCP tools outside the allowlist do not enable pi discovery", async () => {
+	h = await createHarness({
+		tools: ["ipython"],
+		setup: ({ agentDir }) => writeConfig(agentDir, "direct"),
+		extensions: [{ name: "mcp", builtin: true, factory: createMcpExtension() }],
+	});
+	const descriptions: string[] = [];
+	h.setResponses([
+		(context) => {
+			descriptions.push(getCurrentTools(context.messages).find((t) => t.name === "ipython")!.description);
+			return fauxAssistantMessage(fauxToolCall("ipython", { code: "print(await pi.tools())" }), { stopReason: "toolUse" });
+		},
+		fauxAssistantMessage("done"),
+	]);
+	await h.session.prompt("discover tools");
+	expect(h.session.getAllTools().map((t) => t.name)).toContain("mcp__docs__echo");
+	expect(h.session.getCallableToolNames()).not.toContain("mcp__docs__echo");
+	expect(descriptions).toHaveLength(1);
+	expect(descriptions[0]).not.toContain("await pi.");
+	const result = h.session.messages.find((m) => m.role === "toolResult");
+	expect(result?.isError).toBe(false);
+	expect(resultText(result!)).toBe("[]");
+});
+
 test("MCP resource tools are found and callable from a Cell, and do not reach hidden servers", async () => {
 	h = await createHarness({
 		setup: ({ agentDir }) => writeFileSync(join(agentDir, "mcp.json"), JSON.stringify({
