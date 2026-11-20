@@ -16,17 +16,20 @@ interface ProviderRequest {
 	prompt: string;
 	/** The `ipython` description. */
 	description: string;
+	parameters?: object;
 }
 
 function seen(context: Context): ProviderRequest {
 	const system = context.messages.find((m) => m.role === "system");
+	const tool = getCurrentTools(context.messages).find((t) => t.name === "ipython");
 	return {
 		prompt: system ? getSystemMessageText(system) : "",
-		description: getCurrentTools(context.messages).find((t) => t.name === "ipython")?.description ?? "",
+		description: tool?.description ?? "",
+		parameters: tool?.parameters,
 	};
 }
 
-/** Run a Cell and return the system prompt and `ipython` description the provider received. */
+/** Run a Cell and return the system prompt and `ipython` metadata the provider received. */
 async function providerRequest(harness: Harness): Promise<ProviderRequest> {
 	let request: ProviderRequest | undefined;
 	harness.setResponses([
@@ -105,6 +108,15 @@ test("the prompt names no tool other than ipython and warns against magics and !
 	// Pin the default ipython section without optional Background-command guidance.
 	const baseline = readFileSync(new URL("./fixtures/no-pi-tools-prompt.txt", import.meta.url), "utf8");
 	expect(`${section(prompt, "ipython")}\n`).toBe(baseline);
+});
+
+test("the provider sees raw-string examples in the ipython code parameter", async () => {
+	h = await createHarness();
+	const { parameters } = await providerRequest(h);
+
+	for (const example of [String.raw`re.search(r'\.', text)`, String.raw`await bash(r"rg 'LetterBox\(' .")`]) {
+		expect(parameters).toHaveProperty("properties.code.description", expect.stringContaining(example));
+	}
 });
 
 test("exclusive tool selection is reflected in the prompt even when another extension activates bash", async () => {

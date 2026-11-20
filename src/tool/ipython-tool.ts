@@ -79,7 +79,11 @@ export const CONFIRM_NO_UI_ERROR =
 	"Cell not run: confirmEachCell is on, but there is no UI to ask the user for approval.";
 
 const ipythonSchema = Type.Object({
-	code: Type.String({ description: "Python code to run in the persistent Kernel." }),
+	code: Type.String({
+		description:
+			"Python code to run in the persistent Kernel. Use raw Python strings for regexes and shell commands with literal backslashes, for example " +
+			"`re.search(r'\\.', text)` or `await bash(r\"rg 'LetterBox\\(' .\")`. Use `rf'...'` when interpolating, or double backslashes in a non-raw string.",
+	}),
 });
 
 export interface IpythonToolDetails extends Omit<CellResult, "output"> {
