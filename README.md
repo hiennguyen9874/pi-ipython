@@ -103,13 +103,6 @@ What happens to the rest:
 - The `pi` API for other tools is described in the `ipython` tool description, not the system prompt, so it can change during a run. It is shown only while the Kernel can call at least one other tool, and adds about 1–1.5 KB to the description. pi does not shorten tool descriptions, and provider limits on description length have not been checked.
 - The prompt has no date (pi's default has none either). If the model needs one, add it with `APPEND_SYSTEM.md` or an extension.
 
-**Seeing the prompt actually sent:** the session transcript stores pi's own prompt, without `<ipython>` and `<skills>`, so don't use it to check what the model saw. Read `ctx.getSystemPrompt()` instead, from a `context` handler or any time after `before_agent_start` has finished. This repo's `.pi/extensions/dump-system-prompt.ts` works that way:
-
-```bash
-pi --no-extensions --no-skills -e src/index.ts -e .pi/extensions/dump-system-prompt.ts \
-  --dump-system-prompt with-pi-ipython.md
-```
-
 ## Kernel packages
 
 The uv environment comes with these packages installed: requests, httpx, pyyaml, tomli, python-dotenv, pandas, numpy, scipy, beautifulsoup4, lxml, pydantic, tyro. The system prompt lists them.
