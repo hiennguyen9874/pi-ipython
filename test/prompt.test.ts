@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { fauxAssistantMessage, fauxToolCall, getSystemMessageText } from "@earendil-works/pi-ai";
+import { type Context, fauxAssistantMessage, fauxToolCall, getCurrentTools, getSystemMessageText } from "@earendil-works/pi-ai";
 import { type ExtensionAPI, type ToolExposure } from "@earendil-works/pi-coding-agent";
 import { afterEach, expect, test } from "vitest";
 import { Type } from "typebox";
@@ -12,13 +12,26 @@ afterEach(async () => {
 	h = undefined;
 });
 
-/** Run a Cell and return the system prompt the provider received. */
-async function providerSystemPrompt(harness: Harness): Promise<string> {
-	let prompt: string | undefined;
+interface ProviderRequest {
+	prompt: string;
+	/** The `ipython` description. */
+	description: string;
+}
+
+function seen(context: Context): ProviderRequest {
+	const system = context.messages.find((m) => m.role === "system");
+	return {
+		prompt: system ? getSystemMessageText(system) : "",
+		description: getCurrentTools(context.messages).find((t) => t.name === "ipython")?.description ?? "",
+	};
+}
+
+/** Run a Cell and return the system prompt and `ipython` description the provider received. */
+async function providerRequest(harness: Harness): Promise<ProviderRequest> {
+	let request: ProviderRequest | undefined;
 	harness.setResponses([
 		(context) => {
-			const system = context.messages.find((m) => m.role === "system");
-			prompt = system ? getSystemMessageText(system) : "";
+			request = seen(context);
 			return fauxAssistantMessage(fauxToolCall("ipython", { code: "print('prompt check')" }), { stopReason: "toolUse" });
 		},
 		fauxAssistantMessage("ok"),
@@ -28,15 +41,30 @@ async function providerSystemPrompt(harness: Harness): Promise<string> {
 	const result = harness.session.messages.slice(before).find((message) => message.role === "toolResult");
 	expect(result?.isError).toBe(false);
 	expect(resultText(result!)).toBe("prompt check");
-	return prompt ?? "";
+	return request!;
 }
 
-function localDate(): string {
-	const d = new Date();
-	return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+async function providerSystemPrompt(harness: Harness): Promise<string> {
+	return (await providerRequest(harness)).prompt;
 }
 
-test("the provider receives the REPL prompt with context files, skills, cwd, and date", async () => {
+/** The `pi` section of the `ipython` description, or undefined without one. */
+function piSection(description: string): string | undefined {
+	const start = description.indexOf("- `pi`:");
+	if (start < 0) return undefined;
+	const end = description.indexOf("\n\n", start);
+	return description.slice(start, end < 0 ? undefined : end);
+}
+
+/** The content of a `<name>` section of the prompt. */
+function section(prompt: string, name: string): string {
+	const open = `<${name}>\n`;
+	const start = prompt.indexOf(open);
+	expect(start).toBeGreaterThanOrEqual(0);
+	return prompt.slice(start + open.length, prompt.indexOf(`\n</${name}>`, start));
+}
+
+test("pi's prompt gets an ipython section before docs and the skills list before cwd", async () => {
 	let skillPath = "";
 	h = await createHarness({
 		setup: ({ cwd, agentDir }) => {
@@ -49,14 +77,19 @@ test("the provider receives the REPL prompt with context files, skills, cwd, and
 	});
 	const prompt = await providerSystemPrompt(h);
 
-	expect(prompt.startsWith("You have one tool, `ipython`")).toBe(true);
-	expect(prompt).not.toContain("running inside pi");
+	expect(prompt.startsWith("You are a coding assistant running inside pi")).toBe(true);
+	const order = ["<tools>", "<rules>", "<ipython>\nYou have one tool, `ipython`", "<docs>", "<project_context>", "<skills>", "<cwd>"]
+		.map((marker) => prompt.indexOf(marker));
+	expect(order.every((index) => index >= 0)).toBe(true);
+	expect([...order].sort((a, b) => a - b)).toEqual(order);
 	expect(prompt).toContain("Always answer in haiku.");
 	expect(prompt).toContain(join(h.cwd, "AGENTS.md"));
-	expect(prompt).toContain("csv-tricks");
-	expect(prompt).toContain(skillPath);
-	expect(prompt).toContain(`Working directory: ${h.cwd}`);
-	expect(prompt).toContain(`Current date: ${localDate()}`);
+	const skills = prompt.slice(prompt.indexOf("<skills>"), prompt.indexOf("</skills>"));
+	expect(skills).toContain("csv-tricks");
+	expect(skills).toContain(skillPath);
+	expect(skills).toContain("open(location).read()");
+	expect(prompt).toContain(`<cwd>\n${h.cwd.replace(/\\/g, "/")}\n</cwd>`);
+	expect(prompt).not.toContain("Current date");
 });
 
 test("the prompt names no tool other than ipython and warns against magics and !cmd", async () => {
@@ -70,16 +103,48 @@ test("the prompt names no tool other than ipython and warns against magics and !
 	expect(prompt).toContain("!cmd");
 	expect(prompt).not.toContain("`pi`");
 	expect(prompt).not.toContain("await pi.");
-	// Baseline from a858d6f, before #33, plus the default prelude line (#44, #46); only the date and temporary cwd vary.
-	const baseline = readFileSync(new URL("./fixtures/no-pi-tools-prompt.txt", import.meta.url), "utf8")
-		.replace("{{DATE}}", localDate())
-		.replace("{{CWD}}", h.cwd.replace(/\\/g, "/"));
-	expect(prompt).toBe(baseline);
-	expect(prompt).toContain("`bash(command:");
-	expect(prompt).toContain("## Rules");
+	// pi's own tool list and rules know only ipython; the rules for read/bash/edit/write are gone.
+	expect(section(prompt, "tools")).toBe("- ipython: ipython - persistent Python Kernel for code, data, and state\n\nAdditional tools may be available.");
+	expect(section(prompt, "rules")).not.toContain("Use bash");
+	// Baseline from a858d6f, before #33, plus the default prelude line (#44, #46), without the date and cwd (#24).
+	const baseline = readFileSync(new URL("./fixtures/no-pi-tools-prompt.txt", import.meta.url), "utf8");
+	expect(`${section(prompt, "ipython")}\n`).toBe(baseline);
 });
 
-test.each(["direct", "codemode", "deferred"] as const)("the prompt explains pi discovery for %s tools without listing any Pi tool", async (exposure) => {
+test.each(["before", "after"] as const)("an extension editing systemPrompt %s pi-ipython keeps its edit next to the ipython section", async (order) => {
+	const guidelines = (pi: ExtensionAPI) => {
+		pi.on("before_agent_start", (event) => ({
+			systemPrompt: event.systemPrompt.replace("<docs>\n", "<guidelines>\nBe kind.\n</guidelines>\n\n<docs>\n"),
+		}));
+	};
+	h = await createHarness(order === "before" ? { extensionsBefore: [guidelines] } : { extensions: [guidelines] });
+	const prompt = await providerSystemPrompt(h);
+
+	expect(prompt).toContain("<guidelines>\nBe kind.\n</guidelines>");
+	expect(prompt.split("<ipython>\n")).toHaveLength(2);
+	expect(prompt.indexOf("<ipython>")).toBeGreaterThan(prompt.indexOf("<rules>"));
+	expect(prompt.indexOf("<ipython>")).toBeLessThan(prompt.indexOf("<docs>"));
+});
+
+test("SYSTEM.md replaces pi's opening, tools, rules, and docs; the ipython section and APPEND_SYSTEM.md stay", async () => {
+	h = await createHarness({
+		setup: ({ agentDir }) => {
+			writeFileSync(join(agentDir, "SYSTEM.md"), "You are a careful data analyst.");
+			writeFileSync(join(agentDir, "APPEND_SYSTEM.md"), "Always cite your sources.");
+		},
+	});
+	const prompt = await providerSystemPrompt(h);
+
+	expect(prompt.startsWith("You are a careful data analyst.")).toBe(true);
+	for (const name of ["tools", "rules", "docs"]) expect(prompt).not.toContain(`<${name}>`);
+	expect(section(prompt, "addendum")).toBe("Always cite your sources.");
+	// Before the first section pi renders after its docs.
+	expect(prompt.indexOf("<ipython>\nYou have one tool")).toBeGreaterThan(0);
+	expect(prompt.indexOf("<ipython>")).toBeLessThan(prompt.indexOf("<addendum>"));
+	expect(prompt.indexOf("</ipython>")).toBeLessThan(prompt.indexOf("<cwd>"));
+});
+
+test.each(["direct", "codemode", "deferred"] as const)("the ipython description explains pi discovery for %s tools; the prompt never mentions pi", async (exposure) => {
 	h = await createHarness({
 		extensions: [
 			(pi) => pi.registerTool({
@@ -92,22 +157,21 @@ test.each(["direct", "codemode", "deferred"] as const)("the prompt explains pi d
 			}),
 		],
 	});
-	const prompt = await providerSystemPrompt(h);
+	const { prompt, description } = await providerRequest(h);
 
-	expect(prompt).toContain("await pi.tool(");
-	expect(prompt).toContain("await pi.tools()");
-	expect(prompt).toContain("await pi.describe(");
-	// Only inside the pi section, which ends where the rules begin.
-	const piSection = prompt.slice(prompt.indexOf("- `pi`:"), prompt.indexOf("## Rules"));
-	expect(piSection).toContain("Before first using a tool, call `await pi.describe(name)` to read its schema, guidelines, and returns.");
-	expect(piSection).toContain("await pi.describe_namespace(name)");
-	expect(prompt.split("describe_namespace")).toHaveLength(2);
-	expect(piSection).toContain("await pi.search(query: str, limit: int = 8, namespace: str | None = None)");
-	expect(prompt.split("pi.search")).toHaveLength(2);
+	expect(prompt).not.toContain("pi.");
 	expect(prompt).not.toContain("frobnicate");
+	const section = piSection(description)!;
+	expect(section).toContain("await pi.tool(");
+	expect(section).toContain("await pi.tools()");
+	expect(section.endsWith("Before first using a tool, call `await pi.describe(name)` to read its schema, guidelines, and returns.")).toBe(true);
+	expect(section).toContain("await pi.describe_namespace(name)");
+	expect(description.split("describe_namespace")).toHaveLength(2);
+	expect(section).toContain("await pi.search(query: str, limit: int = 8, namespace: str | None = None)");
+	expect(description.split("pi.search")).toHaveLength(2);
 });
 
-test("piTools.search false leaves pi.search out of the prompt and keeps the rest of the pi section", async () => {
+test("piTools.search false leaves pi.search out of the description and keeps the rest of the pi section", async () => {
 	const frobnicate = (pi: ExtensionAPI) => pi.registerTool({
 		name: "frobnicate",
 		label: "frobnicate",
@@ -116,7 +180,7 @@ test("piTools.search false leaves pi.search out of the prompt and keeps the rest
 		execute: async () => ({ content: [], details: {} }),
 	});
 	h = await createHarness({ extensions: [frobnicate] });
-	const on = await providerSystemPrompt(h);
+	const on = (await providerRequest(h)).description;
 	await h.dispose();
 	h = await createHarness({
 		setup: ({ cwd }) => {
@@ -125,13 +189,11 @@ test("piTools.search false leaves pi.search out of the prompt and keeps the rest
 		},
 		extensions: [frobnicate],
 	});
-	const off = await providerSystemPrompt(h);
+	const off = (await providerRequest(h)).description;
 	expect(off).not.toContain("search(");
 	expect(off).toContain("await pi.tools()");
 	const searchLine = on.split("\n").find((line) => line.includes("pi.search"))!;
-	// Same prompt otherwise; only the temporary cwd differs.
-	const cwdLine = (prompt: string) => prompt.replace(/Working directory: .*/, "");
-	expect(cwdLine(on).replace(`${searchLine}\n`, "")).toBe(cwdLine(off));
+	expect(on.replace(`${searchLine}\n`, "")).toBe(off);
 });
 
 test("excluded tools do not enable the pi section", async () => {
@@ -158,8 +220,9 @@ test("excluded tools do not enable the pi section", async () => {
 		}],
 	});
 	expect(h.session.getAllTools().some((tool) => tool.sourceInfo.source === "builtin")).toBe(true);
-	const prompt = await providerSystemPrompt(h);
+	const { prompt, description } = await providerRequest(h);
 	expect(prompt).not.toContain("await pi.");
+	expect(description).not.toContain("await pi.");
 });
 
 test("the pi section follows tools added and hidden between runs", async () => {
@@ -173,11 +236,11 @@ test("the pi section follows tools added and hidden between runs", async () => {
 		parameters: Type.Object({}),
 		execute: async () => ({ content: [], details: {} }),
 	});
-	expect(await providerSystemPrompt(h)).not.toContain("await pi.");
+	expect(piSection((await providerRequest(h)).description)).toBeUndefined();
 	register("codemode");
-	expect(await providerSystemPrompt(h)).toContain("await pi.tools()");
+	expect(piSection((await providerRequest(h)).description)).toContain("await pi.tools()");
 	register("hidden");
-	expect(await providerSystemPrompt(h)).not.toContain("await pi.");
+	expect(piSection((await providerRequest(h)).description)).toBeUndefined();
 });
 
 test("tools registered by a later before_agent_start handler appear in the first request", async () => {
@@ -196,7 +259,7 @@ test("tools registered by a later before_agent_start handler appear in the first
 			});
 		}],
 	});
-	expect(await providerSystemPrompt(h)).toContain("await pi.tools()");
+	expect(piSection((await providerRequest(h)).description)).toContain("await pi.tools()");
 });
 
 test("the pi section follows the live callable set within one run", async () => {
@@ -218,19 +281,21 @@ test("the pi section follows the live callable set within one run", async () => 
 			register("codemode");
 		}],
 	});
-	const prompts: string[] = [];
+	const requests: ProviderRequest[] = [];
 	h.setResponses([
 		(context) => {
-			prompts.push(getSystemMessageText(context.messages.find((m) => m.role === "system")!));
+			requests.push(seen(context));
 			return fauxAssistantMessage(fauxToolCall("ipython", { code: "await pi.tool('toggle')" }), { stopReason: "toolUse" });
 		},
 		(context) => {
-			prompts.push(getSystemMessageText(context.messages.find((m) => m.role === "system")!));
+			requests.push(seen(context));
 			return fauxAssistantMessage("done");
 		},
 	]);
 	await h.session.prompt("hide the tool");
-	expect(prompts).toHaveLength(2);
-	expect(prompts[0]).toContain("await pi.tools()");
-	expect(prompts[1]).not.toContain("await pi.");
+	expect(requests).toHaveLength(2);
+	expect(piSection(requests[0]!.description)).toContain("await pi.tools()");
+	expect(piSection(requests[1]!.description)).toBeUndefined();
+	// The prompt is fixed for the run.
+	expect(requests[1]!.prompt).toBe(requests[0]!.prompt);
 });

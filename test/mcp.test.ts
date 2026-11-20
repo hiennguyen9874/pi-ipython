@@ -177,7 +177,7 @@ test("MCP resource tools are absent when only a hidden server has resources", as
 	]);
 });
 
-test.each(["direct", "codemode", "deferred"])("the pi prompt follows delayed %s MCP registration and the first Cell waits for readiness", async (exposure) => {
+test.each(["direct", "codemode", "deferred"])("the pi section follows delayed %s MCP registration and the first Cell waits for readiness", async (exposure) => {
 	let gate: string;
 	let registeredBeforeCell = false;
 	const mcp: ExtensionFactory = (pi) => {
@@ -201,24 +201,31 @@ test.each(["direct", "codemode", "deferred"])("the pi prompt follows delayed %s 
 		extensions: [{ name: "mcp", builtin: true, factory: mcp }],
 	});
 	const prompts: string[] = [];
+	const descriptions: string[] = [];
+	const record = (context: Context) => {
+		prompts.push(getSystemMessageText(context.messages.find((m) => m.role === "system")!));
+		descriptions.push(getCurrentTools(context.messages).find((t) => t.name === "ipython")!.description);
+	};
 	h.setResponses([
 		(context) => {
 			// No tools are registered yet: do not advertise the pi API.
 			expect(h!.session.getAllTools().some((t) => t.name === "mcp__docs__echo")).toBe(false);
-			prompts.push(getSystemMessageText(context.messages.find((m) => m.role === "system")!));
+			record(context);
 			return fauxAssistantMessage(fauxToolCall("ipython", { code: "print([t['name'] for t in await pi.tools()])" }), { stopReason: "toolUse" });
 		},
 		(context) => {
-			prompts.push(getSystemMessageText(context.messages.find((m) => m.role === "system")!));
+			record(context);
 			return fauxAssistantMessage("done");
 		},
 	]);
 	await h.session.prompt("discover tools");
 	const r = h.session.messages.find((m) => m.role === "toolResult");
-	expect(prompts).toHaveLength(2);
+	expect(descriptions).toHaveLength(2);
+	expect(descriptions[0]).not.toContain("await pi.");
+	expect(descriptions[1]).toContain("await pi.tools()");
+	// The prompt is fixed for the run and never mentions pi.
+	expect(prompts[1]).toBe(prompts[0]);
 	expect(prompts[0]).not.toContain("await pi.");
-	expect(prompts[1]).toContain("await pi.tools()");
-	expect(prompts[1]).not.toContain("mcp__docs__echo");
 	expect(registeredBeforeCell).toBe(true);
 	expect(r?.isError).toBe(false);
 	expect(resultText(r!)).toBe("['mcp__docs__echo', 'mcp__docs__guarded']");

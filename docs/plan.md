@@ -15,7 +15,7 @@ src/
   config.ts             # global + project JSON config merge
   kernel/               # bootstrap (uv venv), kernel-client (protocol), lifecycle
   tool/ipython-tool.ts  # registerTool, result shaping, truncation, images
-  prompt/               # forced system prompt builder
+  prompt/               # sections inserted into pi's system prompt
   session/              # lifecycle hooks: start, shutdown, tree, compact notice
   render/               # simple TUI renderer
 runtime/rlm/            # vendored Kernel runtime + pyproject.toml
@@ -27,7 +27,7 @@ test/                   # vitest integration tests (real Kernel)
 | Need | Pi API |
 |---|---|
 | Register the tool and make it exclusive | `pi.registerTool`, `pi.setActiveTools(["ipython"])` (also enforced in `before_agent_start` through `systemPromptOptions.selectedTools`) |
-| Replace the system prompt | `before_agent_start` → `forceSystemPrompt`, built from `systemPromptOptions.contextFiles`, `.skills`, `.cwd` |
+| Extend the system prompt (#24, ADR 0005) | `before_agent_start` → insert `<ipython>` and `<skills>` into `event.systemPrompt` and return it as `systemPrompt`; the `pi` section goes in the `ipython` description via `prepareLoadout` |
 | Venv warm-up | `session_start` |
 | Kill the Kernel | `session_shutdown` (all reasons) |
 | Branch switch prompt | `session_tree` + `ctx.ui` select (`ctx.hasUI` false → keep Kernel and notify) |
@@ -47,7 +47,7 @@ test/                   # vitest integration tests (real Kernel)
 3. **Venv bootstrap.** uv venv with Python 3.13 (configurable) and the project-`.venv` option, warmed at `session_start`, Kernel started lazily.
 4. **`ipython` tool, end to end.** Register the tool, make it exclusive, shape results (stdout, stderr, result, error, duration), apply truncation with the temp-file path.
 5. **Config loading.** Global and project JSON merge, the documented keys, and validation errors shown in the UI.
-6. **System prompt replacement.** Unharnessed-derived prompt plus context files, skills list, cwd, and date.
+6. **System prompt.** Unharnessed-derived prompt plus context files, skills list, cwd, and date. Since #24 (ADR 0005) it extends pi's prompt instead of replacing it.
 7. **Session lifecycle.** Kill on shutdown, state-lost notice on new/resume/fork, no orphan processes (orphan journal).
 8. **Branch switch handling.** The keep/restart prompt on `/tree`, with a no-UI fallback.
 9. **Interrupt and busy Kernel.** Abort → interrupt. A still-busy Kernel → a wait-or-kill choice.

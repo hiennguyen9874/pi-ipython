@@ -15,6 +15,8 @@ afterEach(async () => {
 });
 
 const LIST_INTRO = "Pi tools you can call from Python";
+/** Where the `pi` API section starts, right after the registered description. */
+const PI_SECTION = "\n\n- `pi`: the session's other tools";
 
 function tool(name: string, description: string, extra: Record<string, unknown> = {}) {
 	return {
@@ -80,7 +82,7 @@ function baseDescription(harness: Harness): string {
 	return harness.session.getAllTools().find((t) => t.name === "ipython")!.description;
 }
 
-test("direct and codemode tools are listed by namespace; deferred and default MCP tools are not, and MCP registration leaves it unchanged", async () => {
+test("direct and codemode tools are listed by namespace after the pi section; deferred and default MCP tools are not, and MCP registration leaves it unchanged", async () => {
 	let gate = "";
 	h = await createHarness({
 		setup: ({ agentDir }) => {
@@ -90,25 +92,29 @@ test("direct and codemode tools are listed by namespace; deferred and default MC
 		extensions: [exposures, { name: "mcp", builtin: true, factory: gatedMcp(() => gate) }],
 	});
 	const [before, after] = await descriptionsSeen(h, "print(sorted(t['name'] for t in await pi.tools()))");
-	expect(before).toBe([
-		baseDescription(h),
+	expect(before.startsWith(`${baseDescription(h)}${PI_SECTION}`)).toBe(true);
+	expect(before.endsWith([
 		"Pi tools you can call from Python with `await pi.tool(name, args)`; `await pi.describe(name)` shows a tool's parameters. This list may be incomplete: `await pi.tools()` lists every callable tool.",
 		"- `echo`: Echo text back.",
 		"## data\nData helpers.\n- `stats`: Count items.",
-	].join("\n\n"));
+	].join("\n\n"))).toBe(true);
 	expect(after).toBe(before);
 	// The MCP tools registered during the Cell and are callable, just not listed.
 	const result = h.session.messages.find((m) => m.role === "toolResult");
 	expect(resultText(result!)).toBe("['archive', 'echo', 'mcp__docs__echo', 'mcp__docs__guarded', 'mcp__docs__hidden', 'stats']");
 });
 
-test.each(["codemode", "deferred"])("MCP tools with %s exposure (deferred Pi tools) are not listed", async (exposure) => {
+test.each(["codemode", "deferred"])("MCP tools with %s exposure (deferred Pi tools) get the pi section but are not listed", async (exposure) => {
 	h = await createHarness({
 		setup: ({ agentDir }) => writeMcpConfig(agentDir, undefined, exposure),
 		extensions: [{ name: "mcp", builtin: true, factory: createMcpExtension() }],
 	});
 	const seen = await descriptionsSeen(h, "print(len(await pi.tools()))");
-	expect(seen).toEqual([baseDescription(h), baseDescription(h)]);
+	expect(seen[1]!.startsWith(`${baseDescription(h)}${PI_SECTION}`)).toBe(true);
+	for (const description of seen) {
+		expect(description).not.toContain(LIST_INTRO);
+		expect(description).not.toContain("mcp__docs");
+	}
 	expect(resultText(h.session.messages.find((m) => m.role === "toolResult")!)).toBe("3");
 });
 
@@ -154,7 +160,7 @@ test("tools over the 3000-token budget are dropped round-robin and their namespa
 	expect(lines.reduce((sum, line) => sum + Math.ceil(line.length / 4), 0)).toBeLessThanOrEqual(3000);
 });
 
-test("piTools.list false yields the description without a list", async () => {
+test("piTools.list false leaves the list out and keeps the pi section", async () => {
 	h = await createHarness({
 		setup: ({ cwd }) => {
 			mkdirSync(join(cwd, ".pi"), { recursive: true });
@@ -163,7 +169,8 @@ test("piTools.list false yields the description without a list", async () => {
 		extensions: [exposures],
 	});
 	const [description] = await descriptionsSeen(h);
-	expect(description).toBe(baseDescription(h));
+	expect(description!.startsWith(`${baseDescription(h)}${PI_SECTION}`)).toBe(true);
+	expect(description).not.toContain(LIST_INTRO);
 });
 
 test("an invalid piTools.list is reported and the list stays on", async () => {
@@ -192,7 +199,7 @@ test("with no callable Pi tools the description has no list", async () => {
 	expect(seen[0]).not.toContain(LIST_INTRO);
 });
 
-test("with only deferred MCP tools, pending or registered, the description has no list", async () => {
+test("with only deferred MCP tools the description gains the pi section once they register, and no list", async () => {
 	let gate = "";
 	h = await createHarness({
 		setup: ({ agentDir }) => {
@@ -202,6 +209,8 @@ test("with only deferred MCP tools, pending or registered, the description has n
 		extensions: [{ name: "mcp", builtin: true, factory: gatedMcp(() => gate) }],
 	});
 	const seen = await descriptionsSeen(h, "print(len(await pi.tools()))");
-	expect(seen).toEqual([baseDescription(h), baseDescription(h)]);
+	expect(seen[0]).toBe(baseDescription(h));
+	expect(seen[1]!.startsWith(`${baseDescription(h)}${PI_SECTION}`)).toBe(true);
+	expect(seen[1]).not.toContain(LIST_INTRO);
 	expect(resultText(h.session.messages.find((m) => m.role === "toolResult")!)).toBe("3");
 });

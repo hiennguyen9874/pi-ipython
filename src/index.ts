@@ -1,14 +1,13 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import { getCurrentSystemMessage } from "@earendil-works/pi-ai";
-import { type BeforeAgentStartEvent, type ExtensionAPI, getAgentDir, type SessionEntry } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, getAgentDir, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { listPiTools } from "./bridge/pi-tool-listing.ts";
 import { answerHostRequest, bridgedTools } from "./bridge/pi-tools.ts";
 import { effectivePackages, effectivePrelude, hasDefaultPackages, loadConfig, type PiIpythonConfig } from "./config.ts";
 import { ensureKernelPython, kernelPathEnv, resolveProjectPython, RUNTIME_SRC_DIR } from "./kernel/bootstrap.ts";
 import { KernelClient } from "./kernel/client.ts";
 import { hostJournalPath, reapDeadHosts } from "./kernel/orphans.ts";
-import { buildSystemPrompt } from "./prompt/system-prompt.ts";
+import { extendSystemPrompt, piToolsSection } from "./prompt/system-prompt.ts";
 import { preludeNames } from "./kernel/prelude.ts";
 import { BackgroundNotices, isCancelledBackgroundNotice } from "./session/background-notices.ts";
 import { createIpythonTool, IPYTHON_TOOL_NAME, kernelBootstrapCode, STATE_LOST_NOTICE } from "./tool/ipython-tool.ts";
@@ -21,7 +20,6 @@ export { STATE_LOST_NOTICE };
  */
 export default function piIpython(pi: ExtensionAPI): void {
 	let kernel: KernelClient | undefined;
-	let promptOptions: BeforeAgentStartEvent["systemPromptOptions"] | undefined;
 	let warmPackageLabels: Promise<string[]> | undefined;
 	let cwd = process.cwd();
 	let config: PiIpythonConfig = loadConfig(cwd).config;
@@ -122,14 +120,17 @@ export default function piIpython(pi: ExtensionAPI): void {
 			answerHostRequest: (data, ctx, signal) => {
 				return answerHostRequest(data, forceExclusive(), ctx, signal, config.piTools.search);
 			},
-			describePiTools: (loadout) => config.piTools.list
-				? listPiTools(loadout, new Set(bridgedTools(pi.getAllTools(), IPYTHON_TOOL_NAME).map((tool) => tool.name)))
-				: undefined,
+			// The pi API while a Pi tool is callable, then the Listed Pi tools.
+			describePiTools: (loadout) => {
+				const callable = new Set(bridgedTools(pi.getAllTools(), IPYTHON_TOOL_NAME).map((tool) => tool.name));
+				if (callable.size === 0) return undefined;
+				const listed = config.piTools.list ? listPiTools(loadout, callable) : undefined;
+				return [piToolsSection(config.piTools.search), ...(listed ? [listed] : [])].join("\n\n");
+			},
 		}),
 	);
 
 	pi.on("session_start", (event, ctx) => {
-		promptOptions = undefined;
 		pendingStateNotice = undefined;
 		// A new session's Kernel is fresh; any loss is announced below, before its first turn.
 		unannouncedStateLoss = undefined;
@@ -167,37 +168,21 @@ export default function piIpython(pi: ExtensionAPI): void {
 		}
 		forceExclusive();
 	});
-	pi.on("before_agent_start", (event, ctx) => {
-		promptOptions = event.systemPromptOptions;
-		// Own the provider projection below, instead of freezing a forced string for the whole run.
-		promptOptions.forceSystemPrompt = undefined;
+	// Extend pi's prompt instead of replacing it (ADR 0005): the forced result keeps SYSTEM.md, APPEND_SYSTEM.md,
+	// and other extensions' edits of `systemPrompt`, and stays fixed for the run.
+	pi.on("before_agent_start", async (event, ctx) => {
 		forceExclusive();
 		const message = notices.onRunStart(event, () => ctx.abort());
-		return message ? { message } : undefined;
+		const packageLabels = await warmPackageLabels;
+		const systemPrompt = extendSystemPrompt(event.systemPrompt, event.systemPromptOptions.skills ?? [], {
+			// The prelude still runs with prompt off; only the model is not told about it.
+			prelude: config.prelude.prompt ? { ...config.prelude, includeDefaultPackageImports: hasDefaultPackages(config) } : undefined,
+			backgroundNotices: notices.enabled,
+			packageLabels,
+		});
+		return { systemPrompt, ...(message ? { message } : {}) };
 	});
 	pi.on("agent_settled", (event) => notices.onSettled(event.aborted));
-	// MCP can register tools after before_agent_start, including while a Cell waits for readiness.
-	// Project one leading prompt from the live callable set before every provider request,
-	// preserving the current declarations while leaving the persisted transcript untouched.
-	pi.on("context_with_system", async (event) => {
-		if (!promptOptions) return;
-		const packageLabels = await warmPackageLabels;
-		const current = getCurrentSystemMessage(event.messages);
-		const head = {
-			role: "system" as const,
-			content: buildSystemPrompt(
-				promptOptions,
-				bridgedTools(pi.getAllTools(), IPYTHON_TOOL_NAME).length > 0 ? { search: config.piTools.search } : undefined,
-				// The prelude still runs with prompt off; only the model is not told about it.
-				config.prelude.prompt ? { ...config.prelude, includeDefaultPackageImports: hasDefaultPackages(config) } : undefined,
-				notices.enabled,
-				packageLabels,
-			),
-			...(current?.toolsAdded ? { toolsAdded: current.toolsAdded } : {}),
-			timestamp: current?.timestamp ?? Date.now(),
-		};
-		return { messages: [head, ...event.messages.filter((message) => message.role !== "system")] };
-	});
 	// Python state follows the Kernel, not the conversation: on a branch switch the user decides whether it still fits.
 	pi.on("session_tree", async (_event, ctx) => {
 		voidPendingStateNotice();
