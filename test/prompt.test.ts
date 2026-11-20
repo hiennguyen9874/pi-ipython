@@ -4,7 +4,7 @@ import { type Context, fauxAssistantMessage, fauxToolCall, getCurrentTools, getS
 import { type ExtensionAPI, type ToolExposure } from "@earendil-works/pi-coding-agent";
 import { afterEach, expect, test } from "vitest";
 import { Type } from "typebox";
-import { createHarness, type Harness, resultText } from "./harness.ts";
+import { createHarness, type Harness, resultText, writeConfigs } from "./harness.ts";
 
 let h: Harness | undefined;
 afterEach(async () => {
@@ -133,6 +133,48 @@ test.each(["before", "after"] as const)("an extension editing systemPrompt %s pi
 	expect(prompt.split("<ipython>\n")).toHaveLength(2);
 	expect(prompt.indexOf("<ipython>")).toBeGreaterThan(prompt.indexOf("<rules>"));
 	expect(prompt.indexOf("<ipython>")).toBeLessThan(prompt.indexOf("<docs>"));
+});
+
+test.each(["before", "after"] as const)("systemPrompt.ipythonAfter puts ipython right after rules, ahead of a section another extension adds %s pi-ipython", async (order) => {
+	// Like a guidelines extension inserting before <docs>, followed by one that removes <docs>.
+	const guidelines = (pi: ExtensionAPI) => {
+		pi.on("before_agent_start", (event) => ({
+			systemPrompt: event.systemPrompt
+				.replace("<docs>\n", "<guidelines>\nBe kind.\n</guidelines>\n\n<docs>\n")
+				.replace(/<docs>\n[\s\S]*?\n<\/docs>\n*/, ""),
+		}));
+	};
+	h = await createHarness({
+		setup: (dirs) => writeConfigs(dirs, { systemPrompt: { ipythonAfter: ["rules"] } }),
+		...(order === "before" ? { extensionsBefore: [guidelines] } : { extensions: [guidelines] }),
+	});
+	const { prompt } = await providerRequest(h);
+
+	expect(prompt.split("<ipython>\n")).toHaveLength(2);
+	expect(prompt).toContain("</rules>\n\n<ipython>\n");
+	expect(prompt).toContain("</ipython>\n\n<guidelines>\nBe kind.\n</guidelines>");
+	expect(prompt).not.toContain("<docs>");
+});
+
+test("systemPrompt.ipythonAfter falls back to ipythonBefore when none of its sections is present", async () => {
+	h = await createHarness({
+		setup: (dirs) => writeConfigs(dirs, { systemPrompt: { ipythonAfter: ["nonexistent"], ipythonBefore: ["cwd"] } }),
+	});
+	const { prompt } = await providerRequest(h);
+
+	expect(prompt).toContain("</ipython>\n\n<cwd>");
+	expect(prompt.indexOf("<ipython>")).toBeGreaterThan(prompt.indexOf("<docs>"));
+});
+
+test("an invalid systemPrompt.ipythonAfter is reported and the default placement stays", async () => {
+	const notices: string[] = [];
+	h = await createHarness({
+		ui: { notify: (m) => notices.push(m) },
+		setup: (dirs) => writeConfigs(dirs, { systemPrompt: { ipythonAfter: "rules" } }),
+	});
+	expect(notices).toEqual([expect.stringContaining('"systemPrompt.ipythonAfter" must be an array of section tag names')]);
+	const { prompt } = await providerRequest(h);
+	expect(prompt).toContain("</ipython>\n\n<docs>");
 });
 
 test("SYSTEM.md replaces pi's opening, tools, rules, and docs; the ipython section and APPEND_SYSTEM.md stay", async () => {

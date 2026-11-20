@@ -9,6 +9,7 @@
 // MIT License, see LICENSE.
 
 import { formatSkillsForPrompt, type Skill } from "@earendil-works/pi-coding-agent";
+import { DEFAULT_IPYTHON_BEFORE } from "../config.ts";
 import { DEFAULT_PACKAGE_PRELUDE } from "../kernel/packages.ts";
 import { DEFAULT_PRELUDE, preludeNames } from "../kernel/prelude.ts";
 
@@ -125,8 +126,8 @@ function skillsSection(skills: readonly Skill[]): string | undefined {
 	return `Read a skill's SKILL.md with Python at its listed location, e.g. \`open(location).read()\`.\n${listed}`;
 }
 
-/** Start offsets of complete sections, ignoring Markdown examples without changing offsets. */
-function sectionStarts(prompt: string): Map<string, number> {
+/** Start and end offsets of complete sections, ignoring Markdown examples without changing offsets. */
+function sectionRanges(prompt: string): Map<string, { start: number; end: number }> {
 	let fence: string | undefined;
 	const unfenced = prompt.replace(/[^\r\n]+/g, (line) => {
 		const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
@@ -138,33 +139,56 @@ function sectionStarts(prompt: string): Map<string, number> {
 		fence = marker[1];
 		return " ".repeat(line.length);
 	});
-	const starts = new Map<string, number>();
+	const ranges = new Map<string, { start: number; end: number }>();
 	for (const match of unfenced.matchAll(/^<([a-z][a-z0-9_-]*)>(?:[^\r\n]*|\r?\n[\s\S]*?^)<\/\1>[ \t]*(?=\r?$)/gm)) {
 		const name = match[1]!;
-		if (!starts.has(name)) starts.set(name, match.index);
+		if (!ranges.has(name)) ranges.set(name, { start: match.index, end: match.index + match[0].length });
 	}
-	return starts;
+	return ranges;
 }
 
-/** Insert `<name>` before the first of `before` present, else at the end; leave a prompt that has it alone. */
-function insertSection(prompt: string, name: string, content: string, before: readonly string[]): string {
-	const starts = sectionStarts(prompt);
-	if (starts.has(name)) return prompt;
+/** Where to insert a section: right after the first of `after` present, else before the first of `before`. */
+export interface SectionPlacement {
+	after?: readonly string[];
+	before: readonly string[];
+}
+
+/**
+ * Insert `<name>` right after the first of `after` present, else before the first of `before` present,
+ * else at the end; leave a prompt that has it alone.
+ */
+function insertSection(prompt: string, name: string, content: string, { after = [], before }: SectionPlacement): string {
+	const ranges = sectionRanges(prompt);
+	if (ranges.has(name)) return prompt;
 	const section = `<${name}>\n${content}\n</${name}>`;
+	for (const marker of after) {
+		const range = ranges.get(marker);
+		if (range === undefined) continue;
+		const rest = prompt.slice(range.end).replace(/^(?:[ \t]*\r?\n)+/, "");
+		return `${prompt.slice(0, range.end)}\n\n${section}${rest ? `\n\n${rest}` : ""}`;
+	}
 	for (const marker of before) {
-		const at = starts.get(marker);
-		if (at !== undefined) return `${prompt.slice(0, at)}${section}\n\n${prompt.slice(at)}`;
+		const range = ranges.get(marker);
+		if (range !== undefined) return `${prompt.slice(0, range.start)}${section}\n\n${prompt.slice(range.start)}`;
 	}
 	return prompt.trim() ? `${prompt.trimEnd()}\n\n${section}` : section;
 }
 
+/** By default `<ipython>` goes before pi's `<docs>`, or the next section pi renders after it. */
+const DEFAULT_IPYTHON_PLACEMENT: SectionPlacement = { before: DEFAULT_IPYTHON_BEFORE };
+
 /**
- * Add the `<ipython>` section before pi's `<docs>` (or the next section pi renders after it) and the
- * skills list before `<cwd>`, keeping everything pi and other extensions put in `systemPrompt`.
+ * Add the `<ipython>` section at `placement` (default: before pi's `<docs>` or the next section pi renders
+ * after it) and the skills list before `<cwd>`, keeping everything pi and other extensions put in `systemPrompt`.
  */
-export function extendSystemPrompt(systemPrompt: string, skills: readonly Skill[], options: IpythonPromptOptions): string {
-	let prompt = insertSection(systemPrompt, "ipython", ipythonSection(options), ["docs", "addendum", "project_context", "skills", "cwd"]);
+export function extendSystemPrompt(
+	systemPrompt: string,
+	skills: readonly Skill[],
+	options: IpythonPromptOptions,
+	placement: SectionPlacement = DEFAULT_IPYTHON_PLACEMENT,
+): string {
+	let prompt = insertSection(systemPrompt, "ipython", ipythonSection(options), placement);
 	const skillsContent = skillsSection(skills);
-	if (skillsContent) prompt = insertSection(prompt, "skills", skillsContent, ["cwd"]);
+	if (skillsContent) prompt = insertSection(prompt, "skills", skillsContent, { before: ["cwd"] });
 	return prompt;
 }

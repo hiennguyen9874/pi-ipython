@@ -88,7 +88,8 @@ The two added sections:
   - The Kernel packages and the command to install more are listed only with `python.source: "uv"`.
   - The rule about `[bash-done …]` notices appears only when `backgroundNotices` is on (TUI and RPC).
 
-  `<ipython>` goes before `<docs>`. If `<docs>` is missing, it goes before the first of `<addendum>`, `<project_context>`, `<skills>`, `<cwd>`, or at the end.
+  `<ipython>` goes before `<docs>`. If `<docs>` is missing, it goes before the first of `<addendum>`, `<project_context>`, `<skills>`, `<cwd>`, or at the end. To change this, set `systemPrompt.ipythonAfter` and `systemPrompt.ipythonBefore` (see [Configuration](#configuration)).
+  - Another extension that also inserts before `<docs>` ends up before or after `<ipython>` depending on load order (pi loads local extensions before packages). If that extension's text should always follow `<ipython>`, set `"systemPrompt": { "ipythonAfter": ["rules"] }`. `<ipython>` then goes right after `</rules>`, ahead of anything added after `<rules>`. Prompts without `<rules>` (`SYSTEM.md` / `--system-prompt`) fall back to `ipythonBefore`.
 - `<skills>`: your skills list, with a note telling the model to read `SKILL.md` with Python. pi leaves the list out because no file-reading tool is active. It goes before `<cwd>`. Without skills (or with `--no-skills`) the section is skipped.
 
 A section that is already in the prompt is not added again.
@@ -223,7 +224,11 @@ Defaults:
   "python": { "source": "uv", "version": "3.13", "defaultPackages": true, "packages": [] },
   "output": { "maxBytes": 51200, "maxLines": 2000 },
   "piTools": { "list": true, "search": true },
-  "prelude": { "defaults": true, "imports": [], "prompt": true }
+  "prelude": { "defaults": true, "imports": [], "prompt": true },
+  "systemPrompt": {
+    "ipythonAfter": [],
+    "ipythonBefore": ["docs", "addendum", "project_context", "skills", "cwd"]
+  }
 }
 ```
 
@@ -241,6 +246,8 @@ Defaults:
 | `prelude.prompt` | `true` | List the prelude in the system prompt. With `false` the imports still run, just without telling the model. |
 | `piTools.list` | `true` | List callable `direct`/`codemode` tools in the `ipython` description. |
 | `piTools.search` | `true` | Enable `pi.search()`. |
+| `systemPrompt.ipythonAfter` | `[]` | Section tag names. `<ipython>` goes right after the first one present in the prompt. Checked before `ipythonBefore`. See [System prompt](#system-prompt). |
+| `systemPrompt.ipythonBefore` | `["docs", "addendum", "project_context", "skills", "cwd"]` | Section tag names. If no `ipythonAfter` section is present, `<ipython>` goes before the first one present, or at the end if none is. |
 
 Rules for `prelude.imports`:
 

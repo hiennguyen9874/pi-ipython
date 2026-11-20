@@ -187,7 +187,7 @@ export default function piIpython(pi: ExtensionAPI): void {
 			prelude: config.prelude.prompt ? { ...config.prelude, includeDefaultPackageImports: hasDefaultPackages(config) } : undefined,
 			backgroundNotices: notices.enabled,
 			packageLabels,
-		});
+		}, { after: config.systemPrompt.ipythonAfter, before: config.systemPrompt.ipythonBefore });
 		return { systemPrompt, ...(message ? { message } : {}) };
 	});
 	pi.on("agent_settled", (event) => notices.onSettled(event.aborted));

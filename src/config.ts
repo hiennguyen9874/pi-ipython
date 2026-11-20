@@ -20,7 +20,15 @@ export interface PiIpythonConfig {
 	piTools: { list: boolean; search: boolean };
 	/** `imports` concatenates global then project entries instead of the project winning. */
 	prelude: { defaults: boolean; imports: string[]; prompt: boolean };
+	/**
+	 * Where `<ipython>` goes in pi's prompt: right after the first `ipythonAfter` section present,
+	 * else before the first `ipythonBefore` section present, else at the end.
+	 */
+	systemPrompt: { ipythonAfter: string[]; ipythonBefore: string[] };
 }
+
+/** pi's sections that follow its `<rules>`, in render order: the default `systemPrompt.ipythonBefore`. */
+export const DEFAULT_IPYTHON_BEFORE: readonly string[] = ["docs", "addendum", "project_context", "skills", "cwd"];
 
 /**
  * The import statements the Kernel bootstrap runs: the defaults (unless turned off), plus the default packages'
@@ -52,6 +60,9 @@ export interface LoadedConfig {
 }
 
 const isPositiveInt = (v: unknown) => Number.isInteger(v) && (v as number) > 0;
+const isSectionNames = (v: unknown) =>
+	Array.isArray(v) && v.every((name) => typeof name === "string" && /^[a-z][a-z0-9_-]*$/.test(name));
+const SECTION_NAMES_EXPECTED = 'an array of section tag names like "rules" (lowercase letters, digits, "_" or "-")';
 
 /** Every supported key (dotted path), with its validator and a description of valid values. */
 const FIELDS: Record<string, { valid: (v: unknown) => boolean; expected: string }> = {
@@ -75,8 +86,10 @@ const FIELDS: Record<string, { valid: (v: unknown) => boolean; expected: string 
 	"prelude.defaults": { valid: (v) => typeof v === "boolean", expected: "true or false" },
 	"prelude.imports": { valid: Array.isArray, expected: "an array of import statements" },
 	"prelude.prompt": { valid: (v) => typeof v === "boolean", expected: "true or false" },
+	"systemPrompt.ipythonAfter": { valid: isSectionNames, expected: SECTION_NAMES_EXPECTED },
+	"systemPrompt.ipythonBefore": { valid: isSectionNames, expected: SECTION_NAMES_EXPECTED },
 };
-const SECTIONS = new Set(["python", "output", "piTools", "prelude"]);
+const SECTIONS = new Set(["python", "output", "piTools", "prelude", "systemPrompt"]);
 const IMPORT_EXPECTED = 'one "import …" or "from … import …" statement (absolute, without "*")';
 const PACKAGE_EXPECTED = 'a uv requirement string, not empty and not starting with "-"';
 
@@ -114,6 +127,10 @@ export function loadConfig(cwd: string, agentDir = getAgentDir(), projectTrusted
 			output: { maxBytes: get("output.maxBytes", DEFAULT_MAX_BYTES), maxLines: get("output.maxLines", DEFAULT_MAX_LINES) },
 			piTools: { list: get("piTools.list", true), search: get("piTools.search", true) },
 			prelude: { defaults: get("prelude.defaults", true), imports: get<string[]>("prelude.imports", []), prompt: get("prelude.prompt", true) },
+			systemPrompt: {
+				ipythonAfter: get<string[]>("systemPrompt.ipythonAfter", []),
+				ipythonBefore: get<string[]>("systemPrompt.ipythonBefore", [...DEFAULT_IPYTHON_BEFORE]),
+			},
 		},
 		errors,
 		warnings,
