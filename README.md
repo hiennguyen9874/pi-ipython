@@ -277,15 +277,15 @@ pi -e "$scratch/package"
 
 ### Automated npm releases
 
-[The GitHub Actions workflow](.github/workflows/npm.yml) runs type checks and the TypeScript and Python tests, then uploads the npm tarball. Pull requests and pushes to `master` build only. Pushing a tag such as `v0.1.1` publishes that same tarball after the checks pass, provided the tag matches the version in `package.json`.
+[The GitHub Actions workflow](.github/workflows/npm.yml) runs type checks and the TypeScript and Python tests, then uploads the npm tarball. Pull requests and pushes to `master` build only. Pushing a tag such as `v0.1.2` publishes that same tarball after the checks pass, then creates a GitHub Release from the matching section of `CHANGELOG.md`. The tag must match `package.json`, and the changelog section must not be empty.
 
 **One-time setup:** If `pi-ipython` does not exist on npm yet, an npm owner must publish the first version manually (`npm publish --access public`) so the package settings are available. Then add a [trusted publisher](https://docs.npmjs.com/trusted-publishers/) in the package's npm settings: select **GitHub Actions**, set owner to `hiennguyen9874`, repository to `pi-ipython`, workflow filename to `npm.yml`, and environment to `npm`. Under **Allowed actions**, enable `npm publish` (allowing only `npm stage publish` is not enough). Create the matching `npm` environment in GitHub. The workflow uses OIDC and does not need an `NPM_TOKEN` secret.
 
-**For each automated release:** bump `package.json` and `package-lock.json` together (for example, with `npm version patch --no-git-tag-version`), merge the change, then tag that commit and push the tag. Use a version that hasn't already been published.
+**For each automated release:** bump `package.json` and `package-lock.json` together (for example, with `npm version patch --no-git-tag-version`) and move the release notes under a versioned heading such as `## [0.1.2]` in `CHANGELOG.md`. Merge those changes before creating and pushing the tag. Use a version that hasn't already been published.
 
 ```bash
-git tag v0.1.1  # example: must match package.json on this commit
-git push origin v0.1.1
+git tag v0.1.2  # example: must match package.json on this commit
+git push origin v0.1.2
 ```
 
 ## License

@@ -31,6 +31,18 @@ jobs:
             process.exitCode = 1;
           }
           JS
+      - name: Extract release notes
+        if: github.ref_type == 'tag'
+        run: |
+          mkdir -p artifacts
+          awk -v heading="[${GITHUB_REF_NAME#v}]" '
+            /^## / { if (found) exit; found = ($2 == heading); next }
+            found { print }
+          ' CHANGELOG.md > artifacts/release-notes.md
+          if ! grep -q '[^[:space:]]' artifacts/release-notes.md; then
+            echo "Add release notes under ## [${GITHUB_REF_NAME#v}] in CHANGELOG.md." >&2
+            exit 1
+          fi
       - uses: astral-sh/setup-uv@v7
       - run: npm ci
       - run: npm run typecheck
@@ -42,7 +54,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: npm-package
-          path: artifacts/*.tgz
+          path: artifacts/
           if-no-files-found: error
 
   publish:
@@ -64,3 +76,25 @@ jobs:
           path: artifacts
       - name: Publish packaged artifact to npm
         run: npm publish "./artifacts/pi-ipython-${GITHUB_REF_NAME#v}.tgz" --access public --ignore-scripts
+
+  release:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm-package
+          path: artifacts
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --json url --jq .url; then
+            echo "GitHub Release already exists; leaving it unchanged."
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" \
+              --notes-file artifacts/release-notes.md
+          fi

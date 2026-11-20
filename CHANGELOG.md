@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- GitHub Actions creates a GitHub Release from the versioned changelog notes after npm publish succeeds.
+
 ## [0.1.1] - 2026-11-20
 
 ### Added
