@@ -39,7 +39,8 @@ const RULES_HEAD = `## Rules
 - The REPL runs plain Python, not IPython: \`%magic\` commands and \`!cmd\` shell escapes are not supported. Use \`bash()\` to run programs.
 - Keep in mind that each tool call is a round trip: steps that do not need a result you have not seen yet can go in one call.
 - Run programs with \`bash()\`, not \`subprocess\` or \`os.system\`. Write logic, loops and parsing in Python; use \`bash()\` only to call programs.
-- A \`bash()\` command is a Python string: use \`r'...'\` when it contains backslashes, and double literal braces (\`{{ }}\`) in f-strings.
+- For builds, tests, and other required commands, keep the \`BashResult\` and check \`.exit_code\`; a successful Cell does not mean its commands succeeded. Use \`&&\` for dependent shell steps. A running handle or progress output is not a passing test.
+- Use raw Python strings for regexes and \`bash()\` commands with literal backslashes, e.g. \`r'\\.'\`. Double literal braces (\`{{ }}\`) in f-strings.
 - Read, search, and edit files with Python.
 - \`os.chdir()\` and \`os.environ\` changes persist and apply to later \`bash()\` calls.`;
 
