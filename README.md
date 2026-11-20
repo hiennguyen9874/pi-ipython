@@ -68,10 +68,30 @@ pi -e git:github.com/hiennguyen9874/pi-ipython
 
 ## System prompt
 
-pi-ipython adds to pi's system prompt instead of replacing it. At the start of each run it inserts two sections into the prompt pi has built:
+pi-ipython adds to pi's system prompt instead of replacing it. At the start of each run it inserts two sections into the prompt pi has built, so a default setup ends up in this order:
 
-- `<ipython>`: how to use the REPL (`bash()`, the ready-made imports, Kernel packages, rules). It goes before `<docs>`. If `<docs>` is missing, it goes before the first of `<addendum>`, `<project_context>`, `<skills>`, `<cwd>`, or at the end.
-- `<skills>`: your skills list, read with Python. pi leaves it out because no file-reading tool is active. It goes before `<cwd>`.
+```text
+You are a coding assistant running inside pi, ...   (pi's opening text)
+<tools>            only `ipython`
+<rules>            pi's rules and guidelines, with no advice to use bash or read
+<ipython>          added by pi-ipython
+<docs>             pi's documentation pointers
+<project_context>  AGENTS.md files
+<skills>           added by pi-ipython, only when you have skills
+<cwd>
+```
+
+The two added sections:
+
+- `<ipython>`: how to use the REPL. It always covers `bash()` and the rules. Some parts depend on your settings:
+  - The ready-made imports are listed unless `prelude.prompt` is `false`.
+  - The Kernel packages and the command to install more are listed only with `python.source: "uv"`.
+  - The rule about `[bash-done …]` notices appears only when `backgroundNotices` is on (TUI and RPC).
+
+  `<ipython>` goes before `<docs>`. If `<docs>` is missing, it goes before the first of `<addendum>`, `<project_context>`, `<skills>`, `<cwd>`, or at the end.
+- `<skills>`: your skills list, with a note telling the model to read `SKILL.md` with Python. pi leaves the list out because no file-reading tool is active. It goes before `<cwd>`. Without skills (or with `--no-skills`) the section is skipped.
+
+A section that is already in the prompt is not added again.
 
 What happens to the rest:
 
@@ -80,7 +100,15 @@ What happens to the rest:
 - `APPEND_SYSTEM.md` / `--append-system-prompt`, `AGENTS.md` files, and cwd stay.
 - Other extensions that edit `event.systemPrompt` in `before_agent_start` keep their changes, whether they run before or after pi-ipython.
 - pi-ipython returns the prompt as `systemPrompt`, so it stays fixed for the whole run. Later edits to `systemPromptOptions.sections` or `promptGuidelines` do not change the forced text. A later handler can replace it by returning a prompt without using `event.systemPrompt`, or restore pi's structured prompt by clearing `forceSystemPrompt`.
-- The `pi` API for other tools is described in the `ipython` tool description, not the system prompt, so it can change during a run.
+- The `pi` API for other tools is described in the `ipython` tool description, not the system prompt, so it can change during a run. It is shown only while the Kernel can call at least one other tool, and adds about 1–1.5 KB to the description. pi does not shorten tool descriptions, and provider limits on description length have not been checked.
+- The prompt has no date (pi's default has none either). If the model needs one, add it with `APPEND_SYSTEM.md` or an extension.
+
+**Seeing the prompt actually sent:** the session transcript stores pi's own prompt, without `<ipython>` and `<skills>`, so don't use it to check what the model saw. Read `ctx.getSystemPrompt()` instead, from a `context` handler or any time after `before_agent_start` has finished. This repo's `.pi/extensions/dump-system-prompt.ts` works that way:
+
+```bash
+pi --no-extensions --no-skills -e src/index.ts -e .pi/extensions/dump-system-prompt.ts \
+  --dump-system-prompt with-pi-ipython.md
+```
 
 ## Kernel packages
 
