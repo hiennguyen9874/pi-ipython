@@ -38,18 +38,22 @@ The only exception is when a Cell calls another pi tool with `await pi.tool(...)
 
 **You need:** pi, and [uv](https://docs.astral.sh/uv/) on your `PATH`. uv downloads Python for you (3.13 by default), so you don't need Python installed.
 
+From npm (once the package is published):
+
 ```bash
 # Install for all sessions
-pi install git:github.com/hiennguyen9874/pi-ipython
+pi install npm:pi-ipython
 
 # ...or only for this project (writes .pi/settings.json)
-pi install -l git:github.com/hiennguyen9874/pi-ipython
+pi install -l npm:pi-ipython
 
-# ...or try it for one run without installing
-pi -e git:github.com/hiennguyen9874/pi-ipython
+# ...or try it for one run without adding it to settings
+pi -e npm:pi-ipython
 ```
 
-**To go back to normal pi**, disable the extension in `pi config` (use `pi config --local` for one project). To uninstall it, run `pi remove git:github.com/hiennguyen9874/pi-ipython`.
+To install directly from GitHub instead, run `pi install git:github.com/hiennguyen9874/pi-ipython`.
+
+**To go back to normal pi**, disable the extension in `pi config` (use `pi config --local` for one project). To uninstall it, run `pi remove npm:pi-ipython` (or use the original GitHub source if you installed from GitHub).
 
 ## What changes when it's enabled
 
@@ -253,6 +257,36 @@ Rules for `prelude.imports`:
 
 - Each entry must be a single absolute `import …` or `from … import …` statement, without `*`. Anything else is skipped with a warning.
 - If an import fails when the Kernel starts (for example, the package isn't installed), you get a warning and the other imports still run.
+
+## Packaging and publishing
+
+Pi loads `src/index.ts` directly, so no JavaScript build or bundling step is needed. The npm tarball includes the Python runtime sources and uv lockfile; uv sets up the Kernel environment separately.
+
+```bash
+npm pack --dry-run  # inspect the file list
+npm pack            # create pi-ipython-<version>.tgz
+```
+
+To try the exact packaged contents before publishing, extract the tarball to a temporary directory and point Pi at its `package/` directory:
+
+```bash
+scratch=$(mktemp -d)
+tar -xzf pi-ipython-0.1.0.tgz -C "$scratch"  # use the filename printed by npm pack
+pi -e "$scratch/package"
+```
+
+### Automated npm releases
+
+[The GitHub Actions workflow](.github/workflows/npm.yml) runs type checks and the TypeScript and Python tests, then uploads the npm tarball. Pull requests and pushes to `master` build only. Pushing a tag such as `v0.1.1` publishes that same tarball after the checks pass, provided the tag matches the version in `package.json`.
+
+**One-time setup:** If `pi-ipython` does not exist on npm yet, an npm owner must publish the first version manually (`npm publish --access public`) so the package settings are available. Then add a [trusted publisher](https://docs.npmjs.com/trusted-publishers/) in the package's npm settings: select **GitHub Actions**, set owner to `hiennguyen9874`, repository to `pi-ipython`, workflow filename to `npm.yml`, and environment to `npm`. Under **Allowed actions**, enable `npm publish` (allowing only `npm stage publish` is not enough). Create the matching `npm` environment in GitHub. The workflow uses OIDC and does not need an `NPM_TOKEN` secret.
+
+**For each automated release:** bump `package.json` and `package-lock.json` together (for example, with `npm version patch --no-git-tag-version`), merge the change, then tag that commit and push the tag. Use a version that hasn't already been published.
+
+```bash
+git tag v0.1.1  # example: must match package.json on this commit
+git push origin v0.1.1
+```
 
 ## License
 
