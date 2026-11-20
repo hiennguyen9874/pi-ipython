@@ -102,7 +102,7 @@ test("the prompt names no tool other than ipython and warns against magics and !
 	// pi's own tool list and rules know only ipython; the rules for read/bash/edit/write are gone.
 	expect(section(prompt, "tools")).toBe("- ipython: ipython - persistent Python Kernel for code, data, and state\n\nAdditional tools may be available.");
 	expect(section(prompt, "rules")).not.toContain("Use bash");
-	// Baseline from a858d6f, before #33, plus the default prelude line (#44, #46), without the date and cwd (#24).
+	// Pin the default ipython section without optional Background-command guidance.
 	const baseline = readFileSync(new URL("./fixtures/no-pi-tools-prompt.txt", import.meta.url), "utf8");
 	expect(`${section(prompt, "ipython")}\n`).toBe(baseline);
 });

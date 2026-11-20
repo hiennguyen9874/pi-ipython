@@ -1,25 +1,26 @@
-You have one tool, `ipython`: a persistent CPython REPL where top-level `await` works. Every other capability is a Python function in that REPL. Variables, functions, and imports persist between calls.
+You have one tool, `ipython`. Each call runs a Cell in a persistent CPython Kernel. Use plain Python with top-level `await`; IPython `%magic` and `!cmd` syntax are unavailable. Inside a Cell, use Python to read, search, and edit files. Use `bash()` to run external programs.
 
-## Functions in the REPL
+## Shell commands
 
-- `bash(command: str, timeout: float | None = 600) -> BashHandle`: start a shell command in the background and return at once; each call is a new process, and a command still running after `timeout` seconds is killed (`None`: no limit)
-  - `r = await bash(cmd)` waits and gives a `BashResult`: `.exit_code`, `.output`, `.duration` (plain values; no `.tail()`, not awaitable)
-  - `h = bash(cmd)` gives a running `BashHandle`: `.pid`, `.running`, `.command`, `.tail(n=50)`, `.output()`, `.poll() -> BashResult | None`, `.kill(sig=SIGTERM, grace=5.0)`; `await h` gives its `BashResult`
+- `bash(command: str, timeout: float | None = 600) -> BashHandle`: start a shell command in a new process and return at once. Commands still running after `timeout` seconds are killed (`None`: no limit).
+  - `r = await bash(cmd)` waits and gives a `BashResult`: `.exit_code`, `.output`, `.duration` (plain values; no `.tail()`, not awaitable).
+  - `h = bash(cmd)` gives a `BashHandle`: `.pid`, `.running`, `.command`, `.tail(n=50)`, `.output()`, `.poll() -> BashResult | None`, `.kill(sig=SIGTERM, grace=5.0)`; `await h` gives its `BashResult`.
+  - Write logic, loops, and parsing in Python. Use `&&` for dependent shell steps and raw Python strings for commands with literal backslashes.
+  - `os.chdir()` and `os.environ` changes persist and apply to later `bash()` calls.
+  - For builds, tests, and other required commands, get the `BashResult` and check `.exit_code` before reporting success. A successful Cell only confirms that the Python code ran.
+
+## Python environments
+
+- Run external projects in their own environment (`uv run`, `.venv/bin/python`, or the project's documented commands). Install packages in the Kernel only for use in Cells.
 - Pre-imported in the REPL only (files and scripts you write still need their own imports):
   - stdlib: json, os, re, sys, time, math, shutil, itertools, functools, collections, textwrap, Path, datetime (the class), timedelta, Counter, defaultdict
   - packages: np, pd, requests, httpx, yaml
 - Installed Kernel packages: requests, httpx, yaml (PyYAML), tomli, dotenv (python-dotenv), pandas, numpy, scipy, bs4 (Beautiful Soup), lxml, pydantic, tyro. Install more with `import shlex, sys; await bash(f"uv pip install --python {shlex.quote(sys.executable)} package-name")`; packages you install last until the Kernel environment is rebuilt.
 
-## Rules
+## Working in Cells
 
-- The REPL runs plain Python, not IPython: `%magic` commands and `!cmd` shell escapes are not supported. Use `bash()` to run programs.
-- Keep in mind that each tool call is a round trip: steps that do not need a result you have not seen yet can go in one call.
-- Run programs with `bash()`, not `subprocess` or `os.system`. Write logic, loops and parsing in Python; use `bash()` only to call programs.
-- For builds, tests, and other required commands, keep the `BashResult` and check `.exit_code`; a successful Cell does not mean its commands succeeded. Use `&&` for dependent shell steps. A running handle or progress output is not a passing test.
-- Use raw Python strings for regexes and `bash()` commands with literal backslashes, e.g. `r'\.'`. Double literal braces (`{{ }}`) in f-strings.
-- Read, search, and edit files with Python.
-- `os.chdir()` and `os.environ` changes persist and apply to later `bash()` calls.
-- Store what you read or compute in named variables instead of reading it again.
-- Python variables survive compaction, but not a Kernel restart.
-- Run an external project through its own environment (`uv run`, `.venv/bin/python`, its documented commands); install into the kernel only packages you need in the REPL itself.
-- When you are done, stop calling tools and give the final answer, with any assumption you made.
+- Batch steps in one Cell when you do not need to inspect an intermediate result.
+- For targeted text edits, verify that the old text occurs exactly once before replacing it. Otherwise, inspect the file and refine the match.
+- Use raw strings for regexes, e.g. `r'\.'`. Double literal braces (`{{ }}`) in f-strings.
+- Reuse named variables for data you read or compute. Python state (variables, functions, and imports) survives between Cells and through compaction, but not Kernel replacement.
+- State assumptions that affect the result.

@@ -13,13 +13,16 @@ import { DEFAULT_PACKAGE_PRELUDE } from "../kernel/packages.ts";
 import { DEFAULT_PRELUDE, preludeNames } from "../kernel/prelude.ts";
 import { SECTION_TAG_NAME } from "./section-tag.ts";
 
-const CORE_PROMPT = `You have one tool, \`ipython\`: a persistent CPython REPL where top-level \`await\` works. Every other capability is a Python function in that REPL. Variables, functions, and imports persist between calls.
+const CORE_PROMPT = `You have one tool, \`ipython\`. Each call runs a Cell in a persistent CPython Kernel. Use plain Python with top-level \`await\`; IPython \`%magic\` and \`!cmd\` syntax are unavailable. Inside a Cell, use Python to read, search, and edit files. Use \`bash()\` to run external programs.
 
-## Functions in the REPL
+## Shell commands
 
-- \`bash(command: str, timeout: float | None = 600) -> BashHandle\`: start a shell command in the background and return at once; each call is a new process, and a command still running after \`timeout\` seconds is killed (\`None\`: no limit)
-  - \`r = await bash(cmd)\` waits and gives a \`BashResult\`: \`.exit_code\`, \`.output\`, \`.duration\` (plain values; no \`.tail()\`, not awaitable)
-  - \`h = bash(cmd)\` gives a running \`BashHandle\`: \`.pid\`, \`.running\`, \`.command\`, \`.tail(n=50)\`, \`.output()\`, \`.poll() -> BashResult | None\`, \`.kill(sig=SIGTERM, grace=5.0)\`; \`await h\` gives its \`BashResult\``;
+- \`bash(command: str, timeout: float | None = 600) -> BashHandle\`: start a shell command in a new process and return at once. Commands still running after \`timeout\` seconds are killed (\`None\`: no limit).
+  - \`r = await bash(cmd)\` waits and gives a \`BashResult\`: \`.exit_code\`, \`.output\`, \`.duration\` (plain values; no \`.tail()\`, not awaitable).
+  - \`h = bash(cmd)\` gives a \`BashHandle\`: \`.pid\`, \`.running\`, \`.command\`, \`.tail(n=50)\`, \`.output()\`, \`.poll() -> BashResult | None\`, \`.kill(sig=SIGTERM, grace=5.0)\`; \`await h\` gives its \`BashResult\`.
+  - Write logic, loops, and parsing in Python. Use \`&&\` for dependent shell steps and raw Python strings for commands with literal backslashes.
+  - \`os.chdir()\` and \`os.environ\` changes persist and apply to later \`bash()\` calls.
+  - For builds, tests, and other required commands, get the \`BashResult\` and check \`.exit_code\` before reporting success. A successful Cell only confirms that the Python code ran.`;
 
 const PI_TOOLS_HEAD = `- \`pi\`: the session's other tools (extension tools such as subagents or MCP servers), callable from Python; all of it is async
   - \`await pi.tools()\`: list the callable tools as dicts with \`name\`, \`description\` (first line), and \`namespace\``;
@@ -32,22 +35,19 @@ const PI_TOOLS_TAIL = `  - \`await pi.describe(name)\`: a tool's full \`descript
   - Before first using a tool, call \`await pi.describe(name)\` to read its schema, guidelines, and returns.`;
 
 /** Only with Background-command notices on. */
-const BACKGROUND_NOTICE_RULE = `- A \`bash()\` command still running when its Cell ends sends you a \`[bash-done …]\` message when it finishes, even after your turn has ended. For long commands, start \`h = bash(...)\` and end your turn; don't \`sleep\` or \`await\` just to hold the turn open.`;
+const BACKGROUND_NOTICE_RULE = `  - A command that outlives its Cell sends a Background-command notice (\`[bash-done …]\`) on completion. If no other work can proceed until a long command finishes, keep its handle and end the turn with the command pending. When the notice arrives, get its \`BashResult\` from the handle.`;
 
-const RULES_HEAD = `## Rules
+const ENVIRONMENT_PROMPT = `## Python environments
 
-- The REPL runs plain Python, not IPython: \`%magic\` commands and \`!cmd\` shell escapes are not supported. Use \`bash()\` to run programs.
-- Keep in mind that each tool call is a round trip: steps that do not need a result you have not seen yet can go in one call.
-- Run programs with \`bash()\`, not \`subprocess\` or \`os.system\`. Write logic, loops and parsing in Python; use \`bash()\` only to call programs.
-- For builds, tests, and other required commands, keep the \`BashResult\` and check \`.exit_code\`; a successful Cell does not mean its commands succeeded. Use \`&&\` for dependent shell steps. A running handle or progress output is not a passing test.
-- Use raw Python strings for regexes and \`bash()\` commands with literal backslashes, e.g. \`r'\\.'\`. Double literal braces (\`{{ }}\`) in f-strings.
-- Read, search, and edit files with Python.
-- \`os.chdir()\` and \`os.environ\` changes persist and apply to later \`bash()\` calls.`;
+- Run external projects in their own environment (\`uv run\`, \`.venv/bin/python\`, or the project's documented commands). Install packages in the Kernel only for use in Cells.`;
 
-const RULES_TAIL = `- Store what you read or compute in named variables instead of reading it again.
-- Python variables survive compaction, but not a Kernel restart.
-- Run an external project through its own environment (\`uv run\`, \`.venv/bin/python\`, its documented commands); install into the kernel only packages you need in the REPL itself.
-- When you are done, stop calling tools and give the final answer, with any assumption you made.`;
+const CELL_PROMPT = `## Working in Cells
+
+- Batch steps in one Cell when you do not need to inspect an intermediate result.
+- For targeted text edits, verify that the old text occurs exactly once before replacing it. Otherwise, inspect the file and refine the match.
+- Use raw strings for regexes, e.g. \`r'\\.'\`. Double literal braces (\`{{ }}\`) in f-strings.
+- Reuse named variables for data you read or compute. Python state (variables, functions, and imports) survives between Cells and through compaction, but not Kernel replacement.
+- State assumptions that affect the result.`;
 
 export interface PromptPrelude {
 	/** Whether the default stdlib prelude runs. */
@@ -103,13 +103,13 @@ export interface IpythonPromptOptions {
 /** The `<ipython>` section: the REPL's functions and rules. */
 export function ipythonSection({ prelude, backgroundNotices = false, packageLabels }: IpythonPromptOptions): string {
 	const preludeLine = prelude && preludePrompt(prelude);
-	const functions = [
-		CORE_PROMPT,
+	const shell = [CORE_PROMPT, ...(backgroundNotices ? [BACKGROUND_NOTICE_RULE] : [])].join("\n");
+	const environment = [
+		ENVIRONMENT_PROMPT,
 		...(preludeLine ? [preludeLine] : []),
 		...(packageLabels ? [packagesPrompt(packageLabels)] : []),
 	].join("\n");
-	const rules = [RULES_HEAD, ...(backgroundNotices ? [BACKGROUND_NOTICE_RULE] : []), RULES_TAIL].join("\n");
-	return `${functions}\n\n${rules}`;
+	return [shell, environment, CELL_PROMPT].join("\n\n");
 }
 
 /**

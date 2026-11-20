@@ -132,11 +132,15 @@ async function providerSystemPrompt(harness: Harness): Promise<string> {
 	return prompt;
 }
 
-const PROMPT_RULE = "even after your turn has ended. For long commands, start `h = bash(...)` and end your turn";
+const PROMPT_RULE = "keep its handle and end the turn with the command pending";
 
 test("the prompt has the notice rule only when notices are on", async () => {
 	h = await harness();
-	expect(await providerSystemPrompt(h)).toContain(PROMPT_RULE);
+	const prompt = await providerSystemPrompt(h);
+	const shell = prompt.split("## Shell commands\n")[1]?.split("\n## Python environments")[0];
+	expect(shell).toContain("check `.exit_code` before reporting success");
+	expect(shell).toContain(PROMPT_RULE);
+	expect(shell).toContain("When the notice arrives, get its `BashResult` from the handle.");
 	await h.dispose();
 	h = await harness({ setup: () => {} });
 	expect(await providerSystemPrompt(h)).not.toContain(PROMPT_RULE);

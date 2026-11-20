@@ -29,7 +29,7 @@ test("by default the Kernel has the default packages, pre-imports the common one
 		"- Installed Kernel packages: requests, httpx, yaml (PyYAML), tomli, dotenv (python-dotenv), pandas, numpy, scipy, "
 			+ `bs4 (Beautiful Soup), lxml, pydantic, tyro. ${INSTALL_HINT}; packages you install last until the Kernel environment is rebuilt.\n`,
 	);
-	expect(prompt).toContain("install into the kernel only packages you need in the REPL itself.");
+	expect(prompt).toContain("Install packages in the Kernel only for use in Cells.");
 });
 
 test("global and trusted project packages merge; skipped markers and raw URLs stay out of the prompt", async () => {
