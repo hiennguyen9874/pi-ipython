@@ -42,8 +42,10 @@ export interface HarnessOptions {
 	entries?: FileEntry[];
 	/** Defaults to `{ type: "session_start", reason: "startup" }`. */
 	sessionStartEvent?: { type: "session_start"; reason: "startup" | "reload" | "new" | "resume" | "fork" };
-	/** Other extensions loaded next to pi-ipython, e.g. ones registering Pi tools. */
+	/** Other extensions loaded after pi-ipython, e.g. ones registering Pi tools. */
 	extensions?: InlineExtension[];
+	/** Other extensions loaded before pi-ipython. */
+	extensionsBefore?: InlineExtension[];
 }
 
 export interface Harness {
@@ -136,6 +138,9 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 		agentDir,
 		settingsManager,
 		extensionFactories: [
+			...(options.extensionsBefore ?? []).map((extension, i) => typeof extension === "function"
+				? { name: `test-extension-before-${i}`, factory: extension }
+				: extension),
 			{ name: "pi-ipython", factory: piIpython },
 			...(options.extensions ?? []).map((extension, i) => typeof extension === "function"
 				? { name: `test-extension-${i}`, factory: extension }

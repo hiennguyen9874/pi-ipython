@@ -110,7 +110,7 @@ export interface IpythonToolOptions {
 	takeStateLoss?: () => string | undefined;
 	/** Answers the running Cell's host requests (Bridged calls) with this call's context and signal. */
 	answerHostRequest?: (data: Record<string, unknown>, ctx: ExtensionToolContext, signal: AbortSignal | undefined) => Promise<unknown>;
-	/** Text appended to the model-facing description (Listed Pi tools), or undefined to leave it unchanged. */
+	/** Text appended to the model-facing description (the `pi` API and Listed Pi tools), or undefined to leave it unchanged. */
 	describePiTools?: (loadout: ToolLoadout) => string | undefined;
 }
 

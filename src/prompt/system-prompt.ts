@@ -1,5 +1,5 @@
-// The forced system prompt: an Unharnessed-style REPL prompt plus pi's context files,
-// skills, cwd, and date.
+// The sections pi-ipython inserts into pi's system prompt (ADR 0005): an Unharnessed-style
+// REPL section and the skills list, which pi leaves out without an active file-reading tool.
 //
 // Adapted from Unharnessed (crates/uh-core/src/prompts/layers/core.md and
 // system_prompt.rs at HEAD; packages/coding-agent/src/core/prompts/rlm.ts at 7d442aafa),
@@ -8,7 +8,7 @@
 // Copyright (c) 2025-2026 Prime Intellect Ltd.
 // MIT License, see LICENSE.
 
-import { type BuildSystemPromptOptions, formatSkillsForPrompt } from "@earendil-works/pi-coding-agent";
+import { formatSkillsForPrompt, type Skill } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_PACKAGE_PRELUDE } from "../kernel/packages.ts";
 import { DEFAULT_PRELUDE, preludeNames } from "../kernel/prelude.ts";
 
@@ -46,13 +46,6 @@ const RULES_TAIL = `- Store what you read or compute in named variables instead 
 - Python variables survive compaction, but not a Kernel restart.
 - Run an external project through its own environment (\`uv run\`, \`.venv/bin/python\`, its documented commands); install into the kernel only packages you need in the REPL itself.
 - When you are done, stop calling tools and give the final answer, with any assumption you made.`;
-
-/** Local date as YYYY-MM-DD. */
-function today(): string {
-	const d = new Date();
-	const pad = (n: number) => String(n).padStart(2, "0");
-	return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-}
 
 export interface PromptPrelude {
 	/** Whether the default stdlib prelude runs. */
@@ -96,43 +89,67 @@ function packagesPrompt(labels: readonly string[]): string {
 	return `- Installed Kernel packages: ${labels.join(", ")}. Install more with ${INSTALL_COMMAND}; packages you install last until the Kernel environment is rebuilt.`;
 }
 
-/**
- * `packageLabels` lists the Kernel packages (uv mode only; without it the prompt does not say how to install one).
- * `piTools` is set when a Pi tool is callable; `search` is whether `pi.search` is on. Without `prelude`, the prompt
- * does not mention it. `backgroundNotices` adds the rule for commands that outlive their Cell.
- */
-export function buildSystemPrompt(
-	options: Pick<BuildSystemPromptOptions, "cwd" | "contextFiles" | "skills">,
-	piTools: { search: boolean } | undefined,
-	prelude?: PromptPrelude,
-	backgroundNotices = false,
-	packageLabels?: readonly string[],
-): string {
+export interface IpythonPromptOptions {
+	/** Without it, the prompt does not mention the prelude. */
+	prelude?: PromptPrelude;
+	/** Adds the rule for commands that outlive their Cell. */
+	backgroundNotices?: boolean;
+	/** The Kernel packages (uv mode only; without it the prompt does not say how to install one). */
+	packageLabels?: readonly string[];
+}
+
+/** The `<ipython>` section: the REPL's functions and rules. */
+export function ipythonSection({ prelude, backgroundNotices = false, packageLabels }: IpythonPromptOptions): string {
 	const preludeLine = prelude && preludePrompt(prelude);
 	const functions = [
 		CORE_PROMPT,
 		...(preludeLine ? [preludeLine] : []),
 		...(packageLabels ? [packagesPrompt(packageLabels)] : []),
-		...(piTools ? [PI_TOOLS_HEAD, ...(piTools.search ? [PI_SEARCH_PROMPT] : []), PI_TOOLS_TAIL] : []),
 	].join("\n");
 	const rules = [RULES_HEAD, ...(backgroundNotices ? [BACKGROUND_NOTICE_RULE] : []), RULES_TAIL].join("\n");
-	const parts = [functions, rules];
+	return `${functions}\n\n${rules}`;
+}
 
-	const contextFiles = options.contextFiles ?? [];
-	if (contextFiles.length > 0) {
-		parts.push(
-			[
-				"# Project Context",
-				"",
-				"Project-specific instructions and guidelines:",
-				...contextFiles.map(({ path, content }) => `\n## ${path}\n\n${content}`),
-			].join("\n"),
-		);
+/**
+ * The `pi` API, for the `ipython` description while a Pi tool is callable: it can change within a run,
+ * which the forced prompt cannot. `search` is whether `pi.search` is on.
+ */
+export function piToolsSection(search: boolean): string {
+	return [PI_TOOLS_HEAD, ...(search ? [PI_SEARCH_PROMPT] : []), PI_TOOLS_TAIL].join("\n");
+}
+
+/** The `<skills>` section's content, or undefined when no skill is visible to the model. */
+function skillsSection(skills: readonly Skill[]): string | undefined {
+	const listed = formatSkillsForPrompt([...skills], "indirect").trim();
+	if (!listed) return undefined;
+	return `Read a skill's SKILL.md with Python at its listed location, e.g. \`open(location).read()\`.\n${listed}`;
+}
+
+/** Where pi's sections start: `<name>` alone on a line. */
+function sectionStart(prompt: string, name: string): number | undefined {
+	const match = new RegExp(`(?:^|\\n)<${name}>\\n`).exec(prompt);
+	if (!match) return undefined;
+	return match[0].startsWith("\n") ? match.index + 1 : match.index;
+}
+
+/** Insert `<name>` before the first of `before` present, else at the end; leave a prompt that has it alone. */
+function insertSection(prompt: string, name: string, content: string, before: readonly string[]): string {
+	if (sectionStart(prompt, name) !== undefined) return prompt;
+	const section = `<${name}>\n${content}\n</${name}>`;
+	for (const marker of before) {
+		const at = sectionStart(prompt, marker);
+		if (at !== undefined) return `${prompt.slice(0, at)}${section}\n\n${prompt.slice(at)}`;
 	}
+	return prompt.trim() ? `${prompt.trimEnd()}\n\n${section}` : section;
+}
 
-	const skills = formatSkillsForPrompt(options.skills ?? [], "indirect").trim();
-	if (skills) parts.push(`# Skills\n\nRead a skill's SKILL.md with Python at its listed location, e.g. \`open(location).read()\`.\n${skills}`);
-
-	parts.push(`Current date: ${today()}\nWorking directory: ${options.cwd.replace(/\\/g, "/")}`);
-	return parts.join("\n\n");
+/**
+ * Add the `<ipython>` section before pi's `<docs>` (or the next section pi renders after it) and the
+ * skills list before `<cwd>`, keeping everything pi and other extensions put in `systemPrompt`.
+ */
+export function extendSystemPrompt(systemPrompt: string, skills: readonly Skill[], options: IpythonPromptOptions): string {
+	let prompt = insertSection(systemPrompt, "ipython", ipythonSection(options), ["docs", "addendum", "project_context", "skills", "cwd"]);
+	const skillsContent = skillsSection(skills);
+	if (skillsContent) prompt = insertSection(prompt, "skills", skillsContent, ["cwd"]);
+	return prompt;
 }

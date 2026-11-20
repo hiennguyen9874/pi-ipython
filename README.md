@@ -54,7 +54,7 @@ pi -e git:github.com/hiennguyen9874/pi-ipython
 ## What changes when it's enabled
 
 - **Tools:** `ipython` is the only tool the model can call. Other tools still work, but only from Python (see [below](#using-other-pi-tools-and-mcp)).
-- **System prompt:** pi's system prompt is replaced with one written for a Python REPL. Your `AGENTS.md` files and skills are still included.
+- **System prompt:** pi's system prompt is kept, with an `<ipython>` section for the Python REPL and the skills list added (see [System prompt](#system-prompt)).
 - **Kernel lifetime:**
   - The Python environment is set up in the background when the session starts.
   - The Kernel starts on the first Cell.
@@ -65,6 +65,22 @@ pi -e git:github.com/hiennguyen9874/pi-ipython
   - `np` (numpy), `pd` (pandas), `requests`, `httpx`, `yaml` (only with the default [Kernel packages](#kernel-packages))
 
   These imports exist only in the REPL, so scripts the model writes to disk still need their own imports. To turn them off or add your own, use the `prelude` setting.
+
+## System prompt
+
+pi-ipython adds to pi's system prompt instead of replacing it. At the start of each run it inserts two sections into the prompt pi has built:
+
+- `<ipython>`: how to use the REPL (`bash()`, the ready-made imports, Kernel packages, rules). It goes before `<docs>`. If `<docs>` is missing, it goes before the first of `<addendum>`, `<project_context>`, `<skills>`, `<cwd>`, or at the end.
+- `<skills>`: your skills list, read with Python. pi leaves it out because no file-reading tool is active. It goes before `<cwd>`.
+
+What happens to the rest:
+
+- pi's own sections stay. They don't name the tools pi-ipython hides.
+- `SYSTEM.md` / `--system-prompt` replaces pi's opening text, `<tools>`, `<rules>`, and `<docs>`, as usual. `<ipython>` is still added.
+- `APPEND_SYSTEM.md` / `--append-system-prompt`, `AGENTS.md` files, and cwd stay.
+- Other extensions that edit `event.systemPrompt` in `before_agent_start` keep their changes, whether they run before or after pi-ipython.
+- pi-ipython returns the prompt as `systemPrompt`, so it stays fixed for the whole run. An extension that runs after it and only changes `systemPromptOptions` (`sections`, `promptGuidelines`) has no effect, and one that returns a prompt without using `event.systemPrompt` removes pi-ipython's sections.
+- The `pi` API for other tools is described in the `ipython` tool description, not the system prompt, so it can change during a run.
 
 ## Kernel packages
 
@@ -137,7 +153,7 @@ await pi.tool("tool_name", {"arg": "value"})  # call a tool
 - It ranks every callable tool with BM25 over names, descriptions, parameters, and namespaces.
 - A query that exactly matches a tool's name puts that tool first.
 - With `namespace=`, only that namespace is searched. A namespace with no callable tools raises `pi.ToolError`.
-- To turn search off, set `piTools.search: false`. Calls then raise `pi.ToolError` and the system prompt no longer mentions it.
+- To turn search off, set `piTools.search: false`. Calls then raise `pi.ToolError` and the `ipython` description no longer mentions it.
 
 ### MCP
 

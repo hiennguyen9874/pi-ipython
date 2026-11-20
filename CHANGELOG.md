@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- pi-ipython now adds to pi's system prompt instead of replacing it (ADR 0005). Each run, it inserts an `<ipython>` section (the REPL's functions and rules) before `<docs>` and the skills list before `<cwd>` into the prompt pi and earlier extensions built, and returns that as the run's prompt. `SYSTEM.md`, `APPEND_SYSTEM.md`, pi's own sections, and other extensions' edits of `event.systemPrompt` are kept, whether those extensions run before or after pi-ipython. The `pi` API section moves to the `ipython` tool description, where it still follows the live callable set every turn. The prompt no longer includes the date. (#24)
+
 ### Added
 
 - A default prelude of stdlib imports (`json`, `os`, `re`, `sys`, `time`, `math`, `shutil`, `itertools`, `functools`, `collections`, `textwrap`, `Path`, `datetime`, `timedelta`, `Counter`, `defaultdict`) runs in every Kernel, including after a Kernel replacement, so Cells can use them without importing. The system prompt lists the prelude, and the Python-state notice leaves its names out like other bootstrap names. (#44)
