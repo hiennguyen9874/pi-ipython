@@ -131,7 +131,7 @@ export default function piIpython(pi: ExtensionAPI): void {
 				const bridged = new Set(bridgedTools(pi.getAllTools(), IPYTHON_TOOL_NAME).map((tool) => tool.name));
 				if (!loadout.callable.some((tool) => bridged.has(tool.name))) return undefined;
 				const listed = config.piTools.list ? listPiTools(loadout, bridged) : undefined;
-				return [piToolsSection(config.piTools.search), ...(listed ? [listed] : [])].join("\n\n");
+				return [piToolsSection(config.piTools.search, config.parallelWorkPrompt), ...(listed ? [listed] : [])].join("\n\n");
 			},
 		}),
 	);
@@ -191,6 +191,7 @@ export default function piIpython(pi: ExtensionAPI): void {
 			// The prelude still runs with prompt off; only the model is not told about it.
 			prelude: config.prelude.prompt ? { ...config.prelude, includeDefaultPackageImports: hasDefaultPackages(config) } : undefined,
 			backgroundNotices: notices.enabled,
+			parallelWorkPrompt: config.parallelWorkPrompt,
 			packageLabels,
 		}, { after: config.systemPrompt.ipythonAfter, before: config.systemPrompt.ipythonBefore });
 		return { systemPrompt, ...(message ? { message } : {}) };

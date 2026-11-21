@@ -131,6 +131,17 @@ test.each([false, true])("the parallel-work rules are in the prompt with backgro
 	else expect(ipython).not.toContain("bash-done");
 });
 
+test.each([false, true])("disabling parallelWorkPrompt restores the old prompt with notices %s", async (notices) => {
+	h = await createHarness({
+		mode: "rpc",
+		setup: (dirs) => writeConfigs(dirs, { parallelWorkPrompt: false, backgroundNotices: notices }),
+	});
+	const ipython = section((await providerRequest(h)).prompt, "ipython");
+	for (const rule of PARALLEL_RULES) expect(ipython).not.toContain(rule.trim());
+	if (notices) expect(ipython).toContain(`\n  - A command that outlives its Cell sends a Background-command notice (\`[bash-done …]\`)`);
+	else expect(ipython).not.toContain("bash-done");
+});
+
 test("the provider sees raw-string examples in the ipython code parameter", async () => {
 	h = await createHarness();
 	const { parameters } = await providerRequest(h);

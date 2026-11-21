@@ -83,6 +83,16 @@ test("python.source project runs the Kernel in the project's .venv, so its packa
 	expect(resultText(mcpSdk!)).toBe("True");
 });
 
+test("an invalid parallelWorkPrompt is reported and the valid global value is retained", async () => {
+	const notices: string[] = [];
+	h = await createHarness({
+		ui: { notify: (m) => notices.push(m) },
+		setup: (dirs) => writeConfigs(dirs, { parallelWorkPrompt: false }, { parallelWorkPrompt: "false" }),
+	});
+	expect(await systemPrompt(h)).not.toContain("Start independent commands together");
+	expect(notices).toEqual([expect.stringContaining('"parallelWorkPrompt" must be true or false')]);
+});
+
 test("a project value overrides the global value for the same key", async () => {
 	h = await createHarness({
 		setup: ({ cwd, agentDir }) => {

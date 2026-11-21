@@ -22,8 +22,9 @@ const CORE_PROMPT = `You have one tool, \`ipython\`. Each call runs a Cell in a 
   - \`h = bash(cmd)\` gives a \`BashHandle\`: \`.pid\`, \`.running\`, \`.command\`, \`.tail(n=50)\`, \`.output()\`, \`.poll() -> BashResult | None\`, \`.kill(sig=SIGTERM, grace=5.0)\`; \`await h\` gives its \`BashResult\`.
   - Write logic, loops, and parsing in Python. Use \`&&\` for dependent shell steps and raw Python strings for commands with literal backslashes.
   - \`os.chdir()\` and \`os.environ\` changes persist and apply to later \`bash()\` calls.
-  - For builds, tests, and other required commands, get the \`BashResult\` and check \`.exit_code\` before reporting success. A successful Cell only confirms that the Python code ran.
-- Start independent commands together, then collect them: \`hs = [bash(c) for c in cmds]; rs = [await h for h in hs]\`.
+  - For builds, tests, and other required commands, get the \`BashResult\` and check \`.exit_code\` before reporting success. A successful Cell only confirms that the Python code ran.`;
+
+const PARALLEL_WORK_RULES = `- Start independent commands together, then collect them: \`hs = [bash(c) for c in cmds]; rs = [await h for h in hs]\`.
 - Wait by awaiting a handle, never with \`sleep\` or polling loops.
 - The user cannot redirect you while a Cell runs. If independent work remains, do not \`await\` a long command; keep its handle and check it in a later Cell.`;
 
@@ -35,8 +36,9 @@ const PI_SEARCH_PROMPT = `  - \`await pi.search(query: str, limit: int = 8, name
 const PI_TOOLS_TAIL = `  - \`await pi.describe(name)\`: a tool's full \`description\`, \`parameters\` JSON schema, usage \`guidelines\`, and \`returns\` (output schema, or \`"str"\`)
   - \`await pi.describe_namespace(name)\`: a namespace's (for example an MCP server's) \`description\` and \`instructions\`
   - \`await pi.tool(name, args: dict | None = None)\`: call a tool; returns a dict for tools with an output schema, otherwise text, and raises \`pi.ToolError\` on failure
-  - Run independent calls concurrently: \`import asyncio; await asyncio.gather(pi.tool(a, x), pi.tool(b, y))\`.
   - Before first using a tool, call \`await pi.describe(name)\` to read its schema, guidelines, and returns.`;
+
+const PI_CONCURRENCY_RULE = `  - Run independent calls concurrently: \`import asyncio; await asyncio.gather(pi.tool(a, x), pi.tool(b, y))\`.`;
 
 /** Only with Background-command notices on. */
 const BACKGROUND_NOTICE_RULE = `- A command that outlives its Cell sends a Background-command notice (\`[bash-done …]\`) on completion. If no other work can proceed until a long command finishes, keep its handle and end the turn with the command pending. When the notice arrives, get its \`BashResult\` from the handle.`;
@@ -100,14 +102,16 @@ export interface IpythonPromptOptions {
 	prelude?: PromptPrelude;
 	/** Adds the rule for commands that outlive their Cell. */
 	backgroundNotices?: boolean;
+	/** Adds parallel-work and waiting guidance. */
+	parallelWorkPrompt?: boolean;
 	/** The Kernel packages (uv mode only; without it the prompt does not say how to install one). */
 	packageLabels?: readonly string[];
 }
 
 /** The `<ipython>` section: the REPL's functions and rules. */
-export function ipythonSection({ prelude, backgroundNotices = false, packageLabels }: IpythonPromptOptions): string {
+export function ipythonSection({ prelude, backgroundNotices = false, parallelWorkPrompt = true, packageLabels }: IpythonPromptOptions): string {
 	const preludeLine = prelude && preludePrompt(prelude);
-	const shell = [CORE_PROMPT, ...(backgroundNotices ? [BACKGROUND_NOTICE_RULE] : [])].join("\n");
+	const shell = [CORE_PROMPT, ...(parallelWorkPrompt ? [PARALLEL_WORK_RULES] : []), ...(backgroundNotices ? [parallelWorkPrompt ? BACKGROUND_NOTICE_RULE : `  ${BACKGROUND_NOTICE_RULE}`] : [])].join("\n");
 	const environment = [
 		ENVIRONMENT_PROMPT,
 		...(preludeLine ? [preludeLine] : []),
@@ -120,8 +124,9 @@ export function ipythonSection({ prelude, backgroundNotices = false, packageLabe
  * The `pi` API, for the `ipython` description while a Pi tool is callable: it can change within a run,
  * which the forced prompt cannot. `search` is whether `pi.search` is on.
  */
-export function piToolsSection(search: boolean): string {
-	return [PI_TOOLS_HEAD, ...(search ? [PI_SEARCH_PROMPT] : []), PI_TOOLS_TAIL].join("\n");
+export function piToolsSection(search: boolean, parallelWorkPrompt = true): string {
+	const tail = parallelWorkPrompt ? PI_TOOLS_TAIL.replace("\n  - Before first using a tool", `\n${PI_CONCURRENCY_RULE}\n  - Before first using a tool`) : PI_TOOLS_TAIL;
+	return [PI_TOOLS_HEAD, ...(search ? [PI_SEARCH_PROMPT] : []), tail].join("\n");
 }
 
 /** The `<skills>` section's content, or undefined when no skill is visible to the model. */

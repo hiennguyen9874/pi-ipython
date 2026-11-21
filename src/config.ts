@@ -15,6 +15,8 @@ export interface PiIpythonConfig {
 	confirmEachCell: boolean;
 	/** Background-command notices (default on): a finished Background command can start a turn (TUI and RPC only). */
 	backgroundNotices: boolean;
+	/** Prompt guidance for parallel work and waiting (default on). */
+	parallelWorkPrompt: boolean;
 	/** `packages` concatenates global then project entries; Kernel packages apply only with `source: "uv"`. */
 	python: { source: "uv" | "project"; version: string; defaultPackages: boolean; packages: string[] };
 	output: { maxBytes: number; maxLines: number };
@@ -73,6 +75,7 @@ const SECTION_NAMES_EXPECTED = 'an array of section tag names like "rules" (lowe
 const FIELDS: Record<string, { valid: (v: unknown) => boolean; expected: string }> = {
 	confirmEachCell: { valid: (v) => typeof v === "boolean", expected: "true or false" },
 	backgroundNotices: { valid: (v) => typeof v === "boolean", expected: "true or false" },
+	parallelWorkPrompt: { valid: (v) => typeof v === "boolean", expected: "true or false" },
 	"python.source": { valid: (v) => v === "uv" || v === "project", expected: '"uv" or "project"' },
 	"python.version": {
 		valid: (v) => {
@@ -129,6 +132,7 @@ export function loadConfig(cwd: string, agentDir = getAgentDir(), projectTrusted
 		config: {
 			confirmEachCell: get("confirmEachCell", false),
 			backgroundNotices: get("backgroundNotices", true),
+			parallelWorkPrompt: get("parallelWorkPrompt", true),
 			python: { source, version: get("python.version", DEFAULT_PYTHON_VERSION), defaultPackages: get("python.defaultPackages", true), packages },
 			output: { maxBytes: get("output.maxBytes", DEFAULT_MAX_BYTES), maxLines: get("output.maxLines", DEFAULT_MAX_LINES) },
 			piTools: { list: get("piTools.list", true), search: get("piTools.search", true) },

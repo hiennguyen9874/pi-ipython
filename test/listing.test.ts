@@ -5,7 +5,7 @@ import { type Context, fauxAssistantMessage, fauxToolCall, getCurrentTools } fro
 import { createMcpExtension, type ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { afterEach, expect, test } from "vitest";
-import { createHarness, type Harness, resultText } from "./harness.ts";
+import { createHarness, type Harness, resultText, writeConfigs } from "./harness.ts";
 
 const server = fileURLToPath(new URL("./fixtures/mcp-server.mjs", import.meta.url));
 let h: Harness | undefined;
@@ -192,6 +192,17 @@ test("an invalid piTools.list is reported and the list stays on", async () => {
 	]);
 	const [description] = await descriptionsSeen(h);
 	expect(description).toContain("- `echo`: Echo text back.");
+});
+
+test.each([false, true])("parallelWorkPrompt %s controls the concurrency hint in the pi description", async (enabled) => {
+	h = await createHarness({
+		setup: (dirs) => writeConfigs(dirs, { parallelWorkPrompt: !enabled }, { parallelWorkPrompt: enabled }),
+		extensions: [exposures],
+	});
+	const [description] = await descriptionsSeen(h);
+	expect(description).toContain(PI_SECTION);
+	expect(description!.includes(GATHER_LINE)).toBe(enabled);
+	expect(description).toContain("Before first using a tool");
 });
 
 test("with no callable Pi tools the description has no list", async () => {

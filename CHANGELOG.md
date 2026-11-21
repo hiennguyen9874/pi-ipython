@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `parallelWorkPrompt` defaults to `true`. Set it to `false` to restore the pre-#58 prompt without parallel-work rules or the Bridged-call concurrency hint; `backgroundNotices` remains independent.
+
 ## [0.2.0] - 2026-11-21
 
 ### Added
