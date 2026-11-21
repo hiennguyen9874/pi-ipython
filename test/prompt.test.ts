@@ -110,6 +110,27 @@ test("the prompt names no tool other than ipython and warns against magics and !
 	expect(`${section(prompt, "ipython")}\n`).toBe(baseline);
 });
 
+const PARALLEL_RULES = [
+	"\n- Start independent commands together, then collect them: `hs = [bash(c) for c in cmds]; rs = [await h for h in hs]`.\n",
+	"\n- Wait by awaiting a handle, never with `sleep` or polling loops.\n",
+	"\n- The user cannot redirect you while a Cell runs. If independent work remains, do not `await` a long command; keep its handle and check it in a later Cell.\n",
+];
+const NOTICE_RULE = "\n- A command that outlives its Cell sends a Background-command notice (`[bash-done …]`)";
+
+test.each([false, true])("the parallel-work rules are in the prompt with backgroundNotices %s, before any [bash-done …] rule", async (notices) => {
+	h = await createHarness({
+		mode: "rpc",
+		setup: (dirs) => writeConfigs(dirs, { backgroundNotices: notices }),
+	});
+	const ipython = section((await providerRequest(h)).prompt, "ipython");
+	const shell = ipython.slice(ipython.indexOf("## Shell commands"), ipython.indexOf("## Python environments"));
+	const positions = PARALLEL_RULES.map((rule) => shell.indexOf(rule));
+	expect(positions.every((index) => index > shell.indexOf("check `.exit_code` before reporting success"))).toBe(true);
+	expect([...positions].sort((a, b) => a - b)).toEqual(positions);
+	if (notices) expect(shell.indexOf(NOTICE_RULE)).toBeGreaterThan(positions.at(-1)!);
+	else expect(ipython).not.toContain("bash-done");
+});
+
 test("the provider sees raw-string examples in the ipython code parameter", async () => {
 	h = await createHarness();
 	const { parameters } = await providerRequest(h);

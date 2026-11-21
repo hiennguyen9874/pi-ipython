@@ -17,6 +17,7 @@ afterEach(async () => {
 const LIST_INTRO = "Pi tools you can call from Python";
 /** Where the `pi` API section starts, right after the registered description. */
 const PI_SECTION = "\n\n- `pi`: the session's other tools";
+const GATHER_LINE = "\n  - Run independent calls concurrently: `import asyncio; await asyncio.gather(pi.tool(a, x), pi.tool(b, y))`.\n  - Before first using a tool";
 
 function tool(name: string, description: string, extra: Record<string, unknown> = {}) {
 	return {
@@ -170,6 +171,7 @@ test("piTools.list false leaves the list out and keeps the pi section", async ()
 	});
 	const [description] = await descriptionsSeen(h);
 	expect(description!.startsWith(`${baseDescription(h)}${PI_SECTION}`)).toBe(true);
+	expect(description).toContain(GATHER_LINE);
 	expect(description).not.toContain(LIST_INTRO);
 });
 
@@ -197,6 +199,7 @@ test("with no callable Pi tools the description has no list", async () => {
 	const seen = await descriptionsSeen(h);
 	expect(seen).toEqual([baseDescription(h), baseDescription(h)]);
 	expect(seen[0]).not.toContain(LIST_INTRO);
+	expect(seen[0]).not.toContain("asyncio");
 });
 
 test("with only deferred MCP tools the description gains the pi section once they register, and no list", async () => {

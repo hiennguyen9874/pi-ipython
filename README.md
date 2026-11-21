@@ -87,7 +87,7 @@ You are a coding assistant running inside pi, ...   (pi's opening text)
 
 The two added sections:
 
-- `<ipython>`: how to use the REPL. It always covers `bash()` and the rules. Some parts depend on your settings:
+- `<ipython>`: how to use the REPL. It always covers `bash()`, the rules for parallel work and waiting (start independent commands together, await handles instead of `sleep` or polling, keep a long command's handle while other work remains), and the rules for working in Cells. Some parts depend on your settings:
   - The ready-made imports are listed unless `prelude.prompt` is `false`.
   - The Kernel packages and the command to install more are listed only with `python.source: "uv"`.
   - The rule about `[bash-done …]` notices appears only when `backgroundNotices` is on (TUI and RPC).

@@ -22,7 +22,10 @@ const CORE_PROMPT = `You have one tool, \`ipython\`. Each call runs a Cell in a 
   - \`h = bash(cmd)\` gives a \`BashHandle\`: \`.pid\`, \`.running\`, \`.command\`, \`.tail(n=50)\`, \`.output()\`, \`.poll() -> BashResult | None\`, \`.kill(sig=SIGTERM, grace=5.0)\`; \`await h\` gives its \`BashResult\`.
   - Write logic, loops, and parsing in Python. Use \`&&\` for dependent shell steps and raw Python strings for commands with literal backslashes.
   - \`os.chdir()\` and \`os.environ\` changes persist and apply to later \`bash()\` calls.
-  - For builds, tests, and other required commands, get the \`BashResult\` and check \`.exit_code\` before reporting success. A successful Cell only confirms that the Python code ran.`;
+  - For builds, tests, and other required commands, get the \`BashResult\` and check \`.exit_code\` before reporting success. A successful Cell only confirms that the Python code ran.
+- Start independent commands together, then collect them: \`hs = [bash(c) for c in cmds]; rs = [await h for h in hs]\`.
+- Wait by awaiting a handle, never with \`sleep\` or polling loops.
+- The user cannot redirect you while a Cell runs. If independent work remains, do not \`await\` a long command; keep its handle and check it in a later Cell.`;
 
 const PI_TOOLS_HEAD = `- \`pi\`: the session's other tools (extension tools such as subagents or MCP servers), callable from Python; all of it is async
   - \`await pi.tools()\`: list the callable tools as dicts with \`name\`, \`description\` (first line), and \`namespace\``;
@@ -32,10 +35,11 @@ const PI_SEARCH_PROMPT = `  - \`await pi.search(query: str, limit: int = 8, name
 const PI_TOOLS_TAIL = `  - \`await pi.describe(name)\`: a tool's full \`description\`, \`parameters\` JSON schema, usage \`guidelines\`, and \`returns\` (output schema, or \`"str"\`)
   - \`await pi.describe_namespace(name)\`: a namespace's (for example an MCP server's) \`description\` and \`instructions\`
   - \`await pi.tool(name, args: dict | None = None)\`: call a tool; returns a dict for tools with an output schema, otherwise text, and raises \`pi.ToolError\` on failure
+  - Run independent calls concurrently: \`import asyncio; await asyncio.gather(pi.tool(a, x), pi.tool(b, y))\`.
   - Before first using a tool, call \`await pi.describe(name)\` to read its schema, guidelines, and returns.`;
 
 /** Only with Background-command notices on. */
-const BACKGROUND_NOTICE_RULE = `  - A command that outlives its Cell sends a Background-command notice (\`[bash-done …]\`) on completion. If no other work can proceed until a long command finishes, keep its handle and end the turn with the command pending. When the notice arrives, get its \`BashResult\` from the handle.`;
+const BACKGROUND_NOTICE_RULE = `- A command that outlives its Cell sends a Background-command notice (\`[bash-done …]\`) on completion. If no other work can proceed until a long command finishes, keep its handle and end the turn with the command pending. When the notice arrives, get its \`BashResult\` from the handle.`;
 
 const ENVIRONMENT_PROMPT = `## Python environments
 

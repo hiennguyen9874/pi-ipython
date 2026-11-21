@@ -6,6 +6,10 @@
 
 - GitHub Actions creates a GitHub Release from the versioned changelog notes after npm publish succeeds.
 
+### Changed
+
+- The `<ipython>` prompt section always has rules for parallel work and waiting, whatever the `backgroundNotices` setting: start independent `bash()` commands together and then await them, wait by awaiting a handle instead of `sleep` or polling loops, and keep a long command's handle for a later Cell while independent work remains, since the user cannot redirect the model while a Cell runs. The `[bash-done …]` rule, still only with `backgroundNotices` on, follows them as a top-level bullet. The `pi` section of the `ipython` tool description shows how to run independent Bridged calls concurrently with `asyncio.gather`. (#58)
+
 ## [0.1.1] - 2026-11-20
 
 ### Added

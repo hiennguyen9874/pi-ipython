@@ -8,6 +8,9 @@ You have one tool, `ipython`. Each call runs a Cell in a persistent CPython Kern
   - Write logic, loops, and parsing in Python. Use `&&` for dependent shell steps and raw Python strings for commands with literal backslashes.
   - `os.chdir()` and `os.environ` changes persist and apply to later `bash()` calls.
   - For builds, tests, and other required commands, get the `BashResult` and check `.exit_code` before reporting success. A successful Cell only confirms that the Python code ran.
+- Start independent commands together, then collect them: `hs = [bash(c) for c in cmds]; rs = [await h for h in hs]`.
+- Wait by awaiting a handle, never with `sleep` or polling loops.
+- The user cannot redirect you while a Cell runs. If independent work remains, do not `await` a long command; keep its handle and check it in a later Cell.
 
 ## Python environments
 
