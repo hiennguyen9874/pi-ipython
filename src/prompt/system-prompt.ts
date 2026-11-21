@@ -30,7 +30,7 @@ const PARALLEL_WORK_RULES = [
 ];
 
 /** With Background-command notices on; the notice itself says how to read the result. */
-const BACKGROUND_NOTICE_RULE = "- If nothing else can proceed until a long command finishes, keep its handle and end the turn saying what is pending; a `[bash-done …]` notice arrives when it finishes.";
+const BACKGROUND_NOTICE_RULE = "- If nothing else can proceed until a long command finishes, end the turn rather than await it: keep its handle and say what is pending. A `[bash-done …]` notice starts a later turn for it, possibly batched with other commands or delayed.";
 
 const PI_TOOLS_HEAD = [
 	"- `pi`: the session's other tools (extension tools such as subagents or MCP servers), callable from Python; all of it is async",
@@ -54,7 +54,7 @@ const ENVIRONMENT_LINE = "- Run each project in its own environment (`uv run`, `
 
 const CELL_PROMPT = `## Working in Cells
 
-- Batch steps whose intermediate results you do not need to see. Print just enough: slices, counts, \`h.tail()\`.
+- Batch steps whose intermediate results you do not need to see. Print just enough: slices, counts, a handle's \`.tail()\`.
 - Edit by replacing a unique match: confirm the old text occurs exactly once first.
 - Keep data in named variables; Python state survives across Cells and compaction, until Kernel replacement.`;
 

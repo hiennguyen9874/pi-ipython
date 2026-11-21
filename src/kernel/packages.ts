@@ -5,15 +5,18 @@
 // Copyright (c) 2026 Unharnessed
 // MIT License, see LICENSE.
 
-/** Default Kernel packages: uv requirement and the label the system prompt shows. */
-export const DEFAULT_PACKAGES: readonly { requirement: string; label: string }[] = [
-	{ requirement: "requests", label: "requests" },
-	{ requirement: "httpx", label: "httpx" },
-	{ requirement: "pyyaml", label: "yaml (PyYAML)" },
+/**
+ * Default Kernel packages: uv requirement, the label the system prompt shows, and whether
+ * DEFAULT_PACKAGE_PRELUDE imports it.
+ */
+export const DEFAULT_PACKAGES: readonly { requirement: string; label: string; preImported?: true }[] = [
+	{ requirement: "requests", label: "requests", preImported: true },
+	{ requirement: "httpx", label: "httpx", preImported: true },
+	{ requirement: "pyyaml", label: "yaml (PyYAML)", preImported: true },
 	{ requirement: "tomli", label: "tomli" },
 	{ requirement: "python-dotenv", label: "dotenv (python-dotenv)" },
-	{ requirement: "pandas", label: "pandas" },
-	{ requirement: "numpy", label: "numpy" },
+	{ requirement: "pandas", label: "pandas", preImported: true },
+	{ requirement: "numpy", label: "numpy", preImported: true },
 	{ requirement: "scipy", label: "scipy" },
 	{ requirement: "beautifulsoup4", label: "bs4 (Beautiful Soup)" },
 	{ requirement: "lxml", label: "lxml" },
@@ -31,7 +34,7 @@ export const DEFAULT_PACKAGE_PRELUDE: readonly string[] = [
 ];
 
 /** Labels of the default packages that DEFAULT_PACKAGE_PRELUDE imports, so the prompt does not list them twice. */
-export const PRE_IMPORTED_PACKAGE_LABELS: readonly string[] = ["requests", "httpx", "yaml (PyYAML)", "pandas", "numpy"];
+export const PRE_IMPORTED_PACKAGE_LABELS: readonly string[] = DEFAULT_PACKAGES.filter((p) => p.preImported).map((p) => p.label);
 
 /** Only a name prefix, not PEP 508 validation; uv owns requirement parsing. */
 function requirementName(requirement: string): string | undefined {

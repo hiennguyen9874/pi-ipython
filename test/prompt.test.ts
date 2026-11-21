@@ -114,7 +114,7 @@ const PARALLEL_RULES = [
 	"\n- Fan out commands that touch separate files, state, and ports, then collect them: `hs = [bash(c) for c in cmds]; rs = [await h for h in hs]`.\n",
 	"\n- Wait for a long command with `await h`. While independent work remains, keep `h`, do that work, and `await h` in a later Cell.\n",
 ];
-const NOTICE_RULE = "\n- If nothing else can proceed until a long command finishes, keep its handle and end the turn saying what is pending; a `[bash-done …]` notice arrives when it finishes.";
+const NOTICE_RULE = "\n- If nothing else can proceed until a long command finishes, end the turn rather than await it: keep its handle and say what is pending. A `[bash-done …]` notice starts a later turn for it, possibly batched with other commands or delayed.";
 
 test.each([false, true])("the parallel-work rules are in the prompt with backgroundNotices %s, before any [bash-done …] rule", async (notices) => {
 	h = await createHarness({
@@ -130,7 +130,7 @@ test.each([false, true])("the parallel-work rules are in the prompt with backgro
 	else expect(ipython).not.toContain("bash-done");
 });
 
-test.each([false, true])("disabling parallelWorkPrompt restores the old prompt with notices %s", async (notices) => {
+test.each([false, true])("disabling parallelWorkPrompt leaves out the parallel-work rules with notices %s", async (notices) => {
 	h = await createHarness({
 		mode: "rpc",
 		setup: (dirs) => writeConfigs(dirs, { parallelWorkPrompt: false, backgroundNotices: notices }),

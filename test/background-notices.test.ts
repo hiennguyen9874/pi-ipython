@@ -140,7 +140,7 @@ async function providerSystemPrompt(harness: Harness): Promise<string> {
 	return prompt;
 }
 
-const PROMPT_RULE = "keep its handle and end the turn saying what is pending";
+const PROMPT_RULE = "end the turn rather than await it: keep its handle and say what is pending";
 
 test("the prompt has the notice rule only when notices are on", async () => {
 	h = await harness();
@@ -149,7 +149,7 @@ test("the prompt has the notice rule only when notices are on", async () => {
 	expect(shell).toContain("check it before reporting success");
 	expect(shell).toContain(PROMPT_RULE);
 	// How to read the result travels with the notice itself.
-	expect(shell).toContain("a `[bash-done …]` notice arrives when it finishes.");
+	expect(shell).toContain("A `[bash-done …]` notice starts a later turn for it, possibly batched with other commands or delayed.");
 	await h.dispose();
 	h = await harness({ setup: noticesOff });
 	expect(await providerSystemPrompt(h)).not.toContain(PROMPT_RULE);

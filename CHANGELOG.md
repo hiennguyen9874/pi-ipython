@@ -8,12 +8,14 @@
 
 ### Changed
 
-- The `<ipython>` prompt section is about 23% shorter (2309 instead of 2986 bytes by default), and its rules now say what to do rather than what to avoid:
+- The `<ipython>` prompt section is about 22% shorter (2319 instead of 2986 bytes by default), and its rules now say what to do rather than what to avoid:
   - Fan out commands, and Bridged calls in the `pi` section, only when they touch separate files, state, and ports.
   - Waiting rules: wait for a long command with `await h`, or keep the handle while independent work remains. The `[bash-done …]` rule is a top-level bullet whether or not `parallelWorkPrompt` is on.
   - The Kernel package list leaves out the packages already shown as pre-imported, and the install example checks `r.exit_code`.
   - Searching with `rg` through `bash()` is allowed, and Cells should print only what is needed.
   - Dropped sentences: "the user cannot redirect you while a Cell runs", "state assumptions", and the escaping hints (raw strings and `{{ }}`), which now live only in the `code` parameter description. (#61)
+- With `backgroundNotices` on, the `[bash-done …]` rule says to end the turn rather than await a long command when nothing else can proceed, and that the notice may be batched with other commands or delayed. "Working in Cells" refers to a handle's `.tail()` instead of an undefined `h`.
+- ADR 0007: each prompt rule lives in one layer (system prompt, tool description, runtime notice, or `help()`), stated as the behaviour to produce.
 - The `[bash-done …]` notice tells the model to await the handle for its `BashResult`. The `ipython` tool description no longer repeats the system prompt's lines about persistent state and top-level `await`. (#61)
 
 ## [0.2.0] - 2026-11-21

@@ -20,6 +20,6 @@ You have one tool, `ipython`. Each call runs a Cell in a persistent CPython Kern
 
 ## Working in Cells
 
-- Batch steps whose intermediate results you do not need to see. Print just enough: slices, counts, `h.tail()`.
+- Batch steps whose intermediate results you do not need to see. Print just enough: slices, counts, a handle's `.tail()`.
 - Edit by replacing a unique match: confirm the old text occurs exactly once first.
 - Keep data in named variables; Python state survives across Cells and compaction, until Kernel replacement.

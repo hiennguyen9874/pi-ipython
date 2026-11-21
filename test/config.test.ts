@@ -42,7 +42,7 @@ test("with no config files, the Kernel runs Python 3.13 in the managed uv venv a
 	expect(notices).toEqual([]);
 });
 
-const NOTICE_RULE = "a `[bash-done …]` notice arrives when it finishes";
+const NOTICE_RULE = "A `[bash-done …]` notice starts a later turn for it";
 
 test("Background-command notices are on by default in TUI and RPC, so the prompt has the [bash-done …] rule", async () => {
 	h = await createHarness({ mode: "rpc" });
