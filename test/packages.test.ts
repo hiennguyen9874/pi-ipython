@@ -10,8 +10,8 @@ afterEach(async () => {
 	h = undefined;
 });
 
-const INSTALL_CODE = "import shlex, sys; await bash(f\"uv pip install --python {shlex.quote(sys.executable)} package-name\")";
-const INSTALL_HINT = `Install more with \`${INSTALL_CODE}\``;
+const INSTALL_CODE = "import shlex, sys; r = await bash(f\"uv pip install --python {shlex.quote(sys.executable)} package-name\")";
+const INSTALL_HINT = `Add one with \`${INSTALL_CODE}\`, then check \`r.exit_code\`.`;
 
 test("by default the Kernel has the default packages, pre-imports the common ones, and the prompt lists them", async () => {
 	h = await createHarness();
@@ -26,10 +26,10 @@ test("by default the Kernel has the default packages, pre-imports the common one
 	const prompt = await systemPrompt(h);
 	expect(prompt).toContain("  - packages: np, pd, requests, httpx, yaml\n");
 	expect(prompt).toContain(
-		"- Installed Kernel packages: requests, httpx, yaml (PyYAML), tomli, dotenv (python-dotenv), pandas, numpy, scipy, "
-			+ `bs4 (Beautiful Soup), lxml, pydantic, tyro. ${INSTALL_HINT}; packages you install last until the Kernel environment is rebuilt.\n`,
+		"- Other Kernel packages: tomli, dotenv (python-dotenv), scipy, bs4 (Beautiful Soup), lxml, pydantic, tyro. "
+			+ `${INSTALL_HINT}\n`,
 	);
-	expect(prompt).toContain("Install packages in the Kernel only for use in Cells.");
+	expect(prompt).toContain("Kernel packages serve Cells only.");
 });
 
 test("global and trusted project packages merge; skipped markers and raw URLs stay out of the prompt", async () => {
@@ -46,7 +46,7 @@ test("global and trusted project packages merge; skipped markers and raw URLs st
 	expect(resultText(where!)).toBe(`'${kernelVenvDir("3.13", ["six", "iniconfig", skipped])}'`);
 	expect(resultText(r!)).toBe("False");
 	const prompt = await systemPrompt(h);
-	expect(prompt).toContain(`- Installed Kernel packages: iniconfig, six. ${INSTALL_HINT};`);
+	expect(prompt).toContain(`- Installed Kernel packages: iniconfig, six. ${INSTALL_HINT}`);
 	expect(prompt).not.toContain("packages: np");
 	expect(prompt).not.toContain("never-installed");
 	expect(prompt).not.toContain("sample-token");
@@ -80,7 +80,7 @@ test("python.defaultPackages false runs the Kernel in the plain runtime venv, an
 	expect(resultText(r!)).toBe("(True, False, True)");
 	const prompt = await systemPrompt(h);
 	expect(prompt).not.toContain("Installed Kernel packages");
-	expect(prompt).toContain(`- Install Python packages with \`${INSTALL_CODE}\``);
+	expect(prompt).toContain(`- Add a Kernel package with \`${INSTALL_CODE}\`, then check \`r.exit_code\`.`);
 });
 
 test("the prompt's uv command works without a prelude and with a space in the venv path", async () => {

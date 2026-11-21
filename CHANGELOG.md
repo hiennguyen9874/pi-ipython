@@ -4,7 +4,17 @@
 
 ### Added
 
-- `parallelWorkPrompt` defaults to `true`. Set it to `false` to restore the pre-#58 prompt without parallel-work rules or the Bridged-call concurrency hint; `backgroundNotices` remains independent.
+- `parallelWorkPrompt` defaults to `true`. Set it to `false` to leave out the parallel-work rules and the Bridged-call concurrency hint; `backgroundNotices` remains independent.
+
+### Changed
+
+- The `<ipython>` prompt section is about 23% shorter (2309 instead of 2986 bytes by default), and its rules now say what to do rather than what to avoid:
+  - Fan out commands, and Bridged calls in the `pi` section, only when they touch separate files, state, and ports.
+  - Waiting rules: wait for a long command with `await h`, or keep the handle while independent work remains. The `[bash-done …]` rule is a top-level bullet whether or not `parallelWorkPrompt` is on.
+  - The Kernel package list leaves out the packages already shown as pre-imported, and the install example checks `r.exit_code`.
+  - Searching with `rg` through `bash()` is allowed, and Cells should print only what is needed.
+  - Dropped sentences: "the user cannot redirect you while a Cell runs", "state assumptions", and the escaping hints (raw strings and `{{ }}`), which now live only in the `code` parameter description. (#61)
+- The `[bash-done …]` notice tells the model to await the handle for its `BashResult`. The `ipython` tool description no longer repeats the system prompt's lines about persistent state and top-level `await`. (#61)
 
 ## [0.2.0] - 2026-11-21
 

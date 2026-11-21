@@ -82,7 +82,7 @@ const ipythonSchema = Type.Object({
 	code: Type.String({
 		description:
 			"Python code to run in the persistent Kernel. Use raw Python strings for regexes and shell commands with literal backslashes, for example " +
-			"`re.search(r'\\.', text)` or `await bash(r\"rg 'LetterBox\\(' .\")`. Use `rf'...'` when interpolating, or double backslashes in a non-raw string.",
+			"`re.search(r'\\.', text)` or `await bash(r\"rg 'LetterBox\\(' .\")`. Use `rf'...'` when interpolating, or double backslashes in a non-raw string. In f-strings, double literal braces: `{{ }}`.",
 	}),
 });
 
@@ -343,7 +343,7 @@ export function createIpythonTool({
 	describePiTools,
 }: IpythonToolOptions): ToolDefinition<typeof ipythonSchema, IpythonToolDetails> {
 	const description =
-		"Run Python code in a persistent Python Kernel. Variables, functions, and imports persist between calls. Top-level `await` works. The output contains stdout, stderr, the repr of the trailing expression, and errors with tracebacks. Long output is truncated to its tail, with the full text saved to a Spill file. Images emitted with `from rlm.repl import emit; emit({'image/png': base64_str})` are returned as images. Output from background threads, tasks, and subprocesses is reported under [background output] in the next result.";
+		"Run Python code in a persistent Python Kernel. The output contains stdout, stderr, the repr of the trailing expression, and errors with tracebacks. Long output is truncated to its tail, with the full text saved to a Spill file. Images emitted with `from rlm.repl import emit; emit({'image/png': base64_str})` are returned as images. Output from background threads, tasks, and subprocesses is reported under [background output] in the next result.";
 	return {
 		name: IPYTHON_TOOL_NAME,
 		label: "ipython",

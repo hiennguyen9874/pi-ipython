@@ -111,11 +111,10 @@ test("the prompt names no tool other than ipython and warns against magics and !
 });
 
 const PARALLEL_RULES = [
-	"\n- Start independent commands together, then collect them: `hs = [bash(c) for c in cmds]; rs = [await h for h in hs]`.\n",
-	"\n- Wait by awaiting a handle, never with `sleep` or polling loops.\n",
-	"\n- The user cannot redirect you while a Cell runs. If independent work remains, do not `await` a long command; keep its handle and check it in a later Cell.\n",
+	"\n- Fan out commands that touch separate files, state, and ports, then collect them: `hs = [bash(c) for c in cmds]; rs = [await h for h in hs]`.\n",
+	"\n- Wait for a long command with `await h`. While independent work remains, keep `h`, do that work, and `await h` in a later Cell.\n",
 ];
-const NOTICE_RULE = "\n- A command that outlives its Cell sends a Background-command notice (`[bash-done …]`)";
+const NOTICE_RULE = "\n- If nothing else can proceed until a long command finishes, keep its handle and end the turn saying what is pending; a `[bash-done …]` notice arrives when it finishes.";
 
 test.each([false, true])("the parallel-work rules are in the prompt with backgroundNotices %s, before any [bash-done …] rule", async (notices) => {
 	h = await createHarness({
@@ -125,7 +124,7 @@ test.each([false, true])("the parallel-work rules are in the prompt with backgro
 	const ipython = section((await providerRequest(h)).prompt, "ipython");
 	const shell = ipython.slice(ipython.indexOf("## Shell commands"), ipython.indexOf("## Python environments"));
 	const positions = PARALLEL_RULES.map((rule) => shell.indexOf(rule));
-	expect(positions.every((index) => index > shell.indexOf("check `.exit_code` before reporting success"))).toBe(true);
+	expect(positions.every((index) => index > shell.indexOf("check it before reporting success"))).toBe(true);
 	expect([...positions].sort((a, b) => a - b)).toEqual(positions);
 	if (notices) expect(shell.indexOf(NOTICE_RULE)).toBeGreaterThan(positions.at(-1)!);
 	else expect(ipython).not.toContain("bash-done");
@@ -138,7 +137,7 @@ test.each([false, true])("disabling parallelWorkPrompt restores the old prompt w
 	});
 	const ipython = section((await providerRequest(h)).prompt, "ipython");
 	for (const rule of PARALLEL_RULES) expect(ipython).not.toContain(rule.trim());
-	if (notices) expect(ipython).toContain(`\n  - A command that outlives its Cell sends a Background-command notice (\`[bash-done …]\`)`);
+	if (notices) expect(ipython).toContain(NOTICE_RULE);
 	else expect(ipython).not.toContain("bash-done");
 });
 

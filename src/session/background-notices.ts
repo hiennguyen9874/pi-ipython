@@ -14,7 +14,7 @@ const BACKGROUND_NOTICE_TYPE = "ipython_bash_done";
 const NOTICE_BATCH_MS = 2 * 60 * 1000;
 const MAX_NOTICE_TURNS = 5;
 
-const HANDLE_LINE = "Read its output with the handle's .output() or .tail(n), or `await` it.";
+const HANDLE_LINE = "Await its handle for the BashResult, or read output with the handle's .output() or .tail(n).";
 const PAUSED_MESSAGE = "Background-command notices paused; they reach the model with your next message.";
 
 interface Notice {

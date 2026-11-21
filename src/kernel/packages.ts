@@ -30,6 +30,9 @@ export const DEFAULT_PACKAGE_PRELUDE: readonly string[] = [
 	"import requests, httpx, yaml",
 ];
 
+/** Labels of the default packages that DEFAULT_PACKAGE_PRELUDE imports, so the prompt does not list them twice. */
+export const PRE_IMPORTED_PACKAGE_LABELS: readonly string[] = ["requests", "httpx", "yaml (PyYAML)", "pandas", "numpy"];
+
 /** Only a name prefix, not PEP 508 validation; uv owns requirement parsing. */
 function requirementName(requirement: string): string | undefined {
 	const name = requirement.match(/^([a-z0-9][a-z0-9._-]*)(?=\s*(?:$|[\[<>=!~@;]))/i)?.[1];

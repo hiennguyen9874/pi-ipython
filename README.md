@@ -90,7 +90,7 @@ The two added sections:
 - `<ipython>`: how to use the REPL. It always covers `bash()` and the rules for working in Cells. Some parts depend on your settings:
   - The rules for parallel work and waiting (including the concurrent Bridged calls hint in the tool description) are included unless `parallelWorkPrompt` is `false`.
   - The ready-made imports are listed unless `prelude.prompt` is `false`.
-  - The Kernel packages and the command to install more are listed only with `python.source: "uv"`.
+  - The Kernel packages (minus the pre-imported ones) and the command to install more are listed only with `python.source: "uv"`.
   - The rule about `[bash-done …]` notices appears in TUI and RPC unless `backgroundNotices` is `false`.
 
   `<ipython>` goes before `<docs>`. If `<docs>` is missing, it goes before the first of `<addendum>`, `<project_context>`, `<skills>`, `<cwd>`, or at the end. To change this, set `systemPrompt.ipythonAfter` and `systemPrompt.ipythonBefore` (see [Configuration](#configuration)).
@@ -242,7 +242,7 @@ Defaults:
 |---|---|---|
 | `confirmEachCell` | `false` | Ask you to approve each Cell before it runs. |
 | `backgroundNotices` | `true` | When a `bash()` command that outlived its Cell finishes, send the model a `[bash-done pid:… exit:…]` notice. If the session is idle, the notice starts a new turn. Notices that arrive close together go out as one. After 5 consecutive turns started by notices (or when you abort one), notices wait for your next message. TUI and RPC only. |
-| `parallelWorkPrompt` | `true` | Include guidance for parallel commands, waiting, and concurrent Bridged calls. Set to `false` to restore the prompt before #58; Background-command notices remain independently controlled by `backgroundNotices`. |
+| `parallelWorkPrompt` | `true` | Include guidance for parallel commands, waiting, and concurrent Bridged calls. Set to `false` to leave that guidance out; Background-command notices remain independently controlled by `backgroundNotices`. |
 | `python.source` | `"uv"` | `"uv"`: use a separate environment managed by uv. `"project"`: use your project's `<cwd>/.venv`, so Cells can import your project's packages (uv not required). |
 | `python.version` | `"3.13"` | Python version for the uv environment (3.11 or newer). |
 | `python.defaultPackages` | `true` | Install the default [Kernel packages](#kernel-packages) and pre-import `np`, `pd`, `requests`, `httpx`, `yaml` (uv only). |

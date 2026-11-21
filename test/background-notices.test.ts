@@ -41,7 +41,7 @@ function waitFor(predicate: () => boolean, timeout = 10_000): Promise<void> {
 	return vi.waitFor(() => expect(predicate()).toBe(true), { timeout, interval: 20 });
 }
 
-const HANDLE_LINE = "Read its output with the handle's .output() or .tail(n), or `await` it.";
+const HANDLE_LINE = "Await its handle for the BashResult, or read output with the handle's .output() or .tail(n).";
 
 test("a Background command that finishes while idle wakes the model with a notice", async () => {
 	h = await harness();
@@ -140,15 +140,16 @@ async function providerSystemPrompt(harness: Harness): Promise<string> {
 	return prompt;
 }
 
-const PROMPT_RULE = "keep its handle and end the turn with the command pending";
+const PROMPT_RULE = "keep its handle and end the turn saying what is pending";
 
 test("the prompt has the notice rule only when notices are on", async () => {
 	h = await harness();
 	const prompt = await providerSystemPrompt(h);
 	const shell = prompt.split("## Shell commands\n")[1]?.split("\n## Python environments")[0];
-	expect(shell).toContain("check `.exit_code` before reporting success");
+	expect(shell).toContain("check it before reporting success");
 	expect(shell).toContain(PROMPT_RULE);
-	expect(shell).toContain("When the notice arrives, get its `BashResult` from the handle.");
+	// How to read the result travels with the notice itself.
+	expect(shell).toContain("a `[bash-done …]` notice arrives when it finishes.");
 	await h.dispose();
 	h = await harness({ setup: noticesOff });
 	expect(await providerSystemPrompt(h)).not.toContain(PROMPT_RULE);

@@ -42,7 +42,7 @@ test("with no config files, the Kernel runs Python 3.13 in the managed uv venv a
 	expect(notices).toEqual([]);
 });
 
-const NOTICE_RULE = "Background-command notice (`[bash-done …]`)";
+const NOTICE_RULE = "a `[bash-done …]` notice arrives when it finishes";
 
 test("Background-command notices are on by default in TUI and RPC, so the prompt has the [bash-done …] rule", async () => {
 	h = await createHarness({ mode: "rpc" });
@@ -89,7 +89,7 @@ test("an invalid parallelWorkPrompt is reported and the valid global value is re
 		ui: { notify: (m) => notices.push(m) },
 		setup: (dirs) => writeConfigs(dirs, { parallelWorkPrompt: false }, { parallelWorkPrompt: "false" }),
 	});
-	expect(await systemPrompt(h)).not.toContain("Start independent commands together");
+	expect(await systemPrompt(h)).not.toContain("Fan out commands");
 	expect(notices).toEqual([expect.stringContaining('"parallelWorkPrompt" must be true or false')]);
 });
 
@@ -207,8 +207,8 @@ test("prelude.imports from global and project config concatenate, bind their nam
 	expect(resultText(r!)).toBe("(b'aGk=', 'abc', '012', 'a%20b', False)");
 	const prompt = await systemPrompt(h);
 	expect(prompt).toContain([
-		"- Pre-imported in the REPL only (files and scripts you write still need their own imports):",
-		"  - installed and configured for this project, use them where they fit: `import base64 as b64`; `from string import (ascii_lowercase as lower, digits,)`; `import urllib.parse`",
+		"- Pre-imported in Cells only; files and scripts you write need their own imports:",
+		"  - configured for this project, use them where they fit: `import base64 as b64`; `from string import (ascii_lowercase as lower, digits,)`; `import urllib.parse`",
 		"",
 	].join("\n"));
 	expect(prompt).not.toContain("stdlib:");
@@ -219,12 +219,12 @@ test("with defaults on, configured imports get their own sub-line, without repea
 		setup: (dirs) => writeConfigs(dirs, { prelude: { imports: ["from pathlib import Path", "import numpy as np", "import base64 as b64"] } }),
 	});
 	const prompt = await systemPrompt(h);
-	const section = prompt.slice(prompt.indexOf("- Pre-imported"), prompt.indexOf("- Installed Kernel packages")).trimEnd().split("\n");
+	const section = prompt.slice(prompt.indexOf("- Pre-imported"), prompt.indexOf("- Other Kernel packages")).trimEnd().split("\n");
 	expect(section).toEqual([
-		"- Pre-imported in the REPL only (files and scripts you write still need their own imports):",
+		"- Pre-imported in Cells only; files and scripts you write need their own imports:",
 		"  - stdlib: json, os, re, sys, time, math, shutil, itertools, functools, collections, textwrap, Path, datetime (the class), timedelta, Counter, defaultdict",
 		"  - packages: np, pd, requests, httpx, yaml",
-		"  - installed and configured for this project, use them where they fit: `import base64 as b64`",
+		"  - configured for this project, use them where they fit: `import base64 as b64`",
 	]);
 });
 
@@ -291,5 +291,5 @@ test("an invalid prelude.prompt is reported and the prelude line stays", async (
 		setup: (dirs) => writeConfigs(dirs, { prelude: { prompt: "no" } }),
 	});
 	expect(notices).toEqual([expect.stringContaining('"prelude.prompt" must be true or false, got "no"')]);
-	expect(await systemPrompt(h)).toContain("Pre-imported in the REPL only");
+	expect(await systemPrompt(h)).toContain("Pre-imported in Cells only");
 });

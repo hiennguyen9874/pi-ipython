@@ -17,7 +17,7 @@ afterEach(async () => {
 const LIST_INTRO = "Pi tools you can call from Python";
 /** Where the `pi` API section starts, right after the registered description. */
 const PI_SECTION = "\n\n- `pi`: the session's other tools";
-const GATHER_LINE = "\n  - Run independent calls concurrently: `import asyncio; await asyncio.gather(pi.tool(a, x), pi.tool(b, y))`.\n  - Before first using a tool";
+const GATHER_LINE = "\n  - Fan out calls that touch separate files and state: `import asyncio; await asyncio.gather(pi.tool(a, x), pi.tool(b, y))`.\n  - Before first using a tool";
 
 function tool(name: string, description: string, extra: Record<string, unknown> = {}) {
 	return {

@@ -9,51 +9,54 @@
 // MIT License, see LICENSE.
 
 import { formatSkillsForPrompt, type Skill } from "@earendil-works/pi-coding-agent";
-import { DEFAULT_PACKAGE_PRELUDE } from "../kernel/packages.ts";
+import { DEFAULT_PACKAGE_PRELUDE, PRE_IMPORTED_PACKAGE_LABELS } from "../kernel/packages.ts";
 import { DEFAULT_PRELUDE, preludeNames } from "../kernel/prelude.ts";
 import { SECTION_TAG_NAME } from "./section-tag.ts";
 
-const CORE_PROMPT = `You have one tool, \`ipython\`. Each call runs a Cell in a persistent CPython Kernel. Use plain Python with top-level \`await\`; IPython \`%magic\` and \`!cmd\` syntax are unavailable. Inside a Cell, use Python to read, search, and edit files. Use \`bash()\` to run external programs.
+const CORE_PROMPT = `You have one tool, \`ipython\`. Each call runs a Cell in a persistent CPython Kernel. Write plain Python with top-level \`await\` (IPython \`%magic\` and \`!cmd\` are unavailable). Read and edit files in Python; run programs, including \`rg\` for search, with \`bash()\`.
 
 ## Shell commands
 
-- \`bash(command: str, timeout: float | None = 600) -> BashHandle\`: start a shell command in a new process and return at once. Commands still running after \`timeout\` seconds are killed (\`None\`: no limit).
-  - \`r = await bash(cmd)\` waits and gives a \`BashResult\`: \`.exit_code\`, \`.output\`, \`.duration\` (plain values; no \`.tail()\`, not awaitable).
-  - \`h = bash(cmd)\` gives a \`BashHandle\`: \`.pid\`, \`.running\`, \`.command\`, \`.tail(n=50)\`, \`.output()\`, \`.poll() -> BashResult | None\`, \`.kill(sig=SIGTERM, grace=5.0)\`; \`await h\` gives its \`BashResult\`.
-  - Write logic, loops, and parsing in Python. Use \`&&\` for dependent shell steps and raw Python strings for commands with literal backslashes.
-  - \`os.chdir()\` and \`os.environ\` changes persist and apply to later \`bash()\` calls.
-  - For builds, tests, and other required commands, get the \`BashResult\` and check \`.exit_code\` before reporting success. A successful Cell only confirms that the Python code ran.`;
+- \`bash(command: str, timeout: float | None = 600) -> BashHandle\` starts a command in a new process and returns at once; after \`timeout\` seconds it is killed (\`None\`: no limit).
+  - \`r = await bash(cmd)\` waits and gives a \`BashResult\` of plain values: \`.exit_code\`, \`.output\`, \`.duration\`.
+  - \`h = bash(cmd)\` gives a live \`BashHandle\`: \`.running\`, \`.tail(n=50)\`, \`.output()\`, \`.poll() -> BashResult | None\`, \`.kill()\`, \`.pid\`, \`.command\`; \`await h\` gives its \`BashResult\`.
+- Write logic, loops, and parsing in Python; chain dependent shell steps with \`&&\`. \`os.chdir()\` and \`os.environ\` changes carry over to later \`bash()\` calls.
+- A build, test, or install passed only if its \`.exit_code\` is 0: check it before reporting success.`;
 
-const PARALLEL_WORK_RULES = `- Start independent commands together, then collect them: \`hs = [bash(c) for c in cmds]; rs = [await h for h in hs]\`.
-- Wait by awaiting a handle, never with \`sleep\` or polling loops.
-- The user cannot redirect you while a Cell runs. If independent work remains, do not \`await\` a long command; keep its handle and check it in a later Cell.`;
+/** With parallelWorkPrompt on. */
+const PARALLEL_WORK_RULES = [
+	"- Fan out commands that touch separate files, state, and ports, then collect them: `hs = [bash(c) for c in cmds]; rs = [await h for h in hs]`.",
+	"- Wait for a long command with `await h`. While independent work remains, keep `h`, do that work, and `await h` in a later Cell.",
+];
 
-const PI_TOOLS_HEAD = `- \`pi\`: the session's other tools (extension tools such as subagents or MCP servers), callable from Python; all of it is async
-  - \`await pi.tools()\`: list the callable tools as dicts with \`name\`, \`description\` (first line), and \`namespace\``;
+/** With Background-command notices on; the notice itself says how to read the result. */
+const BACKGROUND_NOTICE_RULE = "- If nothing else can proceed until a long command finishes, keep its handle and end the turn saying what is pending; a `[bash-done …]` notice arrives when it finishes.";
 
-const PI_SEARCH_PROMPT = `  - \`await pi.search(query: str, limit: int = 8, namespace: str | None = None)\`: the callable tools that best match \`query\` (words or a tool name), best first, as entries like \`pi.tools()\`; \`namespace\` searches only that namespace's tools`;
+const PI_TOOLS_HEAD = [
+	"- `pi`: the session's other tools (extension tools such as subagents or MCP servers), callable from Python; all of it is async",
+	"  - `await pi.tools()`: list the callable tools as dicts with `name`, `description` (first line), and `namespace`",
+];
 
-const PI_TOOLS_TAIL = `  - \`await pi.describe(name)\`: a tool's full \`description\`, \`parameters\` JSON schema, usage \`guidelines\`, and \`returns\` (output schema, or \`"str"\`)
-  - \`await pi.describe_namespace(name)\`: a namespace's (for example an MCP server's) \`description\` and \`instructions\`
-  - \`await pi.tool(name, args: dict | None = None)\`: call a tool; returns a dict for tools with an output schema, otherwise text, and raises \`pi.ToolError\` on failure
-  - Before first using a tool, call \`await pi.describe(name)\` to read its schema, guidelines, and returns.`;
+const PI_SEARCH_LINE = "  - `await pi.search(query: str, limit: int = 8, namespace: str | None = None)`: the callable tools that best match `query` (words or a tool name), best first, as entries like `pi.tools()`; `namespace` searches only that namespace's tools";
 
-const PI_CONCURRENCY_RULE = `  - Run independent calls concurrently: \`import asyncio; await asyncio.gather(pi.tool(a, x), pi.tool(b, y))\`.`;
+const PI_TOOLS_CALLS = [
+	"  - `await pi.describe(name)`: a tool's full `description`, `parameters` JSON schema, usage `guidelines`, and `returns` (output schema, or `\"str\"`)",
+	"  - `await pi.describe_namespace(name)`: a namespace's (for example an MCP server's) `description` and `instructions`",
+	"  - `await pi.tool(name, args: dict | None = None)`: call a tool; returns a dict for tools with an output schema, otherwise text, and raises `pi.ToolError` on failure",
+];
 
-/** Only with Background-command notices on. */
-const BACKGROUND_NOTICE_RULE = `- A command that outlives its Cell sends a Background-command notice (\`[bash-done …]\`) on completion. If no other work can proceed until a long command finishes, keep its handle and end the turn with the command pending. When the notice arrives, get its \`BashResult\` from the handle.`;
+/** With parallelWorkPrompt on. */
+const PI_CONCURRENCY_LINE = "  - Fan out calls that touch separate files and state: `import asyncio; await asyncio.gather(pi.tool(a, x), pi.tool(b, y))`.";
 
-const ENVIRONMENT_PROMPT = `## Python environments
+const PI_DESCRIBE_FIRST_LINE = "  - Before first using a tool, call `await pi.describe(name)` to read its schema, guidelines, and returns.";
 
-- Run external projects in their own environment (\`uv run\`, \`.venv/bin/python\`, or the project's documented commands). Install packages in the Kernel only for use in Cells.`;
+const ENVIRONMENT_LINE = "- Run each project in its own environment (`uv run`, `.venv/bin/python`, or its documented commands); Kernel packages serve Cells only.";
 
 const CELL_PROMPT = `## Working in Cells
 
-- Batch steps in one Cell when you do not need to inspect an intermediate result.
-- For targeted text edits, verify that the old text occurs exactly once before replacing it. Otherwise, inspect the file and refine the match.
-- Use raw strings for regexes, e.g. \`r'\\.'\`. Double literal braces (\`{{ }}\`) in f-strings.
-- Reuse named variables for data you read or compute. Python state (variables, functions, and imports) survives between Cells and through compaction, but not Kernel replacement.
-- State assumptions that affect the result.`;
+- Batch steps whose intermediate results you do not need to see. Print just enough: slices, counts, \`h.tail()\`.
+- Edit by replacing a unique match: confirm the old text occurs exactly once first.
+- Keep data in named variables; Python state survives across Cells and compaction, until Kernel replacement.`;
 
 export interface PromptPrelude {
 	/** Whether the default stdlib prelude runs. */
@@ -69,32 +72,41 @@ const DEFAULT_PRELUDE_TEXT = preludeNames(DEFAULT_PRELUDE)
 	.map((name) => (name === "datetime" ? "datetime (the class)" : name))
 	.join(", ");
 
+/** Whether the prompt lists the default packages' pre-imports. */
+function listsPackageImports(prelude: PromptPrelude | undefined): boolean {
+	return !!prelude && prelude.defaults && prelude.includeDefaultPackageImports;
+}
+
 /**
- * What the prelude bound, scoped to the REPL so written files keep their imports. Stdlib defaults
- * are named; configured imports are shown whole and flagged as installed, so the model uses them.
+ * What the prelude bound, scoped to Cells so written files keep their imports. Stdlib defaults
+ * are named; configured imports are shown whole, so the model uses them.
  */
-function preludePrompt({ defaults, includeDefaultPackageImports, imports }: PromptPrelude): string | undefined {
-	const withPackages = defaults && includeDefaultPackageImports;
+function preludeLines(prelude: PromptPrelude): string[] {
+	const { defaults, imports } = prelude;
+	const withPackages = listsPackageImports(prelude);
 	const configured = [...new Set(imports.map((statement) => statement.trim()))]
 		.filter((statement) => !(defaults && DEFAULT_PRELUDE.includes(statement)))
 		.filter((statement) => !(withPackages && DEFAULT_PACKAGE_PRELUDE.includes(statement)));
-	if (!defaults && configured.length === 0) return undefined;
+	if (!defaults && configured.length === 0) return [];
 	return [
-		"- Pre-imported in the REPL only (files and scripts you write still need their own imports):",
+		"- Pre-imported in Cells only; files and scripts you write need their own imports:",
 		...(defaults ? [`  - stdlib: ${DEFAULT_PRELUDE_TEXT}`] : []),
 		...(withPackages ? [`  - packages: ${preludeNames(DEFAULT_PACKAGE_PRELUDE).join(", ")}`] : []),
 		...(configured.length > 0
-			? [`  - installed and configured for this project, use them where they fit: ${configured.map((s) => `\`${s}\``).join("; ")}`]
+			? [`  - configured for this project, use them where they fit: ${configured.map((s) => `\`${s}\``).join("; ")}`]
 			: []),
-	].join("\n");
+	];
 }
 
-const INSTALL_COMMAND = '`import shlex, sys; await bash(f"uv pip install --python {shlex.quote(sys.executable)} package-name")`';
+const INSTALL_COMMAND = '`import shlex, sys; r = await bash(f"uv pip install --python {shlex.quote(sys.executable)} package-name")`';
 
-/** The Kernel packages and how to add one; packages the model installs are not recorded anywhere. */
-function packagesPrompt(labels: readonly string[]): string {
-	if (labels.length === 0) return `- Install Python packages with ${INSTALL_COMMAND}; they last until the Kernel environment is rebuilt.`;
-	return `- Installed Kernel packages: ${labels.join(", ")}. Install more with ${INSTALL_COMMAND}; packages you install last until the Kernel environment is rebuilt.`;
+/** The Kernel packages not already listed as pre-imports, and how to add one. */
+function packagesLine(labels: readonly string[], listedImports: boolean): string {
+	const others = listedImports ? labels.filter((label) => !PRE_IMPORTED_PACKAGE_LABELS.includes(label)) : labels;
+	const install = `${INSTALL_COMMAND}, then check \`r.exit_code\`.`;
+	if (others.length === 0) return `- Add a Kernel package with ${install}`;
+	const heading = others.length < labels.length ? "Other Kernel packages" : "Installed Kernel packages";
+	return `- ${heading}: ${others.join(", ")}. Add one with ${install}`;
 }
 
 export interface IpythonPromptOptions {
@@ -108,16 +120,21 @@ export interface IpythonPromptOptions {
 	packageLabels?: readonly string[];
 }
 
-/** The `<ipython>` section: the REPL's functions and rules. */
+/** The `<ipython>` section: the REPL's functions and rules, joined line by line. */
 export function ipythonSection({ prelude, backgroundNotices = false, parallelWorkPrompt = true, packageLabels }: IpythonPromptOptions): string {
-	const preludeLine = prelude && preludePrompt(prelude);
-	const shell = [CORE_PROMPT, ...(parallelWorkPrompt ? [PARALLEL_WORK_RULES] : []), ...(backgroundNotices ? [parallelWorkPrompt ? BACKGROUND_NOTICE_RULE : `  ${BACKGROUND_NOTICE_RULE}`] : [])].join("\n");
+	const shell = [
+		CORE_PROMPT,
+		...(parallelWorkPrompt ? PARALLEL_WORK_RULES : []),
+		...(backgroundNotices ? [BACKGROUND_NOTICE_RULE] : []),
+	];
 	const environment = [
-		ENVIRONMENT_PROMPT,
-		...(preludeLine ? [preludeLine] : []),
-		...(packageLabels ? [packagesPrompt(packageLabels)] : []),
-	].join("\n");
-	return [shell, environment, CELL_PROMPT].join("\n\n");
+		"## Python environments",
+		"",
+		ENVIRONMENT_LINE,
+		...(prelude ? preludeLines(prelude) : []),
+		...(packageLabels ? [packagesLine(packageLabels, listsPackageImports(prelude))] : []),
+	];
+	return [shell.join("\n"), environment.join("\n"), CELL_PROMPT].join("\n\n");
 }
 
 /**
@@ -125,8 +142,13 @@ export function ipythonSection({ prelude, backgroundNotices = false, parallelWor
  * which the forced prompt cannot. `search` is whether `pi.search` is on.
  */
 export function piToolsSection(search: boolean, parallelWorkPrompt = true): string {
-	const tail = parallelWorkPrompt ? PI_TOOLS_TAIL.replace("\n  - Before first using a tool", `\n${PI_CONCURRENCY_RULE}\n  - Before first using a tool`) : PI_TOOLS_TAIL;
-	return [PI_TOOLS_HEAD, ...(search ? [PI_SEARCH_PROMPT] : []), tail].join("\n");
+	return [
+		...PI_TOOLS_HEAD,
+		...(search ? [PI_SEARCH_LINE] : []),
+		...PI_TOOLS_CALLS,
+		...(parallelWorkPrompt ? [PI_CONCURRENCY_LINE] : []),
+		PI_DESCRIBE_FIRST_LINE,
+	].join("\n");
 }
 
 /** The `<skills>` section's content, or undefined when no skill is visible to the model. */
