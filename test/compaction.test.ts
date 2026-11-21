@@ -244,7 +244,24 @@ test.skipIf(process.platform === "win32")("a busy interrupted Cell gets a no-nam
 });
 
 test("a Kernel that dies after compaction during a run leaves the State-loss notice as the latest word", async () => {
-	h = await createHarness();
+	const beforeLoss = fauxToolCall("ipython", { code: "b = 2" });
+	const loseKernel = fauxToolCall("ipython", { code: "import os; os._exit(17)" });
+	h = await createHarness({
+		extensionsBefore: [(pi) => {
+			pi.on("context", ({ messages }) => {
+				// Same-timestamp messages on both sides of the notice must not move it.
+				for (const [id, notes] of [
+					[beforeLoss.id, ["First note.", "Second note."]],
+					[loseKernel.id, ["Third note."]],
+				] as const) {
+					const at = messages.findIndex((m) => m.role === "toolResult" && m.toolCallId === id);
+					if (at >= 0) messages.splice(at + 1, 0, ...notes.map((content) => ({
+						role: "user" as const, content, timestamp: 1,
+					})));
+				}
+			});
+		}],
+	});
 	await h.runCells("a = 1");
 	h.session.settingsManager.applyOverrides({ compaction: { enabled: true, keepRecentTokens: 1 } });
 	const isMain = (context: Context) =>
@@ -253,11 +270,11 @@ test("a Kernel that dies after compaction during a run leaves the State-loss not
 		() => {
 			// Cross the threshold only after this request starts, forcing compaction between Cells.
 			h!.session.settingsManager.applyOverrides({ compaction: { reserveTokens: h!.session.model!.contextWindow - 1 } });
-			return fauxAssistantMessage(fauxToolCall("ipython", { code: "b = 2" }), { stopReason: "toolUse" });
+			return fauxAssistantMessage(beforeLoss, { stopReason: "toolUse" });
 		},
 		() => {
 			h!.session.settingsManager.applyOverrides({ compaction: { enabled: false } });
-			return fauxAssistantMessage(fauxToolCall("ipython", { code: "import os; os._exit(17)" }), { stopReason: "toolUse" });
+			return fauxAssistantMessage(loseKernel, { stopReason: "toolUse" });
 		},
 	];
 	let seen = "";
@@ -276,7 +293,13 @@ test("a Kernel that dies after compaction during a run leaves the State-loss not
 	expect(seen).toContain("ipython_state_lost");
 	// The notice the model already saw stays (ADR 0006), and the State-loss notice after it corrects it.
 	expect(seen.match(/\[python-state\]/g)).toHaveLength(1);
+	expect(JSON.parse(carried).slice(-3)).toEqual([
+		expect.objectContaining({ role: "user", content: "First note." }),
+		expect.objectContaining({ role: "user", content: "Second note." }),
+		expect.objectContaining({ content: [expect.objectContaining({ text: expect.stringContaining("[python-state]") })] }),
+	]);
 	expect(seen.indexOf("[python-state]")).toBeLessThan(seen.lastIndexOf("ipython_state_lost"));
+	expect(seen.indexOf("Third note.")).toBeGreaterThan(seen.indexOf("[python-state]"));
 	expect(extendsRequest(seen, carried)).toBe(true);
 	expect(noticeEntries(h)).toHaveLength(1);
 });

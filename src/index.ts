@@ -30,8 +30,8 @@ export default function piIpython(pi: ExtensionAPI): void {
 	let unannouncedStateLoss: string | undefined;
 	/** Python-state notices queued but never sent when their Kernel was replaced: dropped from context. */
 	const voidedStateNotices = new Set<string>();
-	/** For each Python-state notice a request carried before pi persisted it: the message it followed. */
-	const stateNoticeAnchors = new Map<string, string>();
+	/** The message each deferred notice followed, counting matches because timestamps can collide. */
+	const stateNoticeAnchors = new Map<string, { key: string; occurrence: number }>();
 	// A notice a request has carried stays (ADR 0006); the State-loss notice that follows corrects it.
 	const voidPendingStateNotice = () => {
 		if (pendingStateNotice && !pendingStateNotice.sent) voidedStateNotices.add(pendingStateNotice.id);
@@ -244,10 +244,12 @@ export default function piIpython(pi: ExtensionAPI): void {
 			!isCancelledBackgroundNotice(m) && !voidedStateNotices.has(noticeId(m) ?? ""));
 		let changed = messages.length !== event.messages.length;
 		// pi persists a deferred notice at turn end, after that turn's messages: put it back where requests carried it.
-		for (const [id, anchor] of stateNoticeAnchors) {
+		for (const [id, { key, occurrence }] of stateNoticeAnchors) {
 			const at = messages.findIndex((m) => noticeId(m) === id);
-			const after = messages.findIndex((m) => messageKey(m) === anchor);
-			if (at < 0 || after < 0 || after + 1 >= at) continue;
+			if (at < 0) continue;
+			let remaining = occurrence;
+			const after = messages.findIndex((m) => messageKey(m) === key && --remaining === 0);
+			if (after < 0 || after + 1 >= at) continue;
 			messages.splice(after + 1, 0, ...messages.splice(at, 1));
 			changed = true;
 		}
@@ -259,7 +261,11 @@ export default function piIpython(pi: ExtensionAPI): void {
 		// Make the deferred notice visible to continuations and overflow retries without steering another turn.
 		notice.sent = true;
 		const last = messages.at(-1);
-		if (last && !stateNoticeAnchors.has(notice.id)) stateNoticeAnchors.set(notice.id, messageKey(last));
+		if (last && !stateNoticeAnchors.has(notice.id)) {
+			const key = messageKey(last);
+			const occurrence = messages.filter((m) => messageKey(m) === key).length;
+			stateNoticeAnchors.set(notice.id, { key, occurrence });
+		}
 		return { messages: [...messages, {
 			role: "custom" as const,
 			customType: PYTHON_STATE_TYPE,
@@ -313,7 +319,7 @@ function pythonStateNotice(names: string[] | null): string {
 	return `${base}${filtered}${detail}${omittedText(names.length - listed.length)}`;
 }
 
-/** Identifies a message across requests; `context` handlers get copies, not the same objects. */
+/** Matches messages across requests; `context` handlers get copies, not the same objects. */
 function messageKey(m: { role: string; timestamp?: number; toolCallId?: string }): string {
 	return `${m.role}:${m.timestamp ?? ""}:${m.toolCallId ?? ""}`;
 }
