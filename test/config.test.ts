@@ -42,6 +42,29 @@ test("with no config files, the Kernel runs Python 3.13 in the managed uv venv a
 	expect(notices).toEqual([]);
 });
 
+const NOTICE_RULE = "Background-command notice (`[bash-done …]`)";
+
+test("Background-command notices are on by default in TUI and RPC, so the prompt has the [bash-done …] rule", async () => {
+	h = await createHarness({ mode: "rpc" });
+	expect(await systemPrompt(h)).toContain(NOTICE_RULE);
+	await h.dispose();
+	h = await createHarness({ ui: {} });
+	expect(await systemPrompt(h)).toContain(NOTICE_RULE);
+});
+
+test("Background-command notices stay off by default in print mode", async () => {
+	h = await createHarness({ mode: "print" });
+	expect(await systemPrompt(h)).not.toContain("bash-done");
+});
+
+test.each([
+	["global", { backgroundNotices: false }, undefined],
+	["project", { backgroundNotices: true }, { backgroundNotices: false }],
+])("an explicit %s backgroundNotices false turns notices off", async (_where, global, project) => {
+	h = await createHarness({ mode: "rpc", setup: (dirs) => writeConfigs(dirs, global, project) });
+	expect(await systemPrompt(h)).not.toContain("bash-done");
+});
+
 test("python.source project runs the Kernel in the project's .venv, so its packages import", async () => {
 	let venv = "";
 	h = await createHarness({

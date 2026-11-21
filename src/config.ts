@@ -13,7 +13,7 @@ export const CONFIG_FILE_NAME = "pi-ipython.json";
 
 export interface PiIpythonConfig {
 	confirmEachCell: boolean;
-	/** Background-command notices: a finished Background command can start a turn (TUI and RPC only). */
+	/** Background-command notices (default on): a finished Background command can start a turn (TUI and RPC only). */
 	backgroundNotices: boolean;
 	/** `packages` concatenates global then project entries; Kernel packages apply only with `source: "uv"`. */
 	python: { source: "uv" | "project"; version: string; defaultPackages: boolean; packages: string[] };
@@ -128,7 +128,7 @@ export function loadConfig(cwd: string, agentDir = getAgentDir(), projectTrusted
 	return {
 		config: {
 			confirmEachCell: get("confirmEachCell", false),
-			backgroundNotices: get("backgroundNotices", false),
+			backgroundNotices: get("backgroundNotices", true),
 			python: { source, version: get("python.version", DEFAULT_PYTHON_VERSION), defaultPackages: get("python.defaultPackages", true), packages },
 			output: { maxBytes: get("output.maxBytes", DEFAULT_MAX_BYTES), maxLines: get("output.maxLines", DEFAULT_MAX_LINES) },
 			piTools: { list: get("piTools.list", true), search: get("piTools.search", true) },

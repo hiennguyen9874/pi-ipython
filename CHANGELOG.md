@@ -8,6 +8,7 @@
 
 ### Changed
 
+- Background-command notices are now on by default: `backgroundNotices` defaults to `true`. In TUI and RPC, a `bash()` command that outlives its Cell sends the model a `[bash-done …]` notice when it finishes, which starts a new turn if pi is idle, and the system prompt has the `[bash-done …]` rule. Print and JSON modes are unchanged, and the batching, 5-turn limit, and pause-on-abort guards stay as they were. To opt out, set `"backgroundNotices": false` in `~/.pi/agent/pi-ipython.json` or `.pi/pi-ipython.json`. (#59)
 - The `<ipython>` prompt section always has rules for parallel work and waiting, whatever the `backgroundNotices` setting: start independent `bash()` commands together and then await them, wait by awaiting a handle instead of `sleep` or polling loops, and keep a long command's handle for a later Cell while independent work remains, since the user cannot redirect the model while a Cell runs. The `[bash-done …]` rule, still only with `backgroundNotices` on, follows them as a top-level bullet. The `pi` section of the `ipython` tool description shows how to run independent Bridged calls concurrently with `asyncio.gather`. (#58)
 
 ## [0.1.1] - 2026-11-20

@@ -13,9 +13,17 @@ afterEach(async () => {
 
 const NOTICE_TYPE = "ipython_bash_done";
 
-function noticesOn({ cwd }: { cwd: string }): void {
+function writeNotices(cwd: string, on: boolean): void {
 	mkdirSync(join(cwd, ".pi"), { recursive: true });
-	writeFileSync(join(cwd, ".pi", "pi-ipython.json"), JSON.stringify({ backgroundNotices: true }));
+	writeFileSync(join(cwd, ".pi", "pi-ipython.json"), JSON.stringify({ backgroundNotices: on }));
+}
+
+function noticesOn({ cwd }: { cwd: string }): void {
+	writeNotices(cwd, true);
+}
+
+function noticesOff({ cwd }: { cwd: string }): void {
+	writeNotices(cwd, false);
 }
 
 /** A session with notices on, in RPC mode (notices need TUI or RPC). */
@@ -104,7 +112,7 @@ test("the notice says when the command's timeout killed it", async () => {
 });
 
 test.each([
-	["the switch is off", { mode: "rpc" as const, setup: () => {} }],
+	["the switch is off", { mode: "rpc" as const, setup: noticesOff }],
 	["the session runs in print mode", { mode: "print" as const }],
 ])("no notice and no turn when %s", async (_name, options) => {
 	h = await harness(options);
@@ -142,7 +150,7 @@ test("the prompt has the notice rule only when notices are on", async () => {
 	expect(shell).toContain(PROMPT_RULE);
 	expect(shell).toContain("When the notice arrives, get its `BashResult` from the handle.");
 	await h.dispose();
-	h = await harness({ setup: () => {} });
+	h = await harness({ setup: noticesOff });
 	expect(await providerSystemPrompt(h)).not.toContain(PROMPT_RULE);
 	await h.dispose();
 	h = await harness({ mode: "print" });

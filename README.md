@@ -90,7 +90,7 @@ The two added sections:
 - `<ipython>`: how to use the REPL. It always covers `bash()`, the rules for parallel work and waiting (start independent commands together, await handles instead of `sleep` or polling, keep a long command's handle while other work remains), and the rules for working in Cells. Some parts depend on your settings:
   - The ready-made imports are listed unless `prelude.prompt` is `false`.
   - The Kernel packages and the command to install more are listed only with `python.source: "uv"`.
-  - The rule about `[bash-done …]` notices appears only when `backgroundNotices` is on (TUI and RPC).
+  - The rule about `[bash-done …]` notices appears in TUI and RPC unless `backgroundNotices` is `false`.
 
   `<ipython>` goes before `<docs>`. If `<docs>` is missing, it goes before the first of `<addendum>`, `<project_context>`, `<skills>`, `<cwd>`, or at the end. To change this, set `systemPrompt.ipythonAfter` and `systemPrompt.ipythonBefore` (see [Configuration](#configuration)).
   - Another extension that also inserts before `<docs>` ends up before or after `<ipython>` depending on load order (pi loads local extensions before packages). Set `"systemPrompt": { "ipythonAfter": ["rules"] }` to put `<ipython>` ahead of extensions that insert before `<docs>`. A later handler that inserts directly after `</rules>` can still put its text first. Prompts without `<rules>` (`SYSTEM.md` / `--system-prompt`) fall back to `ipythonBefore`.
@@ -224,7 +224,7 @@ Defaults:
 ```json
 {
   "confirmEachCell": false,
-  "backgroundNotices": false,
+  "backgroundNotices": true,
   "python": { "source": "uv", "version": "3.13", "defaultPackages": true, "packages": [] },
   "output": { "maxBytes": 51200, "maxLines": 2000 },
   "piTools": { "list": true, "search": true },
@@ -239,7 +239,7 @@ Defaults:
 | Key | Default | What it does |
 |---|---|---|
 | `confirmEachCell` | `false` | Ask you to approve each Cell before it runs. |
-| `backgroundNotices` | `false` | When a `bash()` command that outlived its Cell finishes, send the model a `[bash-done pid:… exit:…]` notice. If the session is idle, the notice starts a new turn. Notices that arrive close together go out as one. After 5 consecutive turns started by notices (or when you abort one), notices wait for your next message. TUI and RPC only. |
+| `backgroundNotices` | `true` | When a `bash()` command that outlived its Cell finishes, send the model a `[bash-done pid:… exit:…]` notice. If the session is idle, the notice starts a new turn. Notices that arrive close together go out as one. After 5 consecutive turns started by notices (or when you abort one), notices wait for your next message. TUI and RPC only. |
 | `python.source` | `"uv"` | `"uv"`: use a separate environment managed by uv. `"project"`: use your project's `<cwd>/.venv`, so Cells can import your project's packages (uv not required). |
 | `python.version` | `"3.13"` | Python version for the uv environment (3.11 or newer). |
 | `python.defaultPackages` | `true` | Install the default [Kernel packages](#kernel-packages) and pre-import `np`, `pd`, `requests`, `httpx`, `yaml` (uv only). |

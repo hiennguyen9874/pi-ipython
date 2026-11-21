@@ -51,7 +51,7 @@ People who already run pi and want to try a Python-REPL-first agent on their own
 ### v2: Survive restarts, background work (#13)
 
 - `dill` snapshot/restore of Python state on resume and restart, per session. Caps (Unharnessed: 16 MiB per name, 256 MiB total) only limit what is saved; compaction never removes live Python state (ADR 0002).
-- `bash()` handles that run in the background, and an opt-in notice that starts a new turn when a handle finishes.
+- `bash()` handles that run in the background, and a notice, on by default in TUI and RPC, that starts a new turn when a handle finishes.
 - Python skills: deferred until a concrete need appears.
 - A full Cell renderer, ported from `ipython-cell.ts`.
 
