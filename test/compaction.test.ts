@@ -35,6 +35,13 @@ async function runCellSeeing(harness: Harness, code: string): Promise<{ result: 
 	return { result, seen };
 }
 
+/** Whether the `later` request starts with every message of `earlier`, as sent (providers do not send timestamps). */
+function extendsRequest(later: string, earlier: string): boolean {
+	const sent = (json: string) => (JSON.parse(json) as unknown[]).map((m) => JSON.stringify(m, (key, value) => key === "timestamp" ? undefined : value));
+	const before = sent(earlier);
+	return JSON.stringify(sent(later).slice(0, before.length)) === JSON.stringify(before);
+}
+
 function noticeEntries(harness: Harness) {
 	return harness.session.sessionManager
 		.getBranch()
@@ -170,6 +177,8 @@ test.each(["threshold", "overflow"] as const)("%s compaction during a run reache
 	expect(noticeEntries(h)).toHaveLength(1);
 	const { seen: later } = await runCellSeeing(h, "a + 1");
 	expect(later.match(/\[python-state\]/g)).toHaveLength(1);
+	// pi persisted the notice after the turn; later requests keep it where the model first saw it (ADR 0006).
+	expect(extendsRequest(later, seen)).toBe(true);
 });
 
 test.each(["error", "timeout"] as const)("a listing %s sends a no-names notice and keeps Python state", async (failure) => {
@@ -252,9 +261,12 @@ test("a Kernel that dies after compaction during a run leaves the State-loss not
 		},
 	];
 	let seen = "";
+	let carried = "";
 	const reply = (context: Context) => {
 		if (!isMain(context)) return fauxAssistantMessage("Summary.");
 		const next = main.shift();
+		// The request that runs the Cell killing the Kernel carries the deferred notice.
+		if (main.length === 0 && next) carried = JSON.stringify(context.messages);
 		if (next) return next();
 		seen = JSON.stringify(context.messages);
 		return fauxAssistantMessage("done");
@@ -262,7 +274,54 @@ test("a Kernel that dies after compaction during a run leaves the State-loss not
 	h.setResponses([reply, reply, reply, reply, reply, reply]);
 	await h.session.prompt("continue");
 	expect(seen).toContain("ipython_state_lost");
-	expect(seen.lastIndexOf("[python-state]")).toBeLessThan(seen.lastIndexOf("ipython_state_lost"));
+	// The notice the model already saw stays (ADR 0006), and the State-loss notice after it corrects it.
+	expect(seen.match(/\[python-state\]/g)).toHaveLength(1);
+	expect(seen.indexOf("[python-state]")).toBeLessThan(seen.lastIndexOf("ipython_state_lost"));
+	expect(extendsRequest(seen, carried)).toBe(true);
+	expect(noticeEntries(h)).toHaveLength(1);
+});
+
+test("a notice no request carried is dropped when its Kernel dies first", async () => {
+	let pid = 0;
+	h = await createHarness({
+		extensions: [(pi) => {
+			// Runs after pi-ipython queued the notice, before the next request.
+			pi.on("session_compact", async () => {
+				process.kill(pid, "SIGKILL");
+				await new Promise((resolve) => setTimeout(resolve, 500));
+			});
+		}],
+	});
+	const [started] = await h.runCells("import os; a = 1; os.getpid()");
+	pid = Number(resultText(started!));
+	h.session.settingsManager.applyOverrides({ compaction: { enabled: true, keepRecentTokens: 1 } });
+	const isMain = (context: Context) =>
+		context.messages.some((m) => m.role === "system" && typeof m.content === "string" && m.content.includes("persistent CPython"));
+	const seen: string[] = [];
+	const main = [
+		() => {
+			h!.session.settingsManager.applyOverrides({ compaction: { reserveTokens: h!.session.model!.contextWindow - 1 } });
+			return fauxAssistantMessage(fauxToolCall("ipython", { code: "b = 2" }), { stopReason: "toolUse" });
+		},
+		() => {
+			h!.session.settingsManager.applyOverrides({ compaction: { enabled: false } });
+			return fauxAssistantMessage(fauxToolCall("ipython", { code: "a" }), { stopReason: "toolUse" });
+		},
+		() => fauxAssistantMessage("done"),
+	];
+	const reply = (context: Context) => {
+		if (!isMain(context)) return fauxAssistantMessage("Summary.");
+		seen.push(JSON.stringify(context.messages));
+		return main.shift()!();
+	};
+	h.setResponses([reply, reply, reply, reply, reply, reply]);
+	await h.session.prompt("continue");
+	expect(seen).toHaveLength(3);
+	expect(seen[1]).not.toContain("[python-state]");
+	expect(seen[2]).not.toContain("[python-state]");
+	expect(seen[2]).toContain("ipython_state_lost");
+	const { seen: later } = await runCellSeeing(h, "1");
+	expect(later).not.toContain("[python-state]");
 });
 
 test.each([50, 51])("notice caps the count with %i eligible names", async (count) => {

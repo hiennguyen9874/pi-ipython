@@ -24,13 +24,17 @@ export default function piIpython(pi: ExtensionAPI): void {
 	let cwd = process.cwd();
 	let config: PiIpythonConfig = loadConfig(cwd).config;
 	let journalPath: string | undefined;
-	let pendingStateNotice: { content: string; id: string; timestamp: number } | undefined;
+	/** A Python-state notice pi has not persisted yet; `sent` once a request has carried it. */
+	let pendingStateNotice: { content: string; id: string; timestamp: number; sent: boolean } | undefined;
 	/** Cause of a Kernel replacement the model has not been told about. */
 	let unannouncedStateLoss: string | undefined;
-	/** Python-state notices already queued when their Kernel was replaced: dropped from context. */
+	/** Python-state notices queued but never sent when their Kernel was replaced: dropped from context. */
 	const voidedStateNotices = new Set<string>();
+	/** For each Python-state notice a request carried before pi persisted it: the message it followed. */
+	const stateNoticeAnchors = new Map<string, string>();
+	// A notice a request has carried stays (ADR 0006); the State-loss notice that follows corrects it.
 	const voidPendingStateNotice = () => {
-		if (pendingStateNotice) voidedStateNotices.add(pendingStateNotice.id);
+		if (pendingStateNotice && !pendingStateNotice.sent) voidedStateNotices.add(pendingStateNotice.id);
 		pendingStateNotice = undefined;
 	};
 	const onLost = (error: Error) => {
@@ -134,6 +138,7 @@ export default function piIpython(pi: ExtensionAPI): void {
 
 	pi.on("session_start", (event, ctx) => {
 		pendingStateNotice = undefined;
+		stateNoticeAnchors.clear();
 		// A new session's Kernel is fresh; any loss is announced below, before its first turn.
 		unannouncedStateLoss = undefined;
 		cwd = ctx.cwd;
@@ -220,7 +225,7 @@ export default function piIpython(pi: ExtensionAPI): void {
 		const names = listed?.filter((name) => !bootstrapNames.has(name)) ?? null;
 		// A failed listing still gets a notice, unless the Kernel stopped meanwhile.
 		if (names === null && !(kernel === current && current.isRunning)) return;
-		pendingStateNotice = { content: pythonStateNotice(names), id: randomUUID(), timestamp: Date.now() };
+		pendingStateNotice = { content: pythonStateNotice(names), id: randomUUID(), timestamp: Date.now(), sent: false };
 		// Persist immediately when idle; during a run pi defers this until turn-end.
 		pi.sendMessage(
 			{ customType: PYTHON_STATE_TYPE, content: pendingStateNotice.content, display: false, details: { noticeId: pendingStateNotice.id } },
@@ -237,13 +242,24 @@ export default function piIpython(pi: ExtensionAPI): void {
 		// A notice its Kernel did not outlive must not claim that Python state persisted.
 		const messages = event.messages.filter((m) =>
 			!isCancelledBackgroundNotice(m) && !voidedStateNotices.has(noticeId(m) ?? ""));
-		const changed = messages.length !== event.messages.length;
+		let changed = messages.length !== event.messages.length;
+		// pi persists a deferred notice at turn end, after that turn's messages: put it back where requests carried it.
+		for (const [id, anchor] of stateNoticeAnchors) {
+			const at = messages.findIndex((m) => noticeId(m) === id);
+			const after = messages.findIndex((m) => messageKey(m) === anchor);
+			if (at < 0 || after < 0 || after + 1 >= at) continue;
+			messages.splice(after + 1, 0, ...messages.splice(at, 1));
+			changed = true;
+		}
 		const notice = pendingStateNotice;
 		if (!notice || messages.some((m) => noticeId(m) === notice.id)) {
 			pendingStateNotice = undefined;
 			return changed ? { messages } : undefined;
 		}
 		// Make the deferred notice visible to continuations and overflow retries without steering another turn.
+		notice.sent = true;
+		const last = messages.at(-1);
+		if (last && !stateNoticeAnchors.has(notice.id)) stateNoticeAnchors.set(notice.id, messageKey(last));
 		return { messages: [...messages, {
 			role: "custom" as const,
 			customType: PYTHON_STATE_TYPE,
@@ -295,6 +311,11 @@ function pythonStateNotice(names: string[] | null): string {
 	}
 	const detail = listed.length > 0 ? ` These names are still defined: ${listed.join(", ")}.` : "";
 	return `${base}${filtered}${detail}${omittedText(names.length - listed.length)}`;
+}
+
+/** Identifies a message across requests; `context` handlers get copies, not the same objects. */
+function messageKey(m: { role: string; timestamp?: number; toolCallId?: string }): string {
+	return `${m.role}:${m.timestamp ?? ""}:${m.toolCallId ?? ""}`;
 }
 
 const KEEP_KERNEL = "Keep Kernel";
