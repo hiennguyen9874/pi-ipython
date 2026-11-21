@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-21
+
 ### Added
 
 - `parallelWorkPrompt` defaults to `true`. Set it to `false` to leave out the parallel-work rules and the Bridged-call concurrency hint; `backgroundNotices` remains independent.

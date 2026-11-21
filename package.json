@@ -1,6 +1,6 @@
 {
   "name": "pi-ipython",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "pi extension: a persistent Python Kernel behind a single ipython tool",
   "license": "MIT",
   "repository": {
