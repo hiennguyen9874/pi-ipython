@@ -9,6 +9,7 @@
 // MIT License, see LICENSE.
 
 import { formatSkillsForPrompt, type Skill } from "@earendil-works/pi-coding-agent";
+import { MAX_MODEL_CALLS_IN_FLIGHT } from "../bridge/model-calls.ts";
 import { DEFAULT_PACKAGE_PRELUDE, PRE_IMPORTED_PACKAGE_LABELS } from "../kernel/packages.ts";
 import { DEFAULT_PRELUDE, preludeNames } from "../kernel/prelude.ts";
 import { SECTION_TAG_NAME } from "./section-tag.ts";
@@ -148,6 +149,19 @@ export function piToolsSection(search: boolean, parallelWorkPrompt = true): stri
 		...PI_TOOLS_CALLS,
 		...(parallelWorkPrompt ? [PI_CONCURRENCY_LINE] : []),
 		PI_DESCRIBE_FIRST_LINE,
+	].join("\n");
+}
+
+/**
+ * `pi.ask`, for the `ipython` description while Model calls are on. It names no model, so it stays the same
+ * across `/model`. `maxPerCell` is `modelCalls.maxPerCell`.
+ */
+export function modelCallsSection(maxPerCell: number): string {
+	return [
+		"- `await pi.ask(prompt: str, *, system: str | None = None) -> str`: send `prompt` to a model without tools or history and return its answer text",
+		"  - Use it for semantically dense pieces of data that code cannot judge well, e.g. classifying, summarizing, or extracting from each chunk of a long text.",
+		`  - Fan out with \`await asyncio.gather(*(pi.ask(p) for p in prompts))\`; at most ${MAX_MODEL_CALLS_IN_FLIGHT} run at once, and a Cell may make at most ${maxPerCell} calls.`,
+		"  - A failed call, including one over that limit, raises `pi.ModelCallError`.",
 	].join("\n");
 }
 

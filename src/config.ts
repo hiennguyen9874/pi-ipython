@@ -3,6 +3,7 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { CONFIG_DIR_NAME, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_PYTHON_VERSION } from "./kernel/bootstrap.ts";
 import { DEFAULT_PACKAGE_PRELUDE, DEFAULT_PACKAGE_REQUIREMENTS, redactPackageUrls } from "./kernel/packages.ts";
@@ -30,6 +31,8 @@ export interface PiIpythonConfig {
 	 * else before the first `ipythonBefore` section present, else at the end.
 	 */
 	systemPrompt: { ipythonAfter: string[]; ipythonBefore: string[] };
+	/** Model calls from Cells (`pi.ask`); `model` is `provider/id`, unset meaning the session's model at call time. */
+	modelCalls: { enabled: boolean; model?: string; maxPerCell: number; maxOutputTokens: number; thinking: ModelThinkingLevel };
 }
 
 /** pi's sections that follow its `<rules>`, in render order: the default `systemPrompt.ipythonBefore`. */
@@ -71,6 +74,7 @@ const isPositiveInt = (v: unknown) => Number.isInteger(v) && (v as number) > 0;
 const sectionTagName = new RegExp(`^${SECTION_TAG_NAME}$`);
 const isSectionNames = (v: unknown) =>
 	Array.isArray(v) && v.every((name) => typeof name === "string" && sectionTagName.test(name));
+const THINKING_LEVELS: readonly ModelThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 const PROMPT_AFTER = "systemPrompt.ipythonAfter";
 const PROMPT_BEFORE = "systemPrompt.ipythonBefore";
 const INVALID_PLACEMENT = Symbol("invalid prompt placement");
@@ -102,8 +106,16 @@ const FIELDS: Record<string, { valid: (v: unknown) => boolean; expected: string 
 	"prelude.prompt": { valid: (v) => typeof v === "boolean", expected: "true or false" },
 	[PROMPT_AFTER]: { valid: isSectionNames, expected: SECTION_NAMES_EXPECTED },
 	[PROMPT_BEFORE]: { valid: isSectionNames, expected: SECTION_NAMES_EXPECTED },
+	"modelCalls.enabled": { valid: (v) => typeof v === "boolean", expected: "true or false" },
+	"modelCalls.model": { valid: (v) => typeof v === "string" && /^[^/\s]+\/\S+$/.test(v), expected: 'a model as "provider/id"' },
+	"modelCalls.maxPerCell": { valid: isPositiveInt, expected: "a positive integer" },
+	"modelCalls.maxOutputTokens": { valid: isPositiveInt, expected: "a positive integer" },
+	"modelCalls.thinking": {
+		valid: (v) => THINKING_LEVELS.includes(v as ModelThinkingLevel),
+		expected: `one of ${THINKING_LEVELS.map((level) => JSON.stringify(level)).join(", ")}`,
+	},
 };
-const SECTIONS = new Set(["python", "output", "commandLog", "piTools", "prelude", "systemPrompt"]);
+const SECTIONS = new Set(["python", "output", "commandLog", "piTools", "prelude", "systemPrompt", "modelCalls"]);
 const IMPORT_EXPECTED = 'one "import …" or "from … import …" statement (absolute, without "*")';
 const PACKAGE_EXPECTED = 'a uv requirement string, not empty and not starting with "-"';
 
@@ -125,6 +137,10 @@ export function loadConfig(cwd: string, agentDir = getAgentDir(), projectTrusted
 	if (project) collect(project, paths.project, values, errors, projectTrusted);
 	const hasPackages = (raw: Record<string, unknown> | undefined) =>
 		isPlainObject(raw?.python) && Object.hasOwn(raw.python, "packages");
+	// Model calls spend the user's credentials, so an untrusted project cannot configure them.
+	if (!projectTrusted && project && Object.hasOwn(project, "modelCalls")) {
+		warnings.push('Project "modelCalls" is ignored because the project is not trusted');
+	}
 	const get = <T>(key: string, fallback: T) => (values.has(key) ? (values.get(key) as T) : fallback);
 	const invalidPlacement = values.get(PROMPT_AFTER) === INVALID_PLACEMENT || values.get(PROMPT_BEFORE) === INVALID_PLACEMENT;
 	const source = get<"uv" | "project">("python.source", "uv");
@@ -147,6 +163,13 @@ export function loadConfig(cwd: string, agentDir = getAgentDir(), projectTrusted
 			systemPrompt: {
 				ipythonAfter: invalidPlacement ? [] : get<string[]>(PROMPT_AFTER, []),
 				ipythonBefore: invalidPlacement ? [...DEFAULT_IPYTHON_BEFORE] : get<string[]>(PROMPT_BEFORE, [...DEFAULT_IPYTHON_BEFORE]),
+			},
+			modelCalls: {
+				enabled: get("modelCalls.enabled", false),
+				...(values.has("modelCalls.model") ? { model: values.get("modelCalls.model") as string } : {}),
+				maxPerCell: get("modelCalls.maxPerCell", 100),
+				maxOutputTokens: get("modelCalls.maxOutputTokens", 4096),
+				thinking: get<ModelThinkingLevel>("modelCalls.thinking", "off"),
 			},
 		},
 		errors,
@@ -176,9 +199,10 @@ function readJsonObject(file: string, errors: string[]): Record<string, unknown>
 	return parsed;
 }
 
-function collect(raw: Record<string, unknown>, file: string, values: Map<string, unknown>, errors: string[], allowPackages: boolean): void {
+/** `trusted` is false for an untrusted project: its `python.packages` and `modelCalls` are skipped unread. */
+function collect(raw: Record<string, unknown>, file: string, values: Map<string, unknown>, errors: string[], trusted: boolean): void {
 	const check = (key: string, value: unknown) => {
-		if (key === "python.packages" && !allowPackages) return;
+		if (key === "python.packages" && !trusted) return;
 		const field = Object.hasOwn(FIELDS, key) ? FIELDS[key] : undefined;
 		if (!field) errors.push(`${file}: unknown key "${key}"`);
 		else if (!field.valid(value)) {
@@ -191,6 +215,7 @@ function collect(raw: Record<string, unknown>, file: string, values: Map<string,
 		} else values.set(key, value);
 	};
 	for (const [key, value] of Object.entries(raw)) {
+		if (key === "modelCalls" && !trusted) continue;
 		if (!SECTIONS.has(key)) check(key, value);
 		else if (!isPlainObject(value)) {
 			errors.push(`${file}: "${key}" must be an object`);

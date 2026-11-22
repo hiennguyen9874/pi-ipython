@@ -1,4 +1,4 @@
-"""``pi`` in every Kernel: Bridged calls from a Cell to the session's Pi tools.
+"""``pi`` in every Kernel: Bridged calls from a Cell to the session's Pi tools, and Model calls.
 
 Owned by pi-ipython, not part of the vendored Kernel runtime; the Kernel bootstrap
 loads this file and binds it as ``pi``. Async only: a synchronous wrapper would block
@@ -11,7 +11,7 @@ from typing import Any
 
 from rlm import repl as _repl
 
-__all__ = ["ToolError", "describe", "describe_namespace", "search", "tool", "tools"]
+__all__ = ["ModelCallError", "ToolError", "ask", "describe", "describe_namespace", "search", "tool", "tools"]
 
 
 class ToolError(RuntimeError):
@@ -24,6 +24,30 @@ class ToolError(RuntimeError):
     def __init__(self, message: str, result: dict[str, Any] | None = None) -> None:
         super().__init__(message)
         self.result = result
+
+
+class ModelCallError(RuntimeError):
+    """A Model call failed: turned off, model not found or without credentials, per-Cell limit reached,
+    provider error, aborted, or called after its Cell ended. Carries the provider's error text when there is one.
+    """
+
+
+async def ask(prompt: str, *, system: str | None = None) -> str:
+    """Ask a model with no tools and no Kernel of its own (a Model call); returns its answer text.
+
+    ``system`` is an optional system prompt. Each call is one request without history. The host runs at
+    most 8 Model calls of a Cell at once and queues the rest, so fan out with ``asyncio.gather``.
+    Raises ModelCallError when the call fails.
+    """
+    if not isinstance(prompt, str) or not prompt:
+        raise TypeError("prompt must be a non-empty str")
+    if system is not None and not isinstance(system, str):
+        raise TypeError(f"system must be a str or None, got {type(system).__name__}")
+    data = {"type": "pi.ask", "prompt": prompt, "system": system}
+    reply = await _send(data, ModelCallError("Model calls are only allowed while their originating Cell runs"))
+    if reply.get("status") == "ok":
+        return reply.get("result")
+    raise ModelCallError(str(reply.get("error") or "Model call failed"))
 
 
 async def tool(name: str, args: dict[str, Any] | None = None) -> Any:
@@ -93,11 +117,16 @@ async def describe_namespace(name: str) -> dict[str, Any]:
 
 
 async def _request(data: dict[str, Any]) -> Any:
-    # Detached tasks retain their originating Cell context, even while another Cell runs.
-    context = _repl.current_cell_completion_context()
-    if context is None or context[0].is_set():
-        raise ToolError("Bridged calls are only allowed while their originating Cell runs")
-    reply = await _repl.host_request(data)
+    reply = await _send(data, ToolError("Bridged calls are only allowed while their originating Cell runs"))
     if reply.get("status") == "ok":
         return reply.get("result")
     raise ToolError(str(reply.get("error") or f"{data['type']} failed"), reply.get("result"))
+
+
+async def _send(data: dict[str, Any], ended: Exception) -> dict[str, Any]:
+    """Send a host request for the running Cell; raise ``ended``, sending nothing, once that Cell has ended."""
+    # Detached tasks retain their originating Cell context, even while another Cell runs.
+    context = _repl.current_cell_completion_context()
+    if context is None or context[0].is_set():
+        raise ended
+    return await _repl.host_request(data)

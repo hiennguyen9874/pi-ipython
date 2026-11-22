@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+	type FauxModelDefinition,
 	type FauxResponseStep,
 	fauxAssistantMessage,
 	fauxProvider,
@@ -48,6 +49,8 @@ export interface HarnessOptions {
 	extensions?: InlineExtension[];
 	/** Other extensions loaded before pi-ipython. */
 	extensionsBefore?: InlineExtension[];
+	/** The faux provider's models; the session uses the first. Defaults to faux's single `faux/faux-1`. */
+	fauxModels?: FauxModelDefinition[];
 }
 
 export interface Harness {
@@ -125,7 +128,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 	process.env.PI_CODING_AGENT_DIR = agentDir;
 	await options.setup?.({ cwd, agentDir });
 
-	const faux = fauxProvider();
+	const faux = fauxProvider(options.fauxModels && { models: options.fauxModels });
 	const modelRuntime = await ModelRuntime.create({
 		authPath: join(agentDir, "auth.json"),
 		modelsPath: null,

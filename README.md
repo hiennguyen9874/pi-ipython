@@ -218,7 +218,7 @@ There are two config files:
 - **Global:** `~/.pi/agent/pi-ipython.json`
 - **Project:** `.pi/pi-ipython.json`
 
-Project values override global ones key by key. The exceptions are `prelude.imports` and `python.packages`: global and project lists are combined (trusted projects only for `python.packages`). Bad values and unknown keys are reported with the file and key. An invalid entry is skipped, except when an invalid `systemPrompt` value wins the merge: then both placement settings use their defaults.
+Project values override global ones key by key. The exceptions are `prelude.imports` and `python.packages`: global and project lists are combined (trusted projects only for `python.packages`). `modelCalls.*` keys in project config apply only when pi trusts the project; otherwise they are ignored with a warning. Bad values and unknown keys are reported with the file and key. An invalid entry is skipped, except when an invalid `systemPrompt` value wins the merge: then both placement settings use their defaults.
 
 Defaults:
 
@@ -235,7 +235,8 @@ Defaults:
   "systemPrompt": {
     "ipythonAfter": [],
     "ipythonBefore": ["docs", "addendum", "project_context", "skills", "cwd"]
-  }
+  },
+  "modelCalls": { "enabled": false, "maxPerCell": 100, "maxOutputTokens": 4096, "thinking": "off" }
 }
 ```
 
@@ -257,6 +258,11 @@ Defaults:
 | `piTools.search` | `true` | Enable `pi.search()`. |
 | `systemPrompt.ipythonAfter` | `[]` | Section tag names. `<ipython>` goes right after the first one present in the prompt. Checked before `ipythonBefore`. See [System prompt](#system-prompt). |
 | `systemPrompt.ipythonBefore` | `["docs", "addendum", "project_context", "skills", "cwd"]` | Section tag names. If no `ipythonAfter` section is present, `<ipython>` goes before the first one present, or at the end if none is. |
+| `modelCalls.enabled` | `false` | Let Cells make Model calls with `await pi.ask(prompt, system=None)`: one request to a model with no tools, returning its answer text. Model calls spend your credentials and money; their usage is added to the session's totals. Trusted projects only. |
+| `modelCalls.model` | unset | The model for Model calls, as exact `provider/id`. Unset means the session's current model. If it is not found or has no credentials, you get a warning at startup and every call fails; there is no fallback. Trusted projects only. |
+| `modelCalls.maxPerCell` | `100` | Model calls per Cell. The next call fails before it is sent. At most 8 run at once (fixed). Trusted projects only. |
+| `modelCalls.maxOutputTokens` | `4096` | Output-token cap per Model call (also capped by the model's own limit). Trusted projects only. |
+| `modelCalls.thinking` | `"off"` | Thinking level for Model calls: `"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, or `"max"`. Ignored by models without reasoning. Trusted projects only. |
 
 Rules for `prelude.imports`:
 

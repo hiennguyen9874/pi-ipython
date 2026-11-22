@@ -4,12 +4,13 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { type ExtensionAPI, getAgentDir, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { listPiTools } from "./bridge/pi-tool-listing.ts";
+import { CellModelCalls, resolveModelCallModel } from "./bridge/model-calls.ts";
 import { answerHostRequest, bridgedTools } from "./bridge/pi-tools.ts";
 import { effectivePackages, effectivePrelude, hasDefaultPackages, loadConfig, type PiIpythonConfig } from "./config.ts";
 import { ensureKernelPython, kernelPathEnv, resolveProjectPython, RUNTIME_SRC_DIR } from "./kernel/bootstrap.ts";
 import { KernelClient } from "./kernel/client.ts";
 import { hostJournalPath, reapDeadHosts } from "./kernel/orphans.ts";
-import { extendSystemPrompt, piToolsSection } from "./prompt/system-prompt.ts";
+import { extendSystemPrompt, modelCallsSection, piToolsSection } from "./prompt/system-prompt.ts";
 import { preludeNames } from "./kernel/prelude.ts";
 import { BackgroundNotices, isCancelledBackgroundNotice } from "./session/background-notices.ts";
 import { createIpythonTool, IPYTHON_TOOL_NAME, kernelBootstrapCode, STATE_LOST_NOTICE } from "./tool/ipython-tool.ts";
@@ -141,6 +142,8 @@ export default function piIpython(pi: ExtensionAPI): void {
 				const listed = config.piTools.list ? listPiTools(loadout, bridged) : undefined;
 				return [piToolsSection(config.piTools.search, config.parallelWorkPrompt), ...(listed ? [listed] : [])].join("\n\n");
 			},
+			startModelCalls: (ctx, signal) => new CellModelCalls(() => config.modelCalls, ctx, signal),
+			describeModelCalls: () => (config.modelCalls.enabled ? modelCallsSection(config.modelCalls.maxPerCell) : undefined),
 		}),
 	);
 
@@ -162,6 +165,10 @@ export default function piIpython(pi: ExtensionAPI): void {
 		notices.enabled = config.backgroundNotices && (ctx.mode === "tui" || ctx.mode === "rpc");
 		for (const error of loaded.errors) report(`pi-ipython config: ${error}`, "error");
 		for (const warning of loaded.warnings) report(`pi-ipython config: ${warning}`, "warning");
+		if (config.modelCalls.enabled && config.modelCalls.model !== undefined) {
+			const model = resolveModelCallModel(config.modelCalls, ctx);
+			if (typeof model === "string") report(`pi-ipython config: ${model}; every Model call will fail`, "warning");
+		}
 
 		// Kernels of pi hosts that died without shutting them down.
 		const journalDir = path.join(getAgentDir(), "pi-ipython", "journal");

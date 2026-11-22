@@ -26,6 +26,7 @@ import {
 	truncateTail,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { type CellModelCalls, PI_ASK_REQUEST } from "../bridge/model-calls.ts";
 import { type CellOutput, type CellResult, disposeCellOutput, type KernelClient, KernelBusyError } from "../kernel/client.ts";
 import { countNewlines, OutputBuffer, writeAll } from "../kernel/output-buffer.ts";
 import { preludeCode } from "../kernel/prelude.ts";
@@ -117,6 +118,10 @@ export interface IpythonToolOptions {
 	answerHostRequest?: (data: Record<string, unknown>, ctx: ExtensionToolContext, signal: AbortSignal | undefined) => Promise<unknown>;
 	/** Text appended to the model-facing description (the `pi` API and Listed Pi tools), or undefined to leave it unchanged. */
 	describePiTools?: (loadout: ToolLoadout) => string | undefined;
+	/** Starts one Cell's Model calls, which answer its `pi.ask` requests and sum their usage into the result. */
+	startModelCalls?: (ctx: ExtensionToolContext, signal: AbortSignal | undefined) => CellModelCalls;
+	/** The `pi.ask` paragraph of the description, or undefined while Model calls are off. */
+	describeModelCalls?: () => string | undefined;
 }
 
 /** The State-loss notice as a Cell's error result; a Cell that did not run says so. */
@@ -413,6 +418,8 @@ export function createIpythonTool({
 	takeStateLoss = () => undefined,
 	answerHostRequest,
 	describePiTools,
+	startModelCalls,
+	describeModelCalls,
 }: IpythonToolOptions): ToolDefinition<typeof ipythonSchema, IpythonToolDetails> {
 	const description =
 		"Run Python code in a persistent Python Kernel. The output contains stdout, stderr, the repr of the trailing expression, and errors with tracebacks. Long output keeps its start and end, with the full text saved to a Spill file. Images emitted with `from rlm.repl import emit; emit({'image/png': base64_str})` are returned as images. Output from background threads, tasks, and subprocesses is reported under [background output] in the next result.";
@@ -428,9 +435,10 @@ export function createIpythonTool({
 		reachesTools: () => "all",
 		// Other active tools are there only for Bridged calls: the model sees only ipython.
 		prepareLoadout: (loadout) => {
-			const piGuidance = describePiTools?.(loadout);
+			// The Model-call paragraph does not depend on callable Pi tools.
+			const guidance = [describeModelCalls?.(), describePiTools?.(loadout)].filter((text) => text !== undefined);
 			return {
-				...(piGuidance === undefined ? {} : { descriptions: { [IPYTHON_TOOL_NAME]: `${description}\n\n${piGuidance}` } }),
+				...(guidance.length === 0 ? {} : { descriptions: { [IPYTHON_TOOL_NAME]: [description, ...guidance].join("\n\n") } }),
 				hiddenDeclarations: loadout.declared.map((tool) => tool.name).filter((name) => name !== IPYTHON_TOOL_NAME),
 			};
 		},
@@ -446,6 +454,16 @@ export function createIpythonTool({
 			}
 			let r: CellResult;
 			const live = onUpdate && liveUpdates(onUpdate, getOutputLimits());
+			const modelCalls = startModelCalls?.(ctx, signal);
+			// Usage gathered so far stays on every result of a Cell that ran, even an aborted one.
+			const withUsage = <T extends object>(result: T) => (modelCalls?.usage ? { ...result, usage: modelCalls.usage } : result);
+			const onHostRequest = modelCalls || answerHostRequest
+				? (data: Record<string, unknown>) => {
+					if (modelCalls && data.type === PI_ASK_REQUEST) return modelCalls.ask(data);
+					if (!answerHostRequest) throw new Error(`host request ${String(data.type)} is not supported by pi-ipython`);
+					return answerHostRequest(data, ctx, signal);
+				}
+				: undefined;
 			try {
 				for (;;) {
 					// A dialog may have outlived the Kernel whose state this Cell assumes.
@@ -454,7 +472,7 @@ export function createIpythonTool({
 					try {
 						r = await getKernel().execute(params.code, {
 							signal,
-							onHostRequest: answerHostRequest && ((data) => answerHostRequest(data, ctx, signal)),
+							onHostRequest,
 							onDispatch: live?.start,
 							onOutput: live?.notify,
 						});
@@ -463,7 +481,7 @@ export function createIpythonTool({
 						if (!(error instanceof KernelBusyError) || signal?.aborted) {
 							// This Cell's Kernel died under it: its own error tells the model. Never replay it.
 							const cause = takeStateLoss();
-							if (cause !== undefined) return stateLostResult(cause, true);
+							if (cause !== undefined) return withUsage(stateLostResult(cause, true));
 							throw error;
 						}
 						// Like the branch-switch choice, only the TUI prompts; elsewhere the model gets the busy error.
@@ -480,6 +498,8 @@ export function createIpythonTool({
 				}
 			} finally {
 				live?.close();
+				// A Model call never outlives its Cell's tool call.
+				modelCalls?.close();
 			}
 			const outputLimits = getOutputLimits();
 			let composed: ReturnType<typeof composeCellText>;
@@ -493,11 +513,11 @@ export function createIpythonTool({
 			const text = r.imageNotice ? `${composed.text}\n\n${r.imageNotice}` : composed.text;
 			const images: ImageContent[] = r.images.map((i) => ({ type: "image", ...i }));
 			const content: (TextContent | ImageContent)[] = [{ type: "text", text }, ...images];
-			return {
+			return withUsage({
 				content,
 				details: { ...result, fullOutputPath: composed.fullOutputPath, outputWarning: composed.outputWarning, outputLimits },
 				isError: r.status !== "ok",
-			};
+			});
 		},
 	};
 }
