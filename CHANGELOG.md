@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-22
+
 ### Added
 
 - Model calls: with `modelCalls.enabled: true`, a Cell can `await pi.ask(prompt, system=None)` to send one request to a model with no tools and get its answer text back. The model is `modelCalls.model` (exact `provider/id`) or the session's current model. At most 8 calls run at once per Cell, and at most `modelCalls.maxPerCell` (default 100) are sent per Cell. Each call's output is capped by `modelCalls.maxOutputTokens` (default 4096), and `modelCalls.thinking` (default `"off"`) sets its thinking level. Usage is added to the `ipython` result, so pi counts it in session totals. Esc aborts calls in flight. Every failure raises `pi.ModelCallError`. Project `modelCalls` settings apply only in trusted projects. The `ipython` description explains `pi.ask` only while Model calls are on. (#75)
