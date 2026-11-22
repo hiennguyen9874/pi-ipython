@@ -42,7 +42,7 @@ People who already run pi and want to try a Python-REPL-first agent on their own
 14. **Skills.** Markdown skills only. The model reads `SKILL.md` files with Python.
 15. **Safety.** The README states plainly that there is no sandbox and recommends a container. An optional `confirmEachCell` setting asks the user before each Cell runs.
 16. **TUI.** A simple renderer: highlighted Python code and truncated output.
-17. **Config.** `~/.pi/agent/pi-ipython.json` (global) merged with `.pi/pi-ipython.json` (project); project values win. Keys: `confirmEachCell`, `python.source` (`uv` | `project`), `python.version`, output limits, `piTools.list` and `piTools.search` (both default `true`, v3), `python.defaultPackages` and `python.packages` (Kernel packages, uv only; see #48 and ADR 0004), and `systemPrompt.ipythonAfter` / `systemPrompt.ipythonBefore` (section anchors, #55).
+17. **Config.** `~/.pi/agent/pi-ipython.json` (global) merged with `.pi/pi-ipython.json` (project); project values win. Keys: `confirmEachCell`, `python.source` (`uv` | `project`), `python.version`, output limits, `piTools.list` and `piTools.search` (both default `true`, v3), `python.defaultPackages` and `python.packages` (Kernel packages, uv only; see #48 and ADR 0004), and `systemPrompt.ipythonAfter` / `systemPrompt.ipythonBefore` (section anchors, #55), and `modelCalls.*` (v5, #71).
 
 ### v1.1: Harden the Kernel contract (#16)
 
@@ -78,7 +78,16 @@ Can ship in parallel with v1.1; it does not wait for #16.
 
 ### v5: Model calls and guardrails
 
-- **Model calls** (`GLOSSARY.md`, ADR 0008). A Cell can send a request to a model with no tools and no Kernel of its own (working names `pi.llm` / `pi.llm_batch`). Opt-in, off by default. Model selection, API shape, budget, usage accounting, and lifetime are open in #71. Can ship in parallel with #25.
+- **Model calls** (`GLOSSARY.md`, ADR 0008, settled in #71). Can ship in parallel with #25.
+  - **API.** `await pi.ask(prompt, *, system=None)` returns the answer text as one `str` (thinking parts dropped). No JSON-schema output, images, message history, or per-call model in this release. There is no batch function: the host keeps at most 8 Model calls in flight per Cell and queues the rest, so the model fans out with `asyncio.gather`. Async only, like Bridged calls.
+  - **Model.** `modelCalls.model` (exact `provider/id`, no fuzzy match); unset means the session's current model at call time. It need not be in `enabledModels`. If it is not found or has no auth, the user is warned at `session_start` and every Model call fails; there is no fallback to the session model. `modelCalls.thinking` is one of pi's thinking levels (`off` … `max`), default `off`, independent of the session's thinking level and ignored by models without reasoning. Each call sends `maxTokens = min(modelCalls.maxOutputTokens, model.maxTokens)`.
+  - **Budget.** `modelCalls.maxPerCell` (default 100) Model calls per Cell; the next call fails before it is sent, calls in flight finish. No session budget and no USD cap: cost is 0 or unknown for local, unpriced, and subscription models, and session cost is already in pi's footer.
+  - **Usage.** The usage of every Model call in a Cell is summed into the `ipython` tool result's `usage`, so pi counts it in the footer, `/session`, RPC totals, and the session file. Results returned after a Kernel replacement or abort keep the usage gathered so far.
+  - **Lifetime.** As for Bridged calls: allowed only while the Cell's `ipython` call runs, aborted with its signal (Esc, Cell timeout #72), and failing at once, before anything is sent, from background tasks after the Cell ended.
+  - **Errors.** Every failure (turned off, model not found or no auth, limit reached, provider error, aborted, called after the Cell ended) raises `pi.ModelCallError` (a `RuntimeError`, no subclasses) with the provider's error text when there is one.
+  - **Config.** `modelCalls.enabled` (default `false`), `modelCalls.model`, `modelCalls.maxPerCell` (100), `modelCalls.maxOutputTokens` (4096), `modelCalls.thinking` (`off`). The concurrency of 8 is fixed. Project `modelCalls.*` keys apply only when the project is trusted, with a warning otherwise, since they spend the user's credentials.
+  - **Model-facing docs** (ADR 0007). A paragraph in the `ipython` tool description, present only while `modelCalls.enabled` is on and independent of the Pi-tools section: the signature, what it is for (semantically dense pieces of data), `asyncio.gather` for fan-out, the per-Cell limit, and `pi.ModelCallError`. It does not name the model, so the description stays stable across `/model`. The system prompt never mentions it.
+  - **TUI.** The Cell result shows one line, `N model calls · X tok · $Y`, updated live while the Cell runs.
 - **Cell timeout** (#72). Optional `cell.timeoutSeconds`, unset by default. On expiry the Cell is interrupted as on user abort; a Cell still running after the abort grace period causes a Kernel replacement.
 - **No limit on Bridged calls per Cell.** pi's hooks and permission checks guard each call; revisit only if runaway loops show up.
 - **Output limits stay at pi's defaults.** The README explains the trade-off of a lower `output.maxBytes` (#74). Revisit the default only with session stats (#57).
