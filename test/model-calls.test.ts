@@ -107,17 +107,15 @@ test("turning Model calls on appends only the pi.ask paragraph to the descriptio
 	const on = (await runCell(h, "1")).description;
 	expect(on.startsWith(`${off}\n\n`)).toBe(true);
 	const paragraph = on.slice(off.length + 2);
-	expect(paragraph.startsWith("- `await pi.ask(prompt: str, *, system: str | None = None) -> str`")).toBe(true);
-	expect(paragraph).toContain("semantically dense pieces of data");
-	expect(paragraph).toContain("asyncio.gather");
-	// The shared rules are stated once, in a closing part after the pi.ask bullets.
-	const lines = paragraph.split("\n");
-	const closing = lines.at(-1)!;
-	expect(closing.startsWith("- ")).toBe(true);
-	expect(closing).toContain("at most 8 run at once, and a Cell may make at most 7.");
-	expect(closing).toContain("pi.ModelCallError");
-	expect(lines.slice(0, -1).join("\n")).not.toMatch(/at most|ModelCallError/);
-	expect(paragraph).not.toContain("faux");
+	const [limits, lifetime, signature, ...guidance] = paragraph.split("\n");
+	expect(limits).toMatch(/^- Model calls \(`pi\.ask`\): at most 7 total per Cell, with at most 8 in flight\./);
+	expect(limits).toContain("remaining Cell budget");
+	expect(lifetime).toContain("Await Model calls in their originating Cell. Failed requests raise `pi.ModelCallError`.");
+	expect(signature).toMatch(/^- `await pi\.ask\(prompt: str, \*, system: str \| None = None\) -> str`/);
+	expect(guidance.join("\n")).toContain("request a structured answer and validate it");
+	expect(guidance.join("\n")).toContain("return_exceptions=True");
+	expect(guidance.join("\n")).not.toMatch(/at most|ModelCallError/);
+	expect(paragraph).not.toMatch(/faux|pi\.classify/);
 });
 
 test("the pi.ask paragraph is present even when no Pi tool is callable, and the system prompt never mentions it", async () => {
@@ -200,6 +198,31 @@ test("asyncio.gather over 20 Model calls never has more than 8 in flight", async
 	expect(most).toBe(8);
 });
 
+test("the advertised fan-out keeps answers from a budget-sized batch when another call fails", async () => {
+	h = await createHarness({ setup: enabled({ maxPerCell: 2 }) });
+	const { description } = await runCell(h, "1");
+	const example = description.match(/`(batch = [^`]+)`[^\n]+`(rs = await asyncio\.gather\([^`]+\))`/);
+	expect(example).not.toBeNull();
+	const batchCode = `${example![1]}\n${example![2]}`;
+	const { result, text, requests } = await runCell(h, [
+		"prompts = ['a', 'b', 'c']",
+		"remaining = 2",
+		batchCode,
+		"for p, r in zip(batch, rs):",
+		"    print(p, type(r).__name__, r)",
+	].join("\n"), async (request, options) => {
+		if (request.prompt === "b") return fauxAssistantMessage([], { stopReason: "error", errorMessage: "rate limited" });
+		await sleep(30);
+		return echo(request, options);
+	});
+	expect(result.isError).toBe(false);
+	expect(requests.map((r) => r.prompt)).toEqual(["a", "b"]);
+	expect(text).toBe("a str answer: a\nb ModelCallError rate limited");
+	const rest = await runCell(h, `prompts = prompts[len(batch):]\nremaining = 2\n${batchCode}\nprint(rs[0])`);
+	expect(rest.text).toBe("answer: c");
+	expect(rest.requests.map((r) => r.prompt)).toEqual(["c"]);
+});
+
 test("the call after maxPerCell raises before it is sent; the next Cell gets a fresh budget", async () => {
 	h = await createHarness({ setup: enabled({ maxPerCell: 3 }) });
 	const { text, requests } = await runCell(h, "for i in range(4):\n" + CATCH("await pi.ask(f'q{i}')").replace(/^/gm, "    "));
@@ -220,22 +243,45 @@ test("a provider error raises pi.ModelCallError with its text", async () => {
 	expect(text).toBe("ModelCallError: rate limited");
 });
 
-test("an unknown modelCalls.model warns at start and every call raises without falling back to the session model", async () => {
+test("pi.ask rejects truncated text without dropping its usage", async () => {
+	h = await createHarness({ setup: enabled({ maxOutputTokens: 4 }) });
+	const { result, text, requests } = await runCell(h, "await pi.ask('Extract a JSON name')", () =>
+		fauxAssistantMessage('{"name": "', { stopReason: "length" }));
+	expect(result.isError).toBe(true);
+	expect(text).toContain("ModelCallError: Model answer truncated at the output limit; request a shorter answer or split the input");
+	expect(text).not.toContain('{"name": "');
+	expect(requests).toHaveLength(1);
+	expect(result.usage?.output).toBeGreaterThan(0);
+});
+
+test.each([false, true])("an unknown chat model isn't advertised or used (usable classifier: %s)", async (classify) => {
 	const notices: { message: string; type?: string }[] = [];
 	h = await createHarness({
 		ui: { notify: (message, type) => notices.push({ message, type }) },
-		setup: enabled({ model: "faux/nope" }),
+		...(classify ? withClassifier({ model: "faux/nope" }) : { setup: enabled({ model: "faux/nope" }) }),
 	});
 	expect(notices).toEqual([{
 		message: "pi-ipython config: Model faux/nope (modelCalls.model) not found; every pi.ask call will fail",
 		type: "warning",
 	}]);
-	const { text, requests } = await runCell(h, CATCH("await pi.ask('hi')"));
-	expect(text).toBe("ModelCallError: Model faux/nope (modelCalls.model) not found");
+	const code = [CATCH("await pi.ask('hi')"), ...(classify ? [`print(await pi.classify({}, ${QUESTIONS}))`] : [])];
+	const { text, requests, description } = await runCell(h, code.join("\n"));
+	expect(text.split("\n")).toEqual([
+		"ModelCallError: Model faux/nope (modelCalls.model) not found",
+		...(classify ? ["{}"] : []),
+	]);
 	expect(requests).toEqual([]);
+	expect(description).not.toMatch(/pi\.ask|asyncio\.gather/);
+	if (classify) {
+		expect(description).toContain("- Model calls (`pi.classify`):");
+		expect(description).toContain(CLASSIFY_SIGNATURE);
+		expect(h.classifier.requests).toHaveLength(1);
+	} else {
+		expect(description).not.toMatch(/pi\.classify|Model calls|ModelCallError/);
+	}
 });
 
-test("Model calls using the session model warn at startup and reject when credentials are missing", async () => {
+test("pi.ask using the session model is advertised only while credentials are available", async () => {
 	const auth = vi.spyOn(ModelRegistry.prototype, "hasConfiguredAuth").mockReturnValue(false);
 	try {
 		const notices: string[] = [];
@@ -243,12 +289,16 @@ test("Model calls using the session model warn at startup and reject when creden
 		expect(notices).toEqual([
 			"pi-ipython config: No credentials for faux/faux-1, the model for Model calls; every pi.ask call will fail",
 		]);
-		const { text, requests } = await runCell(h, CATCH("await pi.ask('hi')"));
+		const { text, requests, description } = await runCell(h, CATCH("await pi.ask('hi')"));
 		expect(text).toBe("ModelCallError: No credentials for faux/faux-1, the model for Model calls");
 		expect(requests).toEqual([]);
+		expect(description).not.toContain("pi.ask");
 	} finally {
 		auth.mockRestore();
 	}
+	const available = await runCell(h!, "print(await pi.ask('hi'))");
+	expect(available.description).toContain("await pi.ask(");
+	expect(available.text).toBe("answer: hi");
 });
 
 test("aborting a Cell during a Model call aborts the call and retains completed usage", async () => {
@@ -540,15 +590,39 @@ test("pi.classify returns the classifier's bool, choice, and score answers uncha
 	expect(requests).toEqual([]);
 	expect(result.usage).toEqual(USAGE);
 	expect(result.details).toMatchObject({ modelCalls: { count: 1, totalTokens: 102, cost: 0.0015 } });
-	// The description: the pi.classify bullets after pi.ask's, then one closing part for both, naming no model.
 	const lines = description.split("\n");
-	const at = lines.findIndex((line) => line.startsWith(CLASSIFY_SIGNATURE));
-	expect(at).toBeGreaterThan(lines.findIndex((line) => line.startsWith("- `await pi.ask(")));
-	expect(lines.slice(at).join("\n")).toMatch(/"bool".*"choice".*"score"/s);
-	const closing = lines.at(-1)!;
-	expect(closing).toBe("- `pi.ask` and `pi.classify` calls together: at most 8 run at once, and a Cell may make at most 100. A failed call, including one over that limit, raises `pi.ModelCallError`.");
-	expect(lines.slice(at, -1).join("\n")).not.toMatch(/at most|ModelCallError/);
-	expect(lines.slice(at).join("\n")).not.toMatch(/faux-classifier|Faux Judge|\bimages\b/i);
+	const shared = lines.findIndex((line) => line.startsWith("- Model calls ("));
+	const ask = lines.findIndex((line) => line.startsWith("- `await pi.ask("));
+	const classify = lines.findIndex((line) => line.startsWith(CLASSIFY_SIGNATURE));
+	expect(shared).toBeGreaterThanOrEqual(0);
+	expect(lines[shared]).toMatch(/^- Model calls \(`pi\.ask` and `pi\.classify`\): at most 100 total per Cell, with at most 8 in flight\./);
+	expect(ask).toBeGreaterThan(shared);
+	expect(classify).toBeGreaterThan(ask);
+	const classifierGuidance = lines.slice(classify).join("\n");
+	expect(classifierGuidance).toMatch(/`bool`.*`choice`.*`score`/s);
+	expect(classifierGuidance).toContain("Prefer typed answers to parsing free text");
+	expect(lines.slice(ask).join("\n")).not.toMatch(/at most|ModelCallError|request a structured answer|faux-classifier|Faux Judge|\bimages\b/i);
+});
+
+test("the advertised classifier example passes a question-ID map and reads a typed answer", async () => {
+	h = await createHarness(withClassifier());
+	h.classifier.setReply(() => ({ answers: { positive: ANSWERS.positive } }));
+	const { description } = await runCell(h, "1");
+	const example = description.match(/`(a = await pi\.classify\([^`]+\))`; read `([^`]+)`/);
+	expect(example).not.toBeNull();
+	const { result, text } = await runCell(h, `text = 'Great!'\n${example![1]}\nprint(${example![2]})`);
+	expect(result.isError).toBe(false);
+	expect(text).toBe("0.875");
+	expect(h.classifier.requests).toEqual([{
+		state: { review: "Great!" },
+		questions: {
+			positive: {
+				type: "bool",
+				instructions: "Is the review positive?",
+				criteria: { true: "Positive", false: "Not positive" },
+			},
+		},
+	}]);
 });
 
 test("pi.ask and pi.classify share the 8-in-flight cap", async () => {
@@ -646,7 +720,7 @@ test("with modelCalls.classifier unset, pi.classify is not described and fails n
 	expect(h.classifier.requests).toEqual([]);
 	expect(notices).toEqual([]);
 	expect(description).not.toContain("pi.classify");
-	expect(description.split("\n").at(-1)).toMatch(/^- `pi\.ask` calls: at most 8/);
+	expect(description).toContain("- Model calls (`pi.ask`): at most 1 total per Cell, with at most 8 in flight.");
 });
 
 test.each([

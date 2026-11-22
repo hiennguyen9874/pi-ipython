@@ -27,8 +27,8 @@ export default function piIpython(pi: ExtensionAPI): void {
 	let cwd = process.cwd();
 	let config: PiIpythonConfig = loadConfig(cwd).config;
 	let journalPath: string | undefined;
-	/** The session's model registry, for the `pi.classify` paragraph. Set on session start. */
-	let modelRegistry: ExtensionContext["modelRegistry"] | undefined;
+	/** Live model and registry getters for Model-call availability. Set on session start. */
+	let modelContext: Pick<ExtensionContext, "model" | "modelRegistry"> | undefined;
 	/** The session's state directory: Command logs live in it, and it is deleted when the session shuts down. */
 	const stateDir = newStateDir();
 	/** A Python-state notice pi has not persisted yet; `sent` once a request has carried it. */
@@ -145,11 +145,14 @@ export default function piIpython(pi: ExtensionAPI): void {
 				return [piToolsSection(config.piTools.search, config.parallelWorkPrompt), ...(listed ? [listed] : [])].join("\n\n");
 			},
 			startModelCalls: (ctx, signal, onChange) => new CellModelCalls(() => config.modelCalls, ctx, signal, onChange),
-			// pi.classify is described only while its classifier resolves, so the model never plans around a failing API.
 			describeModelCalls: () => {
-				if (!config.modelCalls.enabled) return undefined;
-				const classify = !!modelRegistry && typeof resolveClassifier(config.modelCalls, modelRegistry) !== "string";
-				return modelCallsSection(config.modelCalls.maxPerCell, classify);
+				const settings = config.modelCalls;
+				if (!settings.enabled || !modelContext) return undefined;
+				return modelCallsSection({
+					maxPerCell: settings.maxPerCell,
+					ask: typeof resolveModelCallModel(settings, modelContext) !== "string",
+					classify: typeof resolveClassifier(settings, modelContext.modelRegistry) !== "string",
+				});
 			},
 		}),
 	);
@@ -162,7 +165,7 @@ export default function piIpython(pi: ExtensionAPI): void {
 		cwd = ctx.cwd;
 		const loaded = loadConfig(cwd, getAgentDir(), ctx.isProjectTrusted());
 		config = loaded.config;
-		modelRegistry = ctx.modelRegistry;
+		modelContext = ctx;
 		report = (message, type) => {
 			if (ctx.hasUI) ctx.ui.notify(message, type);
 			else console.error(message);

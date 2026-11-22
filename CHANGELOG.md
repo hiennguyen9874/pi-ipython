@@ -16,9 +16,13 @@
 
 - A cut Cell result keeps its start and its end instead of only its tail: about 20% of the output limits for the start and 80% for the end, around a `[… N lines elided, full output in <path>]` marker that replaces the trailing `[Output truncated …]` notice. Background output is cut on its own, with its heading always shown, so the Cell's traceback stays visible however much Background output follows it. Running Cells stream the same shape without a Spill file. (#65)
 
-- The Model calls part of the `ipython` description is now the `pi.ask` bullets followed by one closing line that states the 8-in-flight cap, the per-Cell limit, and `pi.ModelCallError`. Internally, the budget, in-flight slot, usage sum, TUI summary, and Cell lifetime checks now go through one shared Model-call path that `pi.classify` will reuse. `pi.ask` otherwise behaves as before. (#78)
+- `pi.ask` and `pi.classify` share one Model-call path for the budget, in-flight slots, usage, TUI summary, and Cell lifetime. (#78)
 
 ### Fixed
+
+- The `ipython` description lists only available Model-call APIs and shows how to fan out within the shared Cell budget while retaining successful answers. A `pi.ask` reply cut off at the output limit raises `pi.ModelCallError` instead of returning partial text; usage still counts. (#82)
+
+- The `pi.classify` guidance explains when to prefer typed answers and shows a complete call with a question-ID map and a matching answer lookup. (#83)
 
 - Classifier questions that cannot be serialized as JSON raise `pi.ModelCallError` without sending a request or using the Cell's Model-call budget. (#79)
 

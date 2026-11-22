@@ -154,28 +154,29 @@ export function piToolsSection(search: boolean, parallelWorkPrompt = true): stri
 
 const PI_ASK_LINES = [
 	"- `await pi.ask(prompt: str, *, system: str | None = None) -> str`: send `prompt` to a model without tools or history and return its answer text",
-	"  - Use it for semantically dense pieces of data that code cannot judge well, e.g. classifying, summarizing, or extracting from each chunk of a long text.",
-	"  - Fan out with `await asyncio.gather(*(pi.ask(p) for p in prompts))`.",
+	"  - Use it for semantic work code cannot do reliably, such as summarizing or extracting from text. Check the answer against the task before using it.",
 ];
+
+const PI_ASK_FALLBACK_LINE = "  - For yes/no, labels, or scores, request a structured answer and validate it before using it.";
+const PI_ASK_BATCH_LINE = "  - For independent prompts, take `batch = prompts[:remaining]` (`remaining` is the unused Cell budget), then `rs = await asyncio.gather(*(pi.ask(p) for p in batch), return_exceptions=True)`. Pair results with inputs; keep answers and handle exceptions separately.";
 
 const PI_CLASSIFY_LINES = [
 	"- `await pi.classify(state: dict, questions: dict) -> dict`: ask a classifier model typed questions about the JSON `state`; returns the answers by question ID",
-	"  - Use it for yes/no, label selection, or scoring without parsing free text. Ask all questions about one `state` in one call.",
-	'  - Questions: `{"type": "bool", "instructions": str, "criteria": {"true": str, "false": str}}`, `{"type": "choice", "instructions": str, "criteria": {label: meaning}}`, or `{"type": "score", "instructions": str, "criteria": [level, ...]}` (lowest level first).',
+	"  - Prefer typed answers to parsing free text for yes/no, label selection, or scoring. Ask all questions about one `state` in one call.",
+	'  - Pass a non-empty `questions` dict mapping string IDs to question objects. For example: `a = await pi.classify({"review": text}, {"positive": {"type": "bool", "instructions": "Is the review positive?", "criteria": {"true": "Positive", "false": "Not positive"}}})`; read `a["positive"]["probability"]`.',
+	'  - Each question has `type`, `instructions` (a string), and `criteria`: for `bool`, `{"true": meaning, "false": meaning}`; for `choice`, `{label: meaning}`; for `score`, `[level, ...]` (lowest first). Meanings and levels are strings.',
 	'  - Answers include `type` and: for bool, `probability` of true; for choice, the label in `choice`, per-label `probabilities`, and `confidence`; for score, `score` (expected level index) and `confidence`.',
 ];
 
-/**
- * Model calls, for the `ipython` description while they are on: the `pi.ask` bullets, the `pi.classify` bullets when
- * `classify` (the classifier resolves), then one closing part with the rules every Model call shares. It names no
- * model, so it stays the same across `/model`. `maxPerCell` is `modelCalls.maxPerCell`.
- */
-export function modelCallsSection(maxPerCell: number, classify: boolean): string {
-	const calls = classify ? "`pi.ask` and `pi.classify` calls together" : "`pi.ask` calls";
+/** Model-call limits and guidance for the APIs that resolve in the live `ipython` loadout. */
+export function modelCallsSection({ maxPerCell, ask, classify }: { maxPerCell: number; ask: boolean; classify: boolean }): string | undefined {
+	const calls = [ask && "`pi.ask`", classify && "`pi.classify`"].filter(Boolean).join(" and ");
+	if (!calls) return undefined;
 	return [
-		...PI_ASK_LINES,
+		`- Model calls (${calls}): at most ${maxPerCell} total per Cell, with at most ${MAX_MODEL_CALLS_IN_FLIGHT} in flight. The host queues calls waiting for a slot. Fit each batch within the remaining Cell budget and process the rest in later Cells.`,
+		"  - Await Model calls in their originating Cell. Failed requests raise `pi.ModelCallError`.",
+		...(ask ? [...PI_ASK_LINES, ...(!classify ? [PI_ASK_FALLBACK_LINE] : []), PI_ASK_BATCH_LINE] : []),
 		...(classify ? PI_CLASSIFY_LINES : []),
-		`- ${calls}: at most ${MAX_MODEL_CALLS_IN_FLIGHT} run at once, and a Cell may make at most ${maxPerCell}. A failed call, including one over that limit, raises \`pi.ModelCallError\`.`,
 	].join("\n");
 }
 

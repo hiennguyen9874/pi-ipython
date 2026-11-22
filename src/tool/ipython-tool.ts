@@ -121,11 +121,11 @@ export interface IpythonToolOptions {
 	/** Text appended to the model-facing description (the `pi` API and Listed Pi tools), or undefined to leave it unchanged. */
 	describePiTools?: (loadout: ToolLoadout) => string | undefined;
 	/**
-	 * Starts one Cell's Model calls, which answer its `pi.ask` requests and sum their usage into the result.
+	 * Starts one Cell's Model calls, which answer its requests and sum their usage into the result.
 	 * `onChange` is called whenever their summary changes.
 	 */
 	startModelCalls?: (ctx: ExtensionToolContext, signal: AbortSignal | undefined, onChange: () => void) => CellModelCalls;
-	/** The `pi.ask` paragraph of the description, or undefined while Model calls are off. */
+	/** Guidance for available Model calls, or undefined when none are available. */
 	describeModelCalls?: () => string | undefined;
 }
 

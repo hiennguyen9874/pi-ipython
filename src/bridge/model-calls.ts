@@ -144,6 +144,9 @@ export class CellModelCalls {
 					.result();
 			},
 		);
+		if (message.stopReason === "length") {
+			throw new Error("Model answer truncated at the output limit; request a shorter answer or split the input");
+		}
 		// The answer text only: thinking parts are dropped.
 		return message.content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("");
 	}

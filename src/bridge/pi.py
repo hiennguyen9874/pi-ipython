@@ -37,8 +37,8 @@ async def ask(prompt: str, *, system: str | None = None) -> str:
     """Ask a model with no tools and no Kernel of its own (a Model call); returns its answer text.
 
     ``system`` is an optional system prompt. Each call is one request without history. The host runs at
-    most 8 Model calls of a Cell at once and queues the rest, so fan out with ``asyncio.gather``.
-    Raises ModelCallError when the call fails.
+    most 8 Model calls of a Cell at once and queues the rest, up to the per-Cell budget.
+    Raises ModelCallError when the call fails, including an answer cut off at its output limit.
     """
     if not isinstance(prompt, str) or not prompt:
         raise TypeError("prompt must be a non-empty str")
