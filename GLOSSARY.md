@@ -29,8 +29,12 @@ Output with no owning Cell (threads, subprocesses, tasks of finished Cells), rep
 _Avoid_: unattributed output, orphan output
 
 **Spill file**:
-The file holding a Cell's full output when its result shows only the tail.
+The file holding a Cell's full output when its result is cut, keeping only its start and end.
 _Avoid_: temp file, full output file, log
+
+**Command log**:
+The file holding a `bash()` command's full output, named when its in-memory output dropped the middle.
+_Avoid_: bash log, Spill file (that is a Cell's)
 
 **Kernel replacement**:
 The Kernel process that ran earlier Cells is gone for any reason (crash, protocol break, user kill, user restart, new session), so the next Cell runs in a different process.
