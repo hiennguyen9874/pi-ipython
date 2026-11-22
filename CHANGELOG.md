@@ -8,7 +8,7 @@
 
 - Classifier Model calls: with `modelCalls.enabled: true`, `await pi.classify(state, questions)` returns bool, choice, and score answers by question ID. Set `modelCalls.classifier` to an exact `provider/id`; there is no fallback. Each request shares `pi.ask`’s per-Cell budget, eight in-flight slots, usage totals, TUI summary, and abort behavior. Classifier image input is not included. (#79)
 
-- Model calls in the TUI: a Cell that made Model calls shows one line, `N model calls · X tok · $Y`, updated while it runs and kept in its result. The cost is left out when it is 0 or unknown. (#76)
+- Model calls in the TUI: a Cell that made Model calls shows one line, `N model calls · X tok · $Y`, updated while it runs and kept in its result. The line shows `$0` when cost is zero or no usage is reported. (#76, #79)
 
 - Command log: when a `bash()` command's output outgrows what the Kernel keeps in memory (the first 512 KiB and last 1.5 MiB), its output is written to `<state dir>/bash/<id>.log` under the session's state directory, which is deleted when the session shuts down. The dropped-middle marker in `.output()`, `.tail()`, and `BashResult.output` names the log, and so does the `[bash-done …]` notice. When the log fills to `commandLog.maxBytes` (default 32 MiB), further output rotates it to `.1`, replacing the previous file. The marker and notice then name both files as the latest output. (#67)
 
@@ -19,6 +19,8 @@
 - The Model calls part of the `ipython` description is now the `pi.ask` bullets followed by one closing line that states the 8-in-flight cap, the per-Cell limit, and `pi.ModelCallError`. Internally, the budget, in-flight slot, usage sum, TUI summary, and Cell lifetime checks now go through one shared Model-call path that `pi.classify` will reuse. `pi.ask` otherwise behaves as before. (#78)
 
 ### Fixed
+
+- Classifier questions that cannot be serialized as JSON raise `pi.ModelCallError` without sending a request or using the Cell's Model-call budget. (#79)
 
 - Model-call render tests now cover both free and priced calls for single-call and multiple-call summaries, live and final. (#76)
 

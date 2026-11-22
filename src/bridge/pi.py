@@ -64,7 +64,10 @@ async def classify(state: dict[str, Any], questions: dict[str, Any]) -> dict[str
         raise TypeError(f"questions must be a dict, got {type(questions).__name__}")
     if not questions:
         raise ValueError("questions must not be empty")
-    return await _model_call({"type": "pi.classify", "state": state, "questions": questions})
+    try:
+        return await _model_call({"type": "pi.classify", "state": state, "questions": questions})
+    except (TypeError, ValueError) as e:
+        raise ModelCallError(str(e)) from None
 
 
 async def _model_call(data: dict[str, Any]) -> Any:

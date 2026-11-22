@@ -440,7 +440,7 @@ test("a Cell without Model calls shows no Model-call line, live or final", async
 });
 
 test.each([
-	{ price: "free", cost: 0, suffix: "" },
+	{ price: "free", cost: 0, suffix: " · $0" },
 	{ price: "priced", cost: 0.01, suffix: " · $0.010" },
 ])("one $price Model call shows its summary live and final", async ({ cost, suffix }) => {
 	if (cost) priceModelCalls(cost);
@@ -459,7 +459,7 @@ test.each([
 });
 
 test.each([
-	{ price: "free", cost: 0, totalCost: 0, suffix: "" },
+	{ price: "free", cost: 0, totalCost: 0, suffix: " · $0" },
 	{ price: "priced", cost: 0.01, totalCost: 0.03, suffix: " · $0.030" },
 ])("N $price Model calls show the growing count live and the summed usage in the final result", async ({ cost, totalCost, suffix }) => {
 	if (cost) priceModelCalls(cost);
@@ -620,6 +620,21 @@ test("wrong pi.classify argument types raise TypeError or ValueError, send nothi
 	expect(h.classifier.requests).toHaveLength(1);
 });
 
+test("non-JSON classifier questions raise ModelCallError without sending or using budget", async () => {
+	h = await createHarness(withClassifier({ maxPerCell: 1 }));
+	const { text } = await runCell(h, [
+		CATCH("await pi.classify({}, {'q': {'criteria': {1, 2}}})"),
+		CATCH("await pi.classify({}, {'q': {'criteria': [float('nan')]}})"),
+		`print(await pi.classify({'n': 1}, ${QUESTIONS}))`,
+	].join("\n"));
+	const lines = text.split("\n");
+	expect(lines).toHaveLength(3);
+	expect(lines[0]).toMatch(/^ModelCallError: .*set/);
+	expect(lines[1]).toMatch(/^ModelCallError: .*nan/);
+	expect(lines[2]).toBe("{}");
+	expect(h.classifier.requests.map((request) => request.state)).toEqual([{ n: 1 }]);
+});
+
 test("with modelCalls.classifier unset, pi.classify is not described and fails naming the key, without counting", async () => {
 	const notices: string[] = [];
 	h = await createHarness({ fauxClassifier: {}, ui: { notify: (message) => notices.push(message) }, setup: enabled({ maxPerCell: 1 }) });
@@ -697,7 +712,7 @@ test.each(["error", "aborted"] as const)("a classifier result with stopReason %s
 	expect(result.details).toMatchObject({ modelCalls: { count: 1, totalTokens: 102 } });
 });
 
-test("a classifier result without usage counts in the Model-call line with 0 tok and no cost", async () => {
+test("a classifier result without usage counts in the Model-call line with 0 tok and $0", async () => {
 	h = await createHarness(withClassifier());
 	h.classifier.setReply(() => ({ answers: { positive: ANSWERS.positive } }));
 	const updates = recordUpdates(h);
@@ -705,7 +720,7 @@ test("a classifier result without usage counts in the Model-call line with 0 tok
 	expect(text).toBe("{'positive': {'type': 'bool', 'probability': 0.875}}");
 	expect(result.usage).toBeUndefined();
 	expect(result.details).toMatchObject({ modelCalls: { count: 1, totalTokens: 0, cost: 0 } });
-	expect(renderRows(h, updates, result).final.split("\n")).toContain("1 model call · 0 tok");
+	expect(renderRows(h, updates, result).final.split("\n")).toContain("1 model call · 0 tok · $0");
 });
 
 test("aborting a Cell aborts its pi.classify call in flight", async () => {

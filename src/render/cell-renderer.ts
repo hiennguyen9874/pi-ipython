@@ -90,11 +90,9 @@ export function renderCellResult(
 	return container;
 }
 
-/** `N model calls · X tok · $Y`, formatted like pi's footer; no cost when it is 0 or unknown. */
+/** `N model calls · X tok · $Y`, with unknown usage counted as zero. */
 function modelCallsLine({ count, totalTokens, cost }: ModelCallsSummary): string {
-	const parts = [`${count} model call${count === 1 ? "" : "s"}`, `${formatTokens(totalTokens)} tok`];
-	if (cost > 0) parts.push(`$${cost.toFixed(3)}`);
-	return parts.join(" · ");
+	return `${count} model call${count === 1 ? "" : "s"} · ${formatTokens(totalTokens)} tok · $${cost === 0 ? "0" : cost.toFixed(3)}`;
 }
 
 /** Token counts as pi's footer shows them (its `formatTokens` is not exported). */
