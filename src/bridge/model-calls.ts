@@ -82,12 +82,15 @@ export class CellModelCalls {
 		try {
 			this.checkOpen();
 			const thinking = clampThinkingLevel(model, config.thinking);
+			const maxTokens = Math.min(config.maxOutputTokens, model.maxTokens);
+			// Budget-based reasoning adapters add thinking tokens, up to the model ceiling.
+			const requestModel = thinking !== "off" && maxTokens < model.maxTokens ? { ...model, maxTokens } : model;
 			const message = await this.ctx.modelRegistry.streamSimple(
-				model,
+				requestModel,
 				{ ...(system ? { systemPrompt: system } : {}), messages: [{ role: "user", content: prompt, timestamp: Date.now() }] },
 				{
 					signal: this.controller.signal,
-					maxTokens: Math.min(config.maxOutputTokens, model.maxTokens),
+					maxTokens,
 					...(thinking === "off" ? {} : { reasoning: thinking }),
 				},
 			).result();

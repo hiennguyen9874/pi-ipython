@@ -12,8 +12,9 @@ import {
 	type ToolResultMessage,
 	type TranscriptContext,
 } from "@earendil-works/pi-ai";
-import { afterEach, expect, test } from "vitest";
-import { createHarness, type Harness, type HarnessOptions, resultText, writeConfigs } from "./harness.ts";
+import { ModelRegistry } from "@earendil-works/pi-coding-agent";
+import { afterEach, expect, test, vi } from "vitest";
+import { createHarness, type Harness, type HarnessOptions, kernelPids, resultText, writeConfigs } from "./harness.ts";
 
 let h: Harness | undefined;
 afterEach(async () => {
@@ -24,6 +25,7 @@ afterEach(async () => {
 /** What one Model call sent. */
 interface ModelRequest {
 	model: string;
+	modelMaxTokens: number;
 	system: string | undefined;
 	prompt: string;
 	options: SimpleStreamOptions | undefined;
@@ -48,6 +50,7 @@ async function runCell(harness: Harness, code: string, reply: ModelReply = echo,
 			const user = context.messages.find((m) => m.role === "user");
 			const request: ModelRequest = {
 				model: `${model.provider}/${model.id}`,
+				modelMaxTokens: model.maxTokens,
 				system: system && getSystemMessageText(system),
 				prompt: typeof user?.content === "string" ? user.content : "",
 				options,
@@ -222,12 +225,32 @@ test("an unknown modelCalls.model warns at start and every call raises without f
 	expect(requests).toEqual([]);
 });
 
-test("aborting a Cell during a Model call aborts the call", async () => {
+test("Model calls using the session model warn at startup and reject when credentials are missing", async () => {
+	const auth = vi.spyOn(ModelRegistry.prototype, "hasConfiguredAuth").mockReturnValue(false);
+	try {
+		const notices: string[] = [];
+		h = await createHarness({ ui: { notify: (message) => notices.push(message) }, setup: enabled() });
+		expect(notices).toEqual([
+			"pi-ipython config: No credentials for faux/faux-1, the model for Model calls; every Model call will fail",
+		]);
+		const { text, requests } = await runCell(h, CATCH("await pi.ask('hi')"));
+		expect(text).toBe("ModelCallError: No credentials for faux/faux-1, the model for Model calls");
+		expect(requests).toEqual([]);
+	} finally {
+		auth.mockRestore();
+	}
+});
+
+test("aborting a Cell during a Model call aborts the call and retains completed usage", async () => {
 	h = await createHarness({ setup: enabled() });
 	let markStarted!: () => void;
 	const started = new Promise<void>((resolve) => { markStarted = resolve; });
 	let aborted = false;
-	const run = runCell(h, "x = await pi.ask('slow')", async (_request, options) => {
+	const fast: ModelReply = () => fauxAssistantMessage("A deliberately longer answer than the slow call will return.");
+	const completed = (await runCell(h, "await pi.ask('fast')", fast)).result.usage!;
+	expect(completed.output).toBeGreaterThan(2);
+	const run = runCell(h, "await pi.ask('fast')\nx = await pi.ask('slow')", async (request, options) => {
+		if (request.prompt === "fast") return fast(request, options);
 		markStarted();
 		await new Promise((resolve) => options?.signal?.addEventListener("abort", resolve, { once: true }));
 		aborted = options?.signal?.aborted === true;
@@ -239,6 +262,25 @@ test("aborting a Cell during a Model call aborts the call", async () => {
 	expect(aborted).toBe(true);
 	expect(result.isError).toBe(true);
 	expect(text).toContain("KeyboardInterrupt");
+	// The interrupted request may itself report usage before the Cell settles.
+	expect(result.usage?.output).toBeGreaterThanOrEqual(completed.output);
+});
+
+test("a Kernel replacement preserves usage already gathered by the Cell", async () => {
+	h = await createHarness({ setup: enabled() });
+	const first = await runCell(h, "await pi.ask('fast')");
+	expect(first.result.usage?.totalTokens).toBeGreaterThan(0);
+	const [pid] = kernelPids();
+	expect(pid).toBeDefined();
+	const { result } = await runCell(h, "await pi.ask('fast')\nawait pi.ask('replace')", (request, options) => {
+		if (request.prompt === "fast") return echo(request, options);
+		process.kill(pid!, "SIGKILL");
+		return new Promise((resolve) => {
+			options?.signal?.addEventListener("abort", () => resolve(fauxAssistantMessage("too late")), { once: true });
+		});
+	});
+	expect(result.isError).toBe(true);
+	expect(result.usage).toEqual(first.result.usage);
 });
 
 test("a background task calling pi.ask after its Cell returned raises pi.ModelCallError and sends nothing", async () => {
@@ -260,12 +302,15 @@ test("a background task calling pi.ask after its Cell returned raises pi.ModelCa
 	expect([...first.requests, ...later.requests]).toEqual([]);
 });
 
-test("untrusted project modelCalls are ignored with a warning; trusted ones apply", async () => {
+test.each([
+	[{ modelCalls: { enabled: true } }, { modelCalls: { enabled: true, maxPerCell: "bad" } }],
+	[{ "modelCalls.enabled": true }, { "modelCalls.enabled": true, "modelCalls.maxPerCell": "bad" }],
+])("project Model call settings %j apply only when trusted", async (valid, invalid) => {
 	const notices: string[] = [];
 	h = await createHarness({
 		projectTrusted: false,
 		ui: { notify: (message) => notices.push(message) },
-		setup: (dirs) => writeConfigs(dirs, {}, { modelCalls: { enabled: true, maxPerCell: "bad" } }),
+		setup: (dirs) => writeConfigs(dirs, {}, invalid),
 	});
 	expect(notices).toEqual(['pi-ipython config: Project "modelCalls" is ignored because the project is not trusted']);
 	const untrusted = await runCell(h, CATCH("await pi.ask('hi')"));
@@ -273,7 +318,7 @@ test("untrusted project modelCalls are ignored with a warning; trusted ones appl
 	expect(untrusted.description).not.toContain("pi.ask");
 	await h.dispose();
 
-	h = await createHarness({ projectTrusted: true, setup: (dirs) => writeConfigs(dirs, {}, { modelCalls: { enabled: true } }) });
+	h = await createHarness({ projectTrusted: true, setup: (dirs) => writeConfigs(dirs, {}, valid) });
 	expect((await runCell(h, "print(await pi.ask('hi'))")).text).toBe("answer: hi");
 });
 
@@ -320,4 +365,7 @@ test("valid modelCalls values apply: maxOutputTokens, maxPerCell, and thinking r
 	const { text, requests } = await runCell(h, ["print(await pi.ask('a'))", CATCH("await pi.ask('b')")].join("\n"));
 	expect(text).toBe("answer: a\nModelCallError: Model call limit reached: at most 1 per Cell (modelCalls.maxPerCell)");
 	expect(requests[0]!.options).toMatchObject({ maxTokens: 77, reasoning: "minimal" });
+	// Budget-based reasoning adapters may add thinking tokens up to the request model's ceiling.
+	expect(requests[0]!.modelMaxTokens).toBe(77);
+	expect(h.session.model?.maxTokens).toBeGreaterThan(77);
 });

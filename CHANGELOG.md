@@ -14,6 +14,8 @@
 
 ### Fixed
 
+- Model calls: untrusted project config cannot override `modelCalls` settings, including dotted keys. Startup warns when the session model lacks credentials. Direct requests keep budget-based reasoning within the configured output-token ceiling. (#75)
+
 - Byte-limited Cell results keep their opening output, including a UTF-8-safe prefix of an oversized first line. When the output budget cannot be split, the traceback takes precedence over Background output. The terminal shows the Spill file path without reporting the model's elision count. (#65)
 
 ## [0.3.0] - 2026-11-21

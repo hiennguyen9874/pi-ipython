@@ -126,6 +126,10 @@ export function configPaths(cwd: string, agentDir = getAgentDir()): { global: st
 	};
 }
 
+function isModelCallsKey(key: string): boolean {
+	return key === "modelCalls" || key.startsWith("modelCalls.");
+}
+
 export function loadConfig(cwd: string, agentDir = getAgentDir(), projectTrusted = false): LoadedConfig {
 	const errors: string[] = [];
 	const warnings: string[] = [];
@@ -138,7 +142,7 @@ export function loadConfig(cwd: string, agentDir = getAgentDir(), projectTrusted
 	const hasPackages = (raw: Record<string, unknown> | undefined) =>
 		isPlainObject(raw?.python) && Object.hasOwn(raw.python, "packages");
 	// Model calls spend the user's credentials, so an untrusted project cannot configure them.
-	if (!projectTrusted && project && Object.hasOwn(project, "modelCalls")) {
+	if (!projectTrusted && project && Object.keys(project).some(isModelCallsKey)) {
 		warnings.push('Project "modelCalls" is ignored because the project is not trusted');
 	}
 	const get = <T>(key: string, fallback: T) => (values.has(key) ? (values.get(key) as T) : fallback);
@@ -215,7 +219,7 @@ function collect(raw: Record<string, unknown>, file: string, values: Map<string,
 		} else values.set(key, value);
 	};
 	for (const [key, value] of Object.entries(raw)) {
-		if (key === "modelCalls" && !trusted) continue;
+		if (!trusted && isModelCallsKey(key)) continue;
 		if (!SECTIONS.has(key)) check(key, value);
 		else if (!isPlainObject(value)) {
 			errors.push(`${file}: "${key}" must be an object`);

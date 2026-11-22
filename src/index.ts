@@ -165,7 +165,7 @@ export default function piIpython(pi: ExtensionAPI): void {
 		notices.enabled = config.backgroundNotices && (ctx.mode === "tui" || ctx.mode === "rpc");
 		for (const error of loaded.errors) report(`pi-ipython config: ${error}`, "error");
 		for (const warning of loaded.warnings) report(`pi-ipython config: ${warning}`, "warning");
-		if (config.modelCalls.enabled && config.modelCalls.model !== undefined) {
+		if (config.modelCalls.enabled) {
 			const model = resolveModelCallModel(config.modelCalls, ctx);
 			if (typeof model === "string") report(`pi-ipython config: ${model}; every Model call will fail`, "warning");
 		}
