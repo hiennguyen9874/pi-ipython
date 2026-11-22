@@ -14,6 +14,8 @@
 
 - A cut Cell result keeps its start and its end instead of only its tail: about 20% of the output limits for the start and 80% for the end, around a `[… N lines elided, full output in <path>]` marker that replaces the trailing `[Output truncated …]` notice. Background output is cut on its own, with its heading always shown, so the Cell's traceback stays visible however much Background output follows it. Running Cells stream the same shape without a Spill file. (#65)
 
+- The Model calls part of the `ipython` description is now the `pi.ask` bullets followed by one closing line that states the 8-in-flight cap, the per-Cell limit, and `pi.ModelCallError`. Internally, the budget, in-flight slot, usage sum, TUI summary, and Cell lifetime checks now go through one shared Model-call path that `pi.classify` will reuse. `pi.ask` otherwise behaves as before. (#78)
+
 ### Fixed
 
 - Model-call render tests now cover both free and priced calls for single-call and multiple-call summaries, live and final. (#76)

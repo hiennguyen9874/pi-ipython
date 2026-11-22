@@ -12,6 +12,13 @@ export const MAX_MODEL_CALLS_IN_FLIGHT = 8;
 type ModelCallsConfig = PiIpythonConfig["modelCalls"];
 type ModelContext = Pick<ExtensionContext, "model" | "modelRegistry">;
 
+/** What `CellModelCalls` needs from any kind of Model call's reply. */
+interface ModelReply {
+	usage?: Usage;
+	stopReason: string;
+	errorMessage?: string;
+}
+
 const ENDED_ERROR = "Model calls are only allowed while their originating Cell runs";
 const ABORTED_ERROR = "Model call aborted";
 
@@ -85,14 +92,52 @@ export class CellModelCalls {
 
 	/** Answer one `pi.ask` request with the answer text; rejects with the text `pi.ModelCallError` carries. */
 	async ask(data: Record<string, unknown>): Promise<string> {
-		const config = this.getConfig();
-		if (!config.enabled) throw new Error("Model calls are turned off (modelCalls.enabled: false)");
+		const config = this.enabledConfig();
 		const { prompt, system } = data;
 		if (typeof prompt !== "string" || prompt === "") throw new Error("prompt must be a non-empty string");
 		if (system !== undefined && system !== null && typeof system !== "string") throw new Error("system must be a string");
+		const message = await this.call(
+			config,
+			() => resolveModelCallModel(config, this.ctx),
+			(model, signal) => {
+				const thinking = clampThinkingLevel(model, config.thinking);
+				const maxTokens = Math.min(config.maxOutputTokens, model.maxTokens);
+				// Budget-based reasoning adapters add thinking tokens, up to the model ceiling.
+				const requestModel = thinking !== "off" && maxTokens < model.maxTokens ? { ...model, maxTokens } : model;
+				return this.ctx.modelRegistry
+					.streamSimple(
+						requestModel,
+						{ ...(system ? { systemPrompt: system } : {}), messages: [{ role: "user", content: prompt, timestamp: Date.now() }] },
+						{ signal, maxTokens, ...(thinking === "off" ? {} : { reasoning: thinking }) },
+					)
+					.result();
+			},
+		);
+		// The answer text only: thinking parts are dropped.
+		return message.content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("");
+	}
+
+	/** The Model calls config, or why Model calls cannot be made at all. */
+	private enabledConfig(): ModelCallsConfig {
+		const config = this.getConfig();
+		if (!config.enabled) throw new Error("Model calls are turned off (modelCalls.enabled: false)");
+		return config;
+	}
+
+	/**
+	 * The steps every kind of Model call shares, after its arguments are checked: fail if the Cell ended or was
+	 * aborted, `prepare` what the request needs (its model and anything else that can fail before the call counts;
+	 * a string is why it cannot be made), count the call against `modelCalls.maxPerCell`, wait for an in-flight
+	 * slot, then `send` it and sum its usage. Resolves to the reply, unless it was aborted or failed.
+	 */
+	private async call<P, R extends ModelReply>(
+		config: ModelCallsConfig,
+		prepare: () => P | string | Promise<P | string>,
+		send: (prepared: P, signal: AbortSignal) => Promise<R>,
+	): Promise<R> {
 		this.checkOpen();
-		const model = resolveModelCallModel(config, this.ctx);
-		if (typeof model === "string") throw new Error(model);
+		const prepared = await prepare();
+		if (typeof prepared === "string") throw new Error(prepared);
 		if (this.sent >= config.maxPerCell) {
 			throw new Error(`Model call limit reached: at most ${config.maxPerCell} per Cell (modelCalls.maxPerCell)`);
 		}
@@ -100,28 +145,16 @@ export class CellModelCalls {
 		await this.acquire();
 		try {
 			this.checkOpen();
-			const thinking = clampThinkingLevel(model, config.thinking);
-			const maxTokens = Math.min(config.maxOutputTokens, model.maxTokens);
-			// Budget-based reasoning adapters add thinking tokens, up to the model ceiling.
-			const requestModel = thinking !== "off" && maxTokens < model.maxTokens ? { ...model, maxTokens } : model;
-			const stream = this.ctx.modelRegistry.streamSimple(
-				requestModel,
-				{ ...(system ? { systemPrompt: system } : {}), messages: [{ role: "user", content: prompt, timestamp: Date.now() }] },
-				{
-					signal: this.controller.signal,
-					maxTokens,
-					...(thinking === "off" ? {} : { reasoning: thinking }),
-				},
-			);
+			const pending = send(prepared, this.controller.signal);
 			this.count++;
 			this.onChange();
-			const message = await stream.result();
-			this.usage = this.usage ? addUsage(this.usage, message.usage) : message.usage;
+			const reply = await pending;
+			// A reply without usage still counts in the summary, with 0 tokens and $0.
+			if (reply.usage) this.usage = this.usage ? addUsage(this.usage, reply.usage) : reply.usage;
 			this.onChange();
-			if (message.stopReason === "aborted") throw new Error(message.errorMessage || ABORTED_ERROR);
-			if (message.stopReason === "error") throw new Error(message.errorMessage || "Model call failed");
-			// The answer text only: thinking parts are dropped.
-			return message.content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("");
+			if (reply.stopReason === "aborted") throw new Error(reply.errorMessage || ABORTED_ERROR);
+			if (reply.stopReason === "error") throw new Error(reply.errorMessage || "Model call failed");
+			return reply;
 		} finally {
 			this.release();
 		}

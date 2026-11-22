@@ -152,16 +152,21 @@ export function piToolsSection(search: boolean, parallelWorkPrompt = true): stri
 	].join("\n");
 }
 
+const PI_ASK_LINES = [
+	"- `await pi.ask(prompt: str, *, system: str | None = None) -> str`: send `prompt` to a model without tools or history and return its answer text",
+	"  - Use it for semantically dense pieces of data that code cannot judge well, e.g. classifying, summarizing, or extracting from each chunk of a long text.",
+	"  - Fan out with `await asyncio.gather(*(pi.ask(p) for p in prompts))`.",
+];
+
 /**
- * `pi.ask`, for the `ipython` description while Model calls are on. It names no model, so it stays the same
- * across `/model`. `maxPerCell` is `modelCalls.maxPerCell`.
+ * Model calls, for the `ipython` description while they are on: the `pi.ask` bullets, then one closing part with
+ * the rules every Model call shares. It names no model, so it stays the same across `/model`.
+ * `maxPerCell` is `modelCalls.maxPerCell`.
  */
 export function modelCallsSection(maxPerCell: number): string {
 	return [
-		"- `await pi.ask(prompt: str, *, system: str | None = None) -> str`: send `prompt` to a model without tools or history and return its answer text",
-		"  - Use it for semantically dense pieces of data that code cannot judge well, e.g. classifying, summarizing, or extracting from each chunk of a long text.",
-		`  - Fan out with \`await asyncio.gather(*(pi.ask(p) for p in prompts))\`; at most ${MAX_MODEL_CALLS_IN_FLIGHT} run at once, and a Cell may make at most ${maxPerCell} calls.`,
-		"  - A failed call, including one over that limit, raises `pi.ModelCallError`.",
+		...PI_ASK_LINES,
+		`- \`pi.ask\` calls: at most ${MAX_MODEL_CALLS_IN_FLIGHT} run at once, and a Cell may make at most ${maxPerCell}. A failed call, including one over that limit, raises \`pi.ModelCallError\`.`,
 	].join("\n");
 }
 

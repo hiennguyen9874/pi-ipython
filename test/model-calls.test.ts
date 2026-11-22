@@ -108,8 +108,13 @@ test("turning Model calls on appends only the pi.ask paragraph to the descriptio
 	expect(paragraph.startsWith("- `await pi.ask(prompt: str, *, system: str | None = None) -> str`")).toBe(true);
 	expect(paragraph).toContain("semantically dense pieces of data");
 	expect(paragraph).toContain("asyncio.gather");
-	expect(paragraph).toContain("at most 8 run at once, and a Cell may make at most 7 calls");
-	expect(paragraph).toContain("pi.ModelCallError");
+	// The shared rules are stated once, in a closing part after the pi.ask bullets.
+	const lines = paragraph.split("\n");
+	const closing = lines.at(-1)!;
+	expect(closing.startsWith("- ")).toBe(true);
+	expect(closing).toContain("at most 8 run at once, and a Cell may make at most 7.");
+	expect(closing).toContain("pi.ModelCallError");
+	expect(lines.slice(0, -1).join("\n")).not.toMatch(/at most|ModelCallError/);
 	expect(paragraph).not.toContain("faux");
 });
 
