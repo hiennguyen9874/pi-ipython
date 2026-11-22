@@ -23,13 +23,31 @@ test("output over the line limit keeps its start and end around a marker, with t
 	const path = fullOutputPath(text);
 	const lines = (from: number, to: number) => Array.from({ length: to - from }, (_, i) => `line ${from + i}`).join("\n");
 	expect(text).toBe(`${lines(0, 400)}\n[… 1000 lines elided, full output in ${path}]\n${lines(1400, 3000)}`);
-	expect(r?.details).toMatchObject({ fullOutputPath: path, outputWarning: `[… 1000 lines elided, full output in ${path}]` });
+	expect(r?.details).toMatchObject({ fullOutputPath: path });
 	expect(path).toBeDefined();
 	if (process.platform !== "win32") expect(statSync(path!).mode & 0o777).toBe(0o600);
 	const full = readFileSync(path!, "utf8").split("\n");
 	expect(full).toHaveLength(3000);
 	expect(full[0]).toBe("line 0");
 	expect(full[2999]).toBe("line 2999");
+});
+
+test("a byte-only cut keeps a short first line before an oversized tail", async () => {
+	h = await createHarness();
+	const [r] = await h.runCells("print('WARNING')\nprint('x' * 100000 + 'END')");
+	const text = resultText(r!);
+	expect(text).toMatch(/^WARNING\n\[… .* elided, full output in /);
+	expect(text.endsWith("END")).toBe(true);
+	expect(Buffer.byteLength(counted(text))).toBeLessThanOrEqual(50 * 1024);
+});
+
+test("a single oversized line keeps both ends without cutting a Unicode character", async () => {
+	h = await createHarness();
+	const [r] = await h.runCells("print('BEGIN' + '😀' * 16000 + 'END', end='')");
+	const text = resultText(r!);
+	expect(text).toMatch(/^BEGIN(?:😀)+\n\[… [^\n]+ elided, full output in [^\n]+\]\n(?:😀)+END$/u);
+	expect(Buffer.byteLength(counted(text))).toBeLessThanOrEqual(50 * 1024);
+	expect(readFileSync(fullOutputPath(text)!, "utf8")).toBe("BEGIN" + "😀".repeat(16000) + "END");
 });
 
 test("output limits come from config", async () => {
@@ -41,7 +59,7 @@ test("output limits come from config", async () => {
 	});
 	const [r] = await h.runCells("print('x' * 50)\nprint('y' * 50)\nprint('z' * 50)");
 	const text = resultText(r!);
-	expect(text).toBe(`[… 2 lines elided, full output in ${fullOutputPath(text)}]\n${"z".repeat(50)}`);
+	expect(text).toBe(`${"x".repeat(20)}\n[… 82B elided, full output in ${fullOutputPath(text)}]\n${"z".repeat(50)}`);
 	expect(readFileSync(fullOutputPath(text)!, "utf8")).toContain("x".repeat(50));
 });
 
@@ -218,6 +236,26 @@ test("a traceback stays at the end of the Cell's own output when its output and 
 	const full = readFileSync(fullOutputPath(text)!, "utf8");
 	expect(full.startsWith("own 0\n")).toBe(true);
 	expect(full).toContain("ValueError: boom\n[background output]\nbg 0\n");
+});
+
+test.each([
+	[{ maxLines: 1 }, "ValueError: boom"],
+	[{ maxBytes: 2 }, "om"],
+] as const)("a failing Cell gets the last available output space before Background output with %j", async (limits, tail) => {
+	h = await createHarness({
+		setup: ({ cwd }) => {
+			mkdirSync(join(cwd, ".pi"));
+			writeFileSync(join(cwd, ".pi", "pi-ipython.json"), JSON.stringify({ output: limits }));
+		},
+	});
+	const [r] = await h.runCells(
+		"import threading\nt = threading.Thread(target=lambda: print('bg payload'))\nt.start()\nt.join()\nraise ValueError('boom')",
+	);
+	const text = resultText(r!);
+	expect(r?.isError).toBe(true);
+	expect(counted(text)).toBe(tail);
+	expect(text).toContain("\n[background output]\n[…");
+	expect(readFileSync(fullOutputPath(text)!, "utf8")).toContain("ValueError: boom\n[background output]\nbg payload");
 });
 
 test("literal background truncation markers do not discard subsequent output", async () => {

@@ -6,6 +6,10 @@
 
 - A cut Cell result keeps its start and its end instead of only its tail: about 20% of the output limits for the start and 80% for the end, around a `[… N lines elided, full output in <path>]` marker that replaces the trailing `[Output truncated …]` notice. Background output is cut on its own, with its heading always shown, so the Cell's traceback stays visible however much Background output follows it. Running Cells stream the same shape without a Spill file. (#65)
 
+### Fixed
+
+- Byte-limited Cell results keep their opening output, including a UTF-8-safe prefix of an oversized first line. When the output budget cannot be split, the traceback takes precedence over Background output. The terminal shows the Spill file path without reporting the model's elision count. (#65)
+
 ## [0.3.0] - 2026-11-21
 
 ### Added

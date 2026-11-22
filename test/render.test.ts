@@ -95,8 +95,9 @@ test("a large exception stays compact and its full message is saved", async () =
 	expect(plain(collapsed)).toContain("to expand");
 	const expanded = plain(renderRow(h, r!, { expanded: true }));
 	expect(expanded).toContain("-end");
-	expect(expanded).toContain("elided, full output in");
 	const path = (r!.details as { fullOutputPath: string }).fullOutputPath;
+	expect(expanded.replace(/\s+/g, " ")).toContain(`[Output truncated. Full output: ${path}]`);
+	expect(expanded).not.toContain("elided");
 	expect(readFileSync(path, "utf8")).toContain("start-" + "x".repeat(100000) + "-end");
 });
 

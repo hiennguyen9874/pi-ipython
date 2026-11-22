@@ -90,7 +90,7 @@ const ipythonSchema = Type.Object({
 export interface IpythonToolDetails extends Omit<CellResult, "output"> {
 	/** Set when the text was truncated: the Spill file holding the full text. */
 	fullOutputPath?: string;
-	/** The elision markers of a cut result, including a failed attempt to save the full output. */
+	/** Warning for the TUI when the full output could not be saved. */
 	outputWarning?: string;
 	/** Raw-text limits shared by model output and the TUI renderer. */
 	outputLimits?: TruncationOptions;
@@ -215,31 +215,48 @@ function measure(segments: Segment[]): Section {
  * A section within the limits: whole, or its start and end around a marker saying what was elided.
  * The end gets most of the limits, as it holds the traceback or summary.
  */
-function cutMiddle(s: Section, maxLines: number, maxBytes: number, markerSuffix: string): { text: string; marker?: string } {
-	if (s.lines <= maxLines && s.bytes <= maxBytes) return { text: s.tail };
-	const head = truncateHead(s.head, { maxLines: Math.floor(maxLines * HEAD_SHARE), maxBytes: Math.floor(maxBytes * HEAD_SHARE) });
-	// The newline ending the start counts toward the limits.
-	const headBytes = head.outputLines > 0 ? head.outputBytes + 1 : 0;
-	const tail = truncateTail(s.tail, { maxLines: maxLines - head.outputLines, maxBytes: Math.max(0, maxBytes - headBytes) });
-	const elided = tail.lastLinePartial
+function cutMiddle(s: Section, maxLines: number, maxBytes: number, markerSuffix: string): string {
+	if (s.lines <= maxLines && s.bytes <= maxBytes) return s.tail;
+	const headMaxBytes = Math.floor(maxBytes * HEAD_SHARE);
+	const headMaxLines = headMaxBytes > 0 ? Math.floor(maxLines * HEAD_SHARE) : 0;
+	const head = truncateHead(s.head, { maxLines: headMaxLines, maxBytes: headMaxBytes });
+	const prefix = head.firstLineExceedsLimit && headMaxLines > 0 ? utf8Prefix(s.head, headMaxBytes) : "";
+	const headLines = prefix ? 1 : head.outputLines;
+	const headBytes = prefix ? Buffer.byteLength(prefix) : head.outputBytes + (headLines > 0 ? 1 : 0);
+	// A partial head needs a display newline, but that newline wasn't in the source.
+	const tail = truncateTail(s.tail, { maxLines: maxLines - headLines, maxBytes: maxBytes - headBytes - (prefix ? 1 : 0) });
+	const elided = prefix || tail.lastLinePartial
 		? formatSize(s.bytes - headBytes - tail.outputBytes)
-		: plural(s.lines - head.outputLines - tail.outputLines, "line");
-	const marker = `[… ${elided} elided${markerSuffix}]`;
-	const parts = [marker];
-	if (head.outputLines > 0) parts.unshift(head.content);
+		: plural(s.lines - headLines - tail.outputLines, "line");
+	const parts = [`[… ${elided} elided${markerSuffix}]`];
+	if (headLines > 0) parts.unshift(prefix || head.content);
 	if (tail.content || (tail.outputLines > 0 && !tail.lastLinePartial)) parts.push(tail.content);
-	return { text: parts.join("\n"), marker };
+	return parts.join("\n");
+}
+
+function utf8Prefix(text: string, maxBytes: number): string {
+	let end = 0;
+	for (const char of text) {
+		maxBytes -= Buffer.byteLength(char);
+		if (maxBytes < 0) break;
+		end += char.length;
+	}
+	return text.slice(0, end);
 }
 
 function plural(count: number, noun: string): string {
 	return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
 
-/** One section's share of a limit both sections exceed together: all of a small one, else half. */
+/** Give a small section what it needs; share spare capacity if this limit isn't binding. */
 function share(limit: number, need: number, other: number): number {
-	if (need + other <= limit || need <= limit / 2) return need;
-	if (other <= limit / 2) return limit - other;
-	return Math.floor(limit / 2);
+	if (!other) return limit;
+	if (!need) return 0;
+	const half = Math.floor(limit / 2);
+	if (need + other <= limit) return Math.min(limit - other, Math.max(need, half));
+	if (need <= half) return need;
+	if (other <= half) return limit - other;
+	return half;
 }
 
 /**
@@ -275,6 +292,7 @@ export function composeCellText(
 
 	let markerSuffix = "";
 	let fullOutputPath: string | undefined;
+	let outputWarning: string | undefined;
 	if (!live) {
 		const path = join(tmpdir(), `pi-ipython-${randomUUID()}.log`);
 		const spill: Segment[] = background ? [...own, ...(own.length ? ["\n"] : []), `${BACKGROUND_HEADING}\n`, background] : own;
@@ -283,15 +301,19 @@ export function composeCellText(
 			fullOutputPath = path;
 			markerSuffix = `, full output in ${path}`;
 		} catch (error) {
-			markerSuffix = `, full output could not be saved: ${error instanceof Error ? error.message : String(error)}`;
+			const reason = error instanceof Error ? error.message : String(error);
+			markerSuffix = `, full output could not be saved: ${reason}`;
+			outputWarning = `[Output truncated; full output could not be saved: ${reason}]`;
 		}
 	}
-	const ownMaxLines = share(maxLines, ownLines, backgroundLines);
-	const ownMaxBytes = share(sectionBytes, ownBytes, backgroundBytes);
+	// If there isn't room to split the budget, give it to the traceback, not Background output.
+	const prioritizeError = r.error && background && (maxLines === 1 || sectionBytes <= 1);
+	const cutBytes = prioritizeError ? maxBytes : sectionBytes;
+	const ownMaxLines = prioritizeError ? maxLines : share(maxLines, ownLines, backgroundLines);
+	const ownMaxBytes = prioritizeError ? cutBytes : share(cutBytes, ownBytes, backgroundBytes);
 	const ownCut = ownSection && cutMiddle(ownSection, ownMaxLines, ownMaxBytes, markerSuffix);
-	const backgroundCut = backgroundSection && cutMiddle(backgroundSection, maxLines - ownMaxLines, sectionBytes - ownMaxBytes, markerSuffix);
-	const outputWarning = [ownCut?.marker, backgroundCut?.marker].filter(Boolean).join("\n");
-	return { text: joinSections(ownCut?.text, backgroundCut?.text), fullOutputPath, outputWarning };
+	const backgroundCut = backgroundSection && cutMiddle(backgroundSection, maxLines - ownMaxLines, cutBytes - ownMaxBytes, markerSuffix);
+	return { text: joinSections(ownCut, backgroundCut), fullOutputPath, outputWarning };
 }
 
 // The same throttle as pi's bash tool (BASH_UPDATE_THROTTLE_MS, not exported).
