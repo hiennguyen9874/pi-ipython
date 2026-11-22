@@ -431,24 +431,30 @@ test("a Cell without Model calls shows no Model-call line, live or final", async
 	for (const text of [...live, final]) expect(text).not.toMatch(/model call/i);
 });
 
-test("one free Model call shows its count and tokens without a cost, live and final", async () => {
+test.each([
+	{ price: "free", cost: 0, suffix: "" },
+	{ price: "priced", cost: 0.01, suffix: " · $0.010" },
+])("one $price Model call shows its summary live and final", async ({ cost, suffix }) => {
+	if (cost) priceModelCalls(cost);
 	h = await createHarness({ setup: enabled() });
 	const updates = recordUpdates(h);
 	const { result } = await runCell(h, "print(await pi.ask('hi'))\nawait asyncio.sleep(0.3)");
 	const tokens = result.usage!.totalTokens;
 	expect(tokens).toBeGreaterThan(0);
 	expect(tokens).toBeLessThan(1000);
-	expect(result.details).toMatchObject({ modelCalls: { count: 1, totalTokens: tokens, cost: 0 } });
+	expect(result.details).toMatchObject({ modelCalls: { count: 1, totalTokens: tokens, cost } });
 	const { live, final } = renderRows(h, updates, result);
+	const summary = `1 model call · ${tokens} tok${suffix}`;
 	expect(final).toContain("answer: hi");
-	expect(final.split("\n")).toContain(`1 model call · ${tokens} tok`);
-	expect(final).not.toContain("$");
-	// While the Cell still runs after its call, the line is already there.
-	expect(live.some((text) => text.split("\n").includes(`1 model call · ${tokens} tok`) && text.includes("Running…"))).toBe(true);
+	expect(final.split("\n")).toContain(summary);
+	expect(live.some((text) => text.split("\n").includes(summary) && text.includes("Running…"))).toBe(true);
 });
 
-test("N priced Model calls show the growing count live, and the summed tokens and cost in the final result", async () => {
-	priceModelCalls(0.01);
+test.each([
+	{ price: "free", cost: 0, totalCost: 0, suffix: "" },
+	{ price: "priced", cost: 0.01, totalCost: 0.03, suffix: " · $0.030" },
+])("N $price Model calls show the growing count live and the summed usage in the final result", async ({ cost, totalCost, suffix }) => {
+	if (cost) priceModelCalls(cost);
 	h = await createHarness({ setup: enabled() });
 	const updates = recordUpdates(h);
 	const long = "x".repeat(2000);
@@ -456,15 +462,17 @@ test("N priced Model calls show the growing count live, and the summed tokens an
 		await sleep(150);
 		return fauxAssistantMessage(long);
 	});
-	expect(result.usage!.cost.total).toBeCloseTo(0.03);
+	expect(result.usage!.cost.total).toBeCloseTo(totalCost);
 	expect(result.usage!.totalTokens).toBeGreaterThan(1000);
 	expect(result.details).toMatchObject({ modelCalls: { count: 3, totalTokens: result.usage!.totalTokens } });
 	const { live, final } = renderRows(h, updates, result);
-	expect(final).toMatch(/^3 model calls · \d+(\.\d)?k tok · \$0\.030$/m);
+	const summary = final.match(/^3 model calls · \d+(?:\.\d)?k tok(.*)$/m);
+	expect(summary?.[1]).toBe(suffix);
 	expect(final.match(/model call/g)).toHaveLength(1);
+	expect(live.some((text) => text.split("\n").includes(summary![0]) && text.includes("Running…"))).toBe(true);
 	const counts = live.flatMap((text) => text.match(/^(\d) model calls? · /m)?.[1] ?? []);
 	expect(new Set(counts)).toEqual(new Set(["1", "2", "3"]));
 	expect(counts).toEqual([...counts].sort());
 	// Cost appears live once the first reply is in.
-	expect(live.some((text) => /^\d model calls? · \S+ tok · \$0\.010$/m.test(text))).toBe(true);
+	if (cost) expect(live.some((text) => /^\d model calls? · \S+ tok · \$0\.010$/m.test(text))).toBe(true);
 });
