@@ -3,6 +3,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+	type ClassifierContext,
+	type ClassifierOptions,
+	type ClassifierResult,
 	type FauxModelDefinition,
 	type FauxResponseStep,
 	fauxAssistantMessage,
@@ -51,6 +54,21 @@ export interface HarnessOptions {
 	extensionsBefore?: InlineExtension[];
 	/** The faux provider's models; the session uses the first. Defaults to faux's single `faux/faux-1`. */
 	fauxModels?: FauxModelDefinition[];
+	/** Register the faux classifier `FAUX_CLASSIFIER` with this `input` (default text only). */
+	fauxClassifier?: { input?: ("text" | "image")[]; apiKey?: string };
+}
+
+/** The faux classifier's `provider/id`, for `modelCalls.classifier`. */
+export const FAUX_CLASSIFIER = "faux-classifier/judge";
+
+/** What the faux classifier returns for one call; `stopReason` defaults to `"stop"` and `answers` to none. */
+export type FauxClassifierReply = Partial<Pick<ClassifierResult, "answers" | "usage" | "stopReason" | "errorMessage">>;
+
+export interface FauxClassifier {
+	/** The context of every call it received, in order. */
+	requests: ClassifierContext[];
+	/** Answer later calls with `reply`; it may wait, e.g. for `options.signal`. */
+	setReply(reply: (context: ClassifierContext, options: ClassifierOptions | undefined) => FauxClassifierReply | Promise<FauxClassifierReply>): void;
 }
 
 export interface Harness {
@@ -60,6 +78,8 @@ export interface Harness {
 	agentDir: string;
 	/** The session's header and entries, to start another session from. */
 	fileEntries(): FileEntry[];
+	/** The faux classifier, with `fauxClassifier` set. */
+	classifier: FauxClassifier;
 	/** Queue scripted model replies. */
 	setResponses(responses: FauxResponseStep[]): void;
 	/** Have the model run each code string as one ipython Cell in a single turn; returns the tool results. */
@@ -113,6 +133,59 @@ export function kernelPids(): number[] {
 }
 
 /**
+ * pi-ai's faux provider has no classifier: this one is registered through pi's custom-provider API, records what it
+ * receives, and answers with the reply set by the test.
+ */
+function fauxClassifier(): FauxClassifier & { extension(options: NonNullable<HarnessOptions["fauxClassifier"]>): InlineExtension } {
+	const requests: ClassifierContext[] = [];
+	let reply: Parameters<FauxClassifier["setReply"]>[0] = () => ({});
+	const [provider, id] = FAUX_CLASSIFIER.split("/") as [string, string];
+	return {
+		requests,
+		setReply: (next) => { reply = next; },
+		extension: ({ input = ["text"], apiKey = "faux" }) => ({
+			name: "faux-classifier",
+			factory: (pi) => {
+				pi.registerProvider(provider, {
+					baseUrl: "http://faux-classifier.invalid",
+					apiKey,
+					models: [{
+						type: "classifier",
+						id,
+						name: "Faux Judge",
+						api: "faux-classify",
+						input,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+						contextWindow: 32000,
+					}],
+					classifiers: {
+						"faux-classify": {
+							classify: async (model, context, options) => {
+								requests.push(context);
+								const result = await reply(context, options);
+								return {
+									api: model.api,
+									provider: model.provider,
+									model: model.id,
+									answers: {},
+									stopReason: "stop",
+									timestamp: Date.now(),
+									...result,
+								};
+							},
+						},
+					},
+				});
+				// Registration refreshes auth asynchronously. Wait before pi-ipython checks the startup snapshot.
+				pi.on("session_start", async (_event, ctx) => {
+					await ctx.modelRegistry.refresh({ allowNetwork: false });
+				});
+			},
+		}),
+	};
+}
+
+/**
  * A real pi SDK session with pi-ipython loaded as an inline extension factory and a
  * faux provider playing the model. cwd and agentDir are fresh temp dirs, so no user
  * or project resources leak in.
@@ -136,6 +209,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 	});
 	modelRuntime.registerNativeProvider(faux.provider);
 
+	const classifier = fauxClassifier();
 	const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false } });
 	if (options.projectTrusted !== undefined) settingsManager.setProjectTrusted(options.projectTrusted);
 	const resourceLoader = new DefaultResourceLoader({
@@ -143,6 +217,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 		agentDir,
 		settingsManager,
 		extensionFactories: [
+			...(options.fauxClassifier ? [classifier.extension(options.fauxClassifier)] : []),
 			...(options.extensionsBefore ?? []),
 			{ name: "pi-ipython", factory: piIpython },
 			...(options.extensions ?? []),
@@ -177,6 +252,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 		resourceLoader,
 		cwd,
 		agentDir,
+		classifier,
 		fileEntries: () => [session.sessionManager.getHeader()!, ...session.sessionManager.getEntries()],
 		setResponses: (responses) => faux.setResponses(responses),
 		async runCells(...codes) {

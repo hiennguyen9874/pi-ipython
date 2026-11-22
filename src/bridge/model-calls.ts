@@ -1,10 +1,22 @@
-// Host side of Model calls (ADR 0008): `pi.ask` in `src/bridge/pi.py` sends the `pi.ask` host request answered here.
+// Host side of Model calls (ADR 0008): `pi.ask` and `pi.classify` in `src/bridge/pi.py` send the host requests
+// answered here.
 
-import { type Api, clampThinkingLevel, type Model, type Usage } from "@earendil-works/pi-ai";
+import {
+	type Api,
+	type ClassifierAnswer,
+	type ClassifierApi,
+	type ClassifierModel,
+	type ClassifierQuestion,
+	clampThinkingLevel,
+	type JsonObject,
+	type Model,
+	type Usage,
+} from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { PiIpythonConfig } from "../config.ts";
 
 export const PI_ASK_REQUEST = "pi.ask";
+export const PI_CLASSIFY_REQUEST = "pi.classify";
 
 /** Model calls one Cell may have in flight; the rest wait for a slot. Fixed, not configurable (#71). */
 export const MAX_MODEL_CALLS_IN_FLIGHT = 8;
@@ -23,7 +35,7 @@ const ENDED_ERROR = "Model calls are only allowed while their originating Cell r
 const ABORTED_ERROR = "Model call aborted";
 
 /**
- * The model Model calls use: `modelCalls.model` (exact `provider/id`), else the session's current model.
+ * The chat model `pi.ask` uses: `modelCalls.model` (exact `provider/id`), else the session's current model.
  * A string is why there is none. A configured model never falls back to the session's, which may cost more.
  */
 export function resolveModelCallModel(config: ModelCallsConfig, ctx: ModelContext): Model<Api> | string {
@@ -37,6 +49,25 @@ export function resolveModelCallModel(config: ModelCallsConfig, ctx: ModelContex
 		if (!model) return `Model ${config.model} (modelCalls.model) not found`;
 	}
 	if (!ctx.modelRegistry.hasConfiguredAuth(model)) return `No credentials for ${model.provider}/${model.id}, the model for Model calls`;
+	return model;
+}
+
+/**
+ * The classifier `pi.classify` uses: `modelCalls.classifier` (exact `provider/id`). A string is why there is none.
+ * There is no default: unset, no data reaches a classifier the user did not choose.
+ */
+export function resolveClassifier(
+	config: ModelCallsConfig,
+	registry: ModelContext["modelRegistry"],
+): ClassifierModel<ClassifierApi> | string {
+	if (config.classifier === undefined) return "No classifier is set for Model calls (modelCalls.classifier)";
+	const slash = config.classifier.indexOf("/");
+	const model = registry.findOfType("classifier", config.classifier.slice(0, slash), config.classifier.slice(slash + 1));
+	if (!model) return `Classifier ${config.classifier} (modelCalls.classifier) not found`;
+	// The check reads only the model's provider, so it applies to a classifier as to a chat model.
+	if (!registry.hasConfiguredAuth(model as unknown as Model<Api>)) {
+		return `No credentials for ${model.provider}/${model.id}, the classifier for Model calls`;
+	}
 	return model;
 }
 
@@ -117,6 +148,27 @@ export class CellModelCalls {
 		return message.content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("");
 	}
 
+	/** Answer one `pi.classify` request with the answers by question ID; rejects with the text `pi.ModelCallError` carries. */
+	async classify(data: Record<string, unknown>): Promise<Record<string, ClassifierAnswer>> {
+		const config = this.enabledConfig();
+		const { state, questions } = data;
+		if (!isPlainObject(state)) throw new Error("state must be an object");
+		if (!isPlainObject(questions) || Object.keys(questions).length === 0) throw new Error("questions must be a non-empty object");
+		// Question shapes are left to pi and the provider: a bad one comes back as an error result.
+		const result = await this.call(
+			config,
+			() => resolveClassifier(config, this.ctx.modelRegistry),
+			(model, signal) =>
+				this.ctx.modelRegistry.classify(
+					model,
+					{ state: state as JsonObject, questions: questions as Record<string, ClassifierQuestion> },
+					{ signal },
+				),
+		);
+		if (result.stopReason !== "stop") throw new Error(result.errorMessage || "Model call failed");
+		return result.answers;
+	}
+
 	/** The Model calls config, or why Model calls cannot be made at all. */
 	private enabledConfig(): ModelCallsConfig {
 		const config = this.getConfig();
@@ -192,6 +244,10 @@ export class CellModelCalls {
 		if (next) next();
 		else this.inFlight--;
 	}
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /** The sum of two usages, by the same rules as pi's `combineUsage` (not exported). */

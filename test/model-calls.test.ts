@@ -1,6 +1,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { join } from "node:path";
 import {
+	type ClassifierAnswer,
 	type FauxResponseFactory,
 	fauxAssistantMessage,
 	fauxText,
@@ -15,11 +16,12 @@ import {
 import { initTheme, ModelRegistry, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
 import { afterEach, beforeAll, expect, test, vi } from "vitest";
-import { createHarness, type Harness, type HarnessOptions, kernelPids, resultText, writeConfigs } from "./harness.ts";
+import { createHarness, FAUX_CLASSIFIER, type Harness, type HarnessOptions, kernelPids, resultText, writeConfigs } from "./harness.ts";
 
 let h: Harness | undefined;
 afterEach(async () => {
 	vi.restoreAllMocks();
+	vi.unstubAllEnvs();
 	await h?.dispose();
 	h = undefined;
 });
@@ -225,7 +227,7 @@ test("an unknown modelCalls.model warns at start and every call raises without f
 		setup: enabled({ model: "faux/nope" }),
 	});
 	expect(notices).toEqual([{
-		message: "pi-ipython config: Model faux/nope (modelCalls.model) not found; every Model call will fail",
+		message: "pi-ipython config: Model faux/nope (modelCalls.model) not found; every pi.ask call will fail",
 		type: "warning",
 	}]);
 	const { text, requests } = await runCell(h, CATCH("await pi.ask('hi')"));
@@ -239,7 +241,7 @@ test("Model calls using the session model warn at startup and reject when creden
 		const notices: string[] = [];
 		h = await createHarness({ ui: { notify: (message) => notices.push(message) }, setup: enabled() });
 		expect(notices).toEqual([
-			"pi-ipython config: No credentials for faux/faux-1, the model for Model calls; every Model call will fail",
+			"pi-ipython config: No credentials for faux/faux-1, the model for Model calls; every pi.ask call will fail",
 		]);
 		const { text, requests } = await runCell(h, CATCH("await pi.ask('hi')"));
 		expect(text).toBe("ModelCallError: No credentials for faux/faux-1, the model for Model calls");
@@ -359,6 +361,7 @@ test.each([
 	[{ modelCalls: true }, '"modelCalls" must be an object'],
 	[{ modelCalls: { model: "/faux-1" } }, '"modelCalls.model" must be a model as "provider/id", got "/faux-1"'],
 	[{ modelCalls: { model: "faux/" } }, '"modelCalls.model" must be a model as "provider/id", got "faux/"'],
+	[{ modelCalls: { classifier: "judge" } }, '"modelCalls.classifier" must be a model as "provider/id", got "judge"'],
 ])("modelCalls config %j is reported", async (config, expected) => {
 	const notices: string[] = [];
 	h = await createHarness({ ui: { notify: (message) => notices.push(message) }, setup: (dirs) => writeConfigs(dirs, config) });
@@ -480,4 +483,265 @@ test.each([
 	expect(counts).toEqual([...counts].sort());
 	// Cost appears live once the first reply is in.
 	if (cost) expect(live.some((text) => /^\d model calls? · \S+ tok · \$0\.010$/m.test(text))).toBe(true);
+});
+
+// pi.classify: classifier Model calls, answered by the harness's faux classifier.
+
+/** A bool, a choice, and a score question, as a Python expression. */
+const QUESTIONS = `{
+    "positive": {"type": "bool", "instructions": "Is the review positive?", "criteria": {"true": "Positive", "false": "Negative"}},
+    "topic": {"type": "choice", "instructions": "What is it about?", "criteria": {"quality": "The product", "shipping": "The delivery"}},
+    "severity": {"type": "score", "instructions": "How bad is the problem?", "criteria": ["none", "minor", "major"]},
+}`;
+
+const ANSWERS = {
+	positive: { type: "bool", probability: 0.875 },
+	topic: { type: "choice", choice: "shipping", probabilities: { quality: 0.25, shipping: 0.75 }, confidence: 0.5 },
+	severity: { type: "score", score: 1.25, confidence: 0.625 },
+} satisfies Record<string, ClassifierAnswer>;
+
+const USAGE = {
+	input: 100,
+	output: 2,
+	cacheRead: 0,
+	cacheWrite: 0,
+	totalTokens: 102,
+	cost: { input: 0.001, output: 0.0005, cacheRead: 0, cacheWrite: 0, total: 0.0015 },
+};
+
+/** Model calls on, with the faux classifier registered and configured unless `classifier` says otherwise. */
+function withClassifier(modelCalls: Record<string, unknown> = {}): HarnessOptions {
+	return { fauxClassifier: {}, setup: enabled({ classifier: FAUX_CLASSIFIER, ...modelCalls }) };
+}
+
+const CLASSIFY_SIGNATURE = "- `await pi.classify(state: dict, questions: dict) -> dict`";
+
+test("pi.classify returns the classifier's bool, choice, and score answers unchanged, sending exactly the Cell's state and questions", async () => {
+	h = await createHarness(withClassifier());
+	h.classifier.setReply(() => ({ answers: ANSWERS, usage: USAGE }));
+	const { result, text, description, requests } = await runCell(h, [
+		"print('classify' in pi.__all__)",
+		`state = {"review": "Great, but it arrived late", "stars": 4, "tags": ["late", None], "meta": {"verified": True, "score": 0.5}}`,
+		`answers = await pi.classify(state, ${QUESTIONS})`,
+		"print(json.dumps(answers, sort_keys=True))",
+	].join("\n"));
+	expect(result.isError).toBe(false);
+	const [exported, answers] = text.split("\n");
+	expect(exported).toBe("True");
+	expect(JSON.parse(answers!)).toEqual(ANSWERS);
+	expect(h.classifier.requests).toEqual([{
+		state: { review: "Great, but it arrived late", stars: 4, tags: ["late", null], meta: { verified: true, score: 0.5 } },
+		questions: {
+			positive: { type: "bool", instructions: "Is the review positive?", criteria: { true: "Positive", false: "Negative" } },
+			topic: { type: "choice", instructions: "What is it about?", criteria: { quality: "The product", shipping: "The delivery" } },
+			severity: { type: "score", instructions: "How bad is the problem?", criteria: ["none", "minor", "major"] },
+		},
+	}]);
+	expect(requests).toEqual([]);
+	expect(result.usage).toEqual(USAGE);
+	expect(result.details).toMatchObject({ modelCalls: { count: 1, totalTokens: 102, cost: 0.0015 } });
+	// The description: the pi.classify bullets after pi.ask's, then one closing part for both, naming no model.
+	const lines = description.split("\n");
+	const at = lines.findIndex((line) => line.startsWith(CLASSIFY_SIGNATURE));
+	expect(at).toBeGreaterThan(lines.findIndex((line) => line.startsWith("- `await pi.ask(")));
+	expect(lines.slice(at).join("\n")).toMatch(/"bool".*"choice".*"score"/s);
+	const closing = lines.at(-1)!;
+	expect(closing).toBe("- `pi.ask` and `pi.classify` calls together: at most 8 run at once, and a Cell may make at most 100. A failed call, including one over that limit, raises `pi.ModelCallError`.");
+	expect(lines.slice(at, -1).join("\n")).not.toMatch(/at most|ModelCallError/);
+	expect(lines.slice(at).join("\n")).not.toMatch(/faux-classifier|Faux Judge|\bimages\b/i);
+});
+
+test("pi.ask and pi.classify share the 8-in-flight cap", async () => {
+	h = await createHarness(withClassifier());
+	let inFlight = 0;
+	let most = 0;
+	const slow = async <T>(value: T) => {
+		most = Math.max(most, ++inFlight);
+		await sleep(50);
+		inFlight--;
+		return value;
+	};
+	h.classifier.setReply(() => slow({ answers: { positive: ANSWERS.positive } }));
+	const { text, requests } = await runCell(h, [
+		"async def one(i):",
+		`    return await (pi.classify({"i": i}, ${QUESTIONS}) if i % 2 else pi.ask(f"q{i}"))`,
+		"rs = await asyncio.gather(*(one(i) for i in range(20)))",
+		"print(len(rs), rs[0], rs[1]['positive']['probability'])",
+	].join("\n"), (request) => slow(fauxAssistantMessage(`answer: ${request.prompt}`)));
+	expect(text).toBe("20 answer: q0 0.875");
+	expect(requests).toHaveLength(10);
+	expect(h.classifier.requests).toHaveLength(10);
+	expect(most).toBe(8);
+});
+
+test("pi.ask and pi.classify share maxPerCell: the call over it raises without being sent", async () => {
+	h = await createHarness(withClassifier({ maxPerCell: 3 }));
+	const { text, requests } = await runCell(h, [
+		CATCH("await pi.ask('a')"),
+		CATCH(`await pi.classify({'n': 1}, ${QUESTIONS})`),
+		CATCH("await pi.ask('b')"),
+		CATCH(`await pi.classify({'n': 2}, ${QUESTIONS})`),
+	].join("\n"));
+	expect(text.split("\n")).toEqual([
+		"answer: a",
+		"{}",
+		"answer: b",
+		"ModelCallError: Model call limit reached: at most 3 per Cell (modelCalls.maxPerCell)",
+	]);
+	expect(requests.map((r) => r.prompt)).toEqual(["a", "b"]);
+	expect(h.classifier.requests.map((r) => r.state)).toEqual([{ n: 1 }]);
+});
+
+test("wrong pi.classify argument types raise TypeError or ValueError, send nothing, and use no budget", async () => {
+	h = await createHarness(withClassifier({ maxPerCell: 1 }));
+	const attempt = (call: string) => [
+		"try:",
+		`    await ${call}`,
+		"except (TypeError, ValueError) as e:",
+		"    print(type(e).__name__, e)",
+	].join("\n");
+	const { text } = await runCell(h, [
+		attempt(`pi.classify([1], ${QUESTIONS})`),
+		attempt(`pi.classify({'s': {1, 2}}, ${QUESTIONS})`),
+		attempt(`pi.classify({'x': float('nan')}, ${QUESTIONS})`),
+		attempt("pi.classify({'n': 1}, [])"),
+		attempt("pi.classify({'n': 1}, {})"),
+		attempt("pi.classify({'n': 1})"),
+		`print(await pi.classify({'n': 1}, ${QUESTIONS}))`,
+	].join("\n"));
+	const lines = text.split("\n");
+	expect(lines).toHaveLength(7);
+	expect(lines[0]).toBe("TypeError state must be a dict, got list");
+	expect(lines[1]).toMatch(/^TypeError state must be JSON-serializable: .*set/);
+	expect(lines[2]).toMatch(/^ValueError state must be JSON-serializable: .*nan/);
+	expect(lines.slice(3, 5)).toEqual(["TypeError questions must be a dict, got list", "ValueError questions must not be empty"]);
+	expect(lines[5]).toMatch(/^TypeError .*questions/);
+	expect(lines[6]).toBe("{}");
+	expect(h.classifier.requests).toHaveLength(1);
+});
+
+test("with modelCalls.classifier unset, pi.classify is not described and fails naming the key, without counting", async () => {
+	const notices: string[] = [];
+	h = await createHarness({ fauxClassifier: {}, ui: { notify: (message) => notices.push(message) }, setup: enabled({ maxPerCell: 1 }) });
+	const { text, description } = await runCell(h, [CATCH(`await pi.classify({'n': 1}, ${QUESTIONS})`), CATCH("await pi.ask('hi')")].join("\n"));
+	expect(text.split("\n")).toEqual([
+		"ModelCallError: No classifier is set for Model calls (modelCalls.classifier)",
+		"answer: hi",
+	]);
+	expect(h.classifier.requests).toEqual([]);
+	expect(notices).toEqual([]);
+	expect(description).not.toContain("pi.classify");
+	expect(description.split("\n").at(-1)).toMatch(/^- `pi\.ask` calls: at most 8/);
+});
+
+test.each([
+	{
+		problem: "not found",
+		classifier: "faux/faux-1", // A chat model exists with this exact ID, but no classifier does.
+		apiKey: "faux",
+		error: "Classifier faux/faux-1 (modelCalls.classifier) not found",
+	},
+	{
+		problem: "without credentials",
+		classifier: FAUX_CLASSIFIER,
+		apiKey: "$PI_IPYTHON_TEST_MISSING_CLASSIFIER_KEY",
+		error: `No credentials for ${FAUX_CLASSIFIER}, the classifier for Model calls`,
+	},
+])("a classifier $problem warns at start, is not described, and every pi.classify call fails", async ({ classifier, apiKey, error }) => {
+	vi.stubEnv("PI_IPYTHON_TEST_MISSING_CLASSIFIER_KEY", undefined);
+	const notices: { message: string; type?: string }[] = [];
+	h = await createHarness({
+		...withClassifier({ classifier }),
+		fauxClassifier: { apiKey },
+		ui: { notify: (message, type) => notices.push({ message, type }) },
+	});
+	expect(notices).toEqual([{ message: `pi-ipython config: ${error}; every pi.classify call will fail`, type: "warning" }]);
+	const { text, description } = await runCell(h, [CATCH(`await pi.classify({'n': 1}, ${QUESTIONS})`), CATCH("await pi.ask('hi')")].join("\n"));
+	expect(text.split("\n")).toEqual([`ModelCallError: ${error}`, "answer: hi"]);
+	expect(h.classifier.requests).toEqual([]);
+	expect(description).toContain("pi.ask");
+	expect(description).not.toContain("pi.classify");
+});
+
+test("a project modelCalls.classifier applies only when the project is trusted", async () => {
+	const setup: HarnessOptions["setup"] = (dirs) => writeConfigs(dirs, { modelCalls: { enabled: true } }, { modelCalls: { classifier: FAUX_CLASSIFIER } });
+	const call = CATCH(`await pi.classify({'n': 1}, ${QUESTIONS})`);
+	h = await createHarness({ fauxClassifier: {}, projectTrusted: false, setup });
+	const untrusted = await runCell(h, call);
+	expect(untrusted.text).toBe("ModelCallError: No classifier is set for Model calls (modelCalls.classifier)");
+	expect(untrusted.description).not.toContain("pi.classify");
+	expect(h.classifier.requests).toEqual([]);
+	await h.dispose();
+
+	h = await createHarness({ fauxClassifier: {}, projectTrusted: true, setup });
+	const trusted = await runCell(h, call);
+	expect(trusted.text).toBe("{}");
+	expect(trusted.description).toContain(CLASSIFY_SIGNATURE);
+	expect(h.classifier.requests).toHaveLength(1);
+});
+
+test("modelCalls.enabled false makes pi.classify fail and leaves it undescribed", async () => {
+	h = await createHarness({ fauxClassifier: {}, setup: (dirs) => writeConfigs(dirs, { modelCalls: { classifier: FAUX_CLASSIFIER } }) });
+	const { text, description } = await runCell(h, CATCH(`await pi.classify({'n': 1}, ${QUESTIONS})`));
+	expect(text).toBe("ModelCallError: Model calls are turned off (modelCalls.enabled: false)");
+	expect(description).not.toContain("pi.classify");
+	expect(h.classifier.requests).toEqual([]);
+});
+
+test.each(["error", "aborted"] as const)("a classifier result with stopReason %s raises pi.ModelCallError with its text, and its usage still counts", async (stopReason) => {
+	h = await createHarness(withClassifier());
+	h.classifier.setReply(() => ({ stopReason, errorMessage: "classifier overloaded", usage: USAGE }));
+	const { result, text } = await runCell(h, CATCH(`await pi.classify({'n': 1}, ${QUESTIONS})`));
+	expect(text).toBe("ModelCallError: classifier overloaded");
+	expect(result.usage).toEqual(USAGE);
+	expect(result.details).toMatchObject({ modelCalls: { count: 1, totalTokens: 102 } });
+});
+
+test("a classifier result without usage counts in the Model-call line with 0 tok and no cost", async () => {
+	h = await createHarness(withClassifier());
+	h.classifier.setReply(() => ({ answers: { positive: ANSWERS.positive } }));
+	const updates = recordUpdates(h);
+	const { result, text } = await runCell(h, `print(await pi.classify({'n': 1}, ${QUESTIONS}))`);
+	expect(text).toBe("{'positive': {'type': 'bool', 'probability': 0.875}}");
+	expect(result.usage).toBeUndefined();
+	expect(result.details).toMatchObject({ modelCalls: { count: 1, totalTokens: 0, cost: 0 } });
+	expect(renderRows(h, updates, result).final.split("\n")).toContain("1 model call · 0 tok");
+});
+
+test("aborting a Cell aborts its pi.classify call in flight", async () => {
+	h = await createHarness(withClassifier());
+	let markStarted!: () => void;
+	const started = new Promise<void>((resolve) => { markStarted = resolve; });
+	let aborted = false;
+	h.classifier.setReply(async (_context, options) => {
+		markStarted();
+		await new Promise((resolve) => options?.signal?.addEventListener("abort", resolve, { once: true }));
+		aborted = options?.signal?.aborted === true;
+		return { stopReason: "aborted" };
+	});
+	const run = runCell(h, `x = await pi.classify({'n': 1}, ${QUESTIONS})`);
+	await started;
+	await h.session.abort();
+	const { result, text } = await run;
+	expect(aborted).toBe(true);
+	expect(result.isError).toBe(true);
+	expect(text).toContain("KeyboardInterrupt");
+});
+
+test("a background task calling pi.classify after its Cell returned raises pi.ModelCallError and sends nothing", async () => {
+	h = await createHarness(withClassifier());
+	const first = await runCell(h, [
+		"async def late():",
+		"    await asyncio.sleep(0.2)",
+		"    try:",
+		`        return await pi.classify({'n': 1}, ${QUESTIONS})`,
+		"    except pi.ModelCallError as e:",
+		"        return f'ModelCallError: {e}'",
+		"background = asyncio.create_task(late())",
+	].join("\n"));
+	expect(first.result.isError).toBe(false);
+	await sleep(500);
+	const later = await runCell(h, "print(background.done(), await background)");
+	expect(later.text).toBe("True ModelCallError: Model calls are only allowed while their originating Cell runs");
+	expect(h.classifier.requests).toEqual([]);
 });

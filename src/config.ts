@@ -31,8 +31,18 @@ export interface PiIpythonConfig {
 	 * else before the first `ipythonBefore` section present, else at the end.
 	 */
 	systemPrompt: { ipythonAfter: string[]; ipythonBefore: string[] };
-	/** Model calls from Cells (`pi.ask`); `model` is `provider/id`, unset meaning the session's model at call time. */
-	modelCalls: { enabled: boolean; model?: string; maxPerCell: number; maxOutputTokens: number; thinking: ModelThinkingLevel };
+	/**
+	 * Model calls from Cells (`pi.ask`, `pi.classify`); `model` is `provider/id`, unset meaning the session's model at
+	 * call time. `classifier` is `provider/id`, unset meaning `pi.classify` fails.
+	 */
+	modelCalls: {
+		enabled: boolean;
+		model?: string;
+		classifier?: string;
+		maxPerCell: number;
+		maxOutputTokens: number;
+		thinking: ModelThinkingLevel;
+	};
 }
 
 /** pi's sections that follow its `<rules>`, in render order: the default `systemPrompt.ipythonBefore`. */
@@ -78,6 +88,7 @@ const THINKING_LEVELS: readonly ModelThinkingLevel[] = ["off", "minimal", "low",
 const PROMPT_AFTER = "systemPrompt.ipythonAfter";
 const PROMPT_BEFORE = "systemPrompt.ipythonBefore";
 const INVALID_PLACEMENT = Symbol("invalid prompt placement");
+const MODEL_REF = { valid: (v: unknown) => typeof v === "string" && /^[^/\s]+\/\S+$/.test(v), expected: 'a model as "provider/id"' };
 const SECTION_NAMES_EXPECTED = 'an array of section tag names like "rules" (lowercase letters, digits, "_" or "-")';
 
 /** Every supported key (dotted path), with its validator and a description of valid values. */
@@ -107,7 +118,8 @@ const FIELDS: Record<string, { valid: (v: unknown) => boolean; expected: string 
 	[PROMPT_AFTER]: { valid: isSectionNames, expected: SECTION_NAMES_EXPECTED },
 	[PROMPT_BEFORE]: { valid: isSectionNames, expected: SECTION_NAMES_EXPECTED },
 	"modelCalls.enabled": { valid: (v) => typeof v === "boolean", expected: "true or false" },
-	"modelCalls.model": { valid: (v) => typeof v === "string" && /^[^/\s]+\/\S+$/.test(v), expected: 'a model as "provider/id"' },
+	"modelCalls.model": MODEL_REF,
+	"modelCalls.classifier": MODEL_REF,
 	"modelCalls.maxPerCell": { valid: isPositiveInt, expected: "a positive integer" },
 	"modelCalls.maxOutputTokens": { valid: isPositiveInt, expected: "a positive integer" },
 	"modelCalls.thinking": {
@@ -171,6 +183,7 @@ export function loadConfig(cwd: string, agentDir = getAgentDir(), projectTrusted
 			modelCalls: {
 				enabled: get("modelCalls.enabled", false),
 				...(values.has("modelCalls.model") ? { model: values.get("modelCalls.model") as string } : {}),
+				...(values.has("modelCalls.classifier") ? { classifier: values.get("modelCalls.classifier") as string } : {}),
 				maxPerCell: get("modelCalls.maxPerCell", 100),
 				maxOutputTokens: get("modelCalls.maxOutputTokens", 4096),
 				thinking: get<ModelThinkingLevel>("modelCalls.thinking", "off"),

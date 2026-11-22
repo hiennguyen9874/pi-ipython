@@ -26,7 +26,7 @@ import {
 	truncateTail,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { type CellModelCalls, type ModelCallsSummary, PI_ASK_REQUEST } from "../bridge/model-calls.ts";
+import { type CellModelCalls, type ModelCallsSummary, PI_ASK_REQUEST, PI_CLASSIFY_REQUEST } from "../bridge/model-calls.ts";
 import { type CellOutput, type CellResult, disposeCellOutput, type KernelClient, KernelBusyError } from "../kernel/client.ts";
 import { countNewlines, OutputBuffer, writeAll } from "../kernel/output-buffer.ts";
 import { preludeCode } from "../kernel/prelude.ts";
@@ -485,6 +485,7 @@ export function createIpythonTool({
 			const onHostRequest = modelCalls || answerHostRequest
 				? (data: Record<string, unknown>) => {
 					if (modelCalls && data.type === PI_ASK_REQUEST) return modelCalls.ask(data);
+					if (modelCalls && data.type === PI_CLASSIFY_REQUEST) return modelCalls.classify(data);
 					if (!answerHostRequest) throw new Error(`host request ${String(data.type)} is not supported by pi-ipython`);
 					return answerHostRequest(data, ctx, signal);
 				}

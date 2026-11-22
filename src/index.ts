@@ -2,9 +2,9 @@ import { randomUUID } from "node:crypto";
 import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { type ExtensionAPI, getAgentDir, type SessionEntry } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, type ExtensionContext, getAgentDir, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { listPiTools } from "./bridge/pi-tool-listing.ts";
-import { CellModelCalls, resolveModelCallModel } from "./bridge/model-calls.ts";
+import { CellModelCalls, resolveClassifier, resolveModelCallModel } from "./bridge/model-calls.ts";
 import { answerHostRequest, bridgedTools } from "./bridge/pi-tools.ts";
 import { effectivePackages, effectivePrelude, hasDefaultPackages, loadConfig, type PiIpythonConfig } from "./config.ts";
 import { ensureKernelPython, kernelPathEnv, resolveProjectPython, RUNTIME_SRC_DIR } from "./kernel/bootstrap.ts";
@@ -27,6 +27,8 @@ export default function piIpython(pi: ExtensionAPI): void {
 	let cwd = process.cwd();
 	let config: PiIpythonConfig = loadConfig(cwd).config;
 	let journalPath: string | undefined;
+	/** The session's model registry, for the `pi.classify` paragraph. Set on session start. */
+	let modelRegistry: ExtensionContext["modelRegistry"] | undefined;
 	/** The session's state directory: Command logs live in it, and it is deleted when the session shuts down. */
 	const stateDir = newStateDir();
 	/** A Python-state notice pi has not persisted yet; `sent` once a request has carried it. */
@@ -143,7 +145,12 @@ export default function piIpython(pi: ExtensionAPI): void {
 				return [piToolsSection(config.piTools.search, config.parallelWorkPrompt), ...(listed ? [listed] : [])].join("\n\n");
 			},
 			startModelCalls: (ctx, signal, onChange) => new CellModelCalls(() => config.modelCalls, ctx, signal, onChange),
-			describeModelCalls: () => (config.modelCalls.enabled ? modelCallsSection(config.modelCalls.maxPerCell) : undefined),
+			// pi.classify is described only while its classifier resolves, so the model never plans around a failing API.
+			describeModelCalls: () => {
+				if (!config.modelCalls.enabled) return undefined;
+				const classify = !!modelRegistry && typeof resolveClassifier(config.modelCalls, modelRegistry) !== "string";
+				return modelCallsSection(config.modelCalls.maxPerCell, classify);
+			},
 		}),
 	);
 
@@ -155,6 +162,7 @@ export default function piIpython(pi: ExtensionAPI): void {
 		cwd = ctx.cwd;
 		const loaded = loadConfig(cwd, getAgentDir(), ctx.isProjectTrusted());
 		config = loaded.config;
+		modelRegistry = ctx.modelRegistry;
 		report = (message, type) => {
 			if (ctx.hasUI) ctx.ui.notify(message, type);
 			else console.error(message);
@@ -167,7 +175,11 @@ export default function piIpython(pi: ExtensionAPI): void {
 		for (const warning of loaded.warnings) report(`pi-ipython config: ${warning}`, "warning");
 		if (config.modelCalls.enabled) {
 			const model = resolveModelCallModel(config.modelCalls, ctx);
-			if (typeof model === "string") report(`pi-ipython config: ${model}; every Model call will fail`, "warning");
+			if (typeof model === "string") report(`pi-ipython config: ${model}; every pi.ask call will fail`, "warning");
+			if (config.modelCalls.classifier !== undefined) {
+				const classifier = resolveClassifier(config.modelCalls, ctx.modelRegistry);
+				if (typeof classifier === "string") report(`pi-ipython config: ${classifier}; every pi.classify call will fail`, "warning");
+			}
 		}
 
 		// Kernels of pi hosts that died without shutting them down.

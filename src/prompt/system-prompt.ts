@@ -158,15 +158,24 @@ const PI_ASK_LINES = [
 	"  - Fan out with `await asyncio.gather(*(pi.ask(p) for p in prompts))`.",
 ];
 
+const PI_CLASSIFY_LINES = [
+	"- `await pi.classify(state: dict, questions: dict) -> dict`: ask a classifier model typed questions about the JSON `state`; returns the answers by question ID",
+	"  - Use it for yes/no, label selection, or scoring without parsing free text. Ask all questions about one `state` in one call.",
+	'  - Questions: `{"type": "bool", "instructions": str, "criteria": {"true": str, "false": str}}`, `{"type": "choice", "instructions": str, "criteria": {label: meaning}}`, or `{"type": "score", "instructions": str, "criteria": [level, ...]}` (lowest level first).',
+	'  - Answers include `type` and: for bool, `probability` of true; for choice, the label in `choice`, per-label `probabilities`, and `confidence`; for score, `score` (expected level index) and `confidence`.',
+];
+
 /**
- * Model calls, for the `ipython` description while they are on: the `pi.ask` bullets, then one closing part with
- * the rules every Model call shares. It names no model, so it stays the same across `/model`.
- * `maxPerCell` is `modelCalls.maxPerCell`.
+ * Model calls, for the `ipython` description while they are on: the `pi.ask` bullets, the `pi.classify` bullets when
+ * `classify` (the classifier resolves), then one closing part with the rules every Model call shares. It names no
+ * model, so it stays the same across `/model`. `maxPerCell` is `modelCalls.maxPerCell`.
  */
-export function modelCallsSection(maxPerCell: number): string {
+export function modelCallsSection(maxPerCell: number, classify: boolean): string {
+	const calls = classify ? "`pi.ask` and `pi.classify` calls together" : "`pi.ask` calls";
 	return [
 		...PI_ASK_LINES,
-		`- \`pi.ask\` calls: at most ${MAX_MODEL_CALLS_IN_FLIGHT} run at once, and a Cell may make at most ${maxPerCell}. A failed call, including one over that limit, raises \`pi.ModelCallError\`.`,
+		...(classify ? PI_CLASSIFY_LINES : []),
+		`- ${calls}: at most ${MAX_MODEL_CALLS_IN_FLIGHT} run at once, and a Cell may make at most ${maxPerCell}. A failed call, including one over that limit, raises \`pi.ModelCallError\`.`,
 	].join("\n");
 }
 

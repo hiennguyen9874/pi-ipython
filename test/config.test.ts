@@ -1,13 +1,40 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
+import { loadConfig } from "../src/config.ts";
 import { createHarness, defaultKernelVenv, type Harness, resultText, systemPrompt, writeConfigs } from "./harness.ts";
 
 let h: Harness | undefined;
 afterEach(async () => {
 	await h?.dispose();
 	h = undefined;
+});
+
+test("README config defaults match a session without config files", async () => {
+	h = await createHarness();
+	const { config } = loadConfig(h.cwd, h.agentDir);
+	const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
+	const example = /^Defaults:\r?\n\s*```json\r?\n([\s\S]*?)\r?\n```/m.exec(readme);
+	expect(example, "README defaults JSON block").not.toBeNull();
+	expect(JSON.parse(example![1]!)).toEqual(config);
+
+	const documented = Object.fromEntries([...readme.matchAll(/^\| (`[^|]+`) \| ([^|]+) \|/gm)]
+		.flatMap(([, keys, defaults]) => keys!.split(" / ").map((key, i) => {
+			const value = defaults!.split(" / ")[i]!.match(/^`([^\x60]+)`/)?.[1];
+			return [key.slice(1, -1), value === undefined ? defaults : JSON.parse(value)];
+		})));
+	const expected = { "modelCalls.model": "unset", "modelCalls.classifier": "unset" };
+	for (const [key, value] of Object.entries(config)) {
+		if (typeof value === "object") {
+			for (const [subkey, subvalue] of Object.entries(value)) {
+				Object.assign(expected, { [`${key}.${subkey}`]: subvalue });
+			}
+		} else {
+			Object.assign(expected, { [key]: value });
+		}
+	}
+	expect(documented).toEqual(expected);
 });
 
 const managedVenv = defaultKernelVenv();

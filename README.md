@@ -258,11 +258,14 @@ Defaults:
 | `piTools.search` | `true` | Enable `pi.search()`. |
 | `systemPrompt.ipythonAfter` | `[]` | Section tag names. `<ipython>` goes right after the first one present in the prompt. Checked before `ipythonBefore`. See [System prompt](#system-prompt). |
 | `systemPrompt.ipythonBefore` | `["docs", "addendum", "project_context", "skills", "cwd"]` | Section tag names. If no `ipythonAfter` section is present, `<ipython>` goes before the first one present, or at the end if none is. |
-| `modelCalls.enabled` | `false` | Let Cells make Model calls with `await pi.ask(prompt, system=None)`: one request to a model with no tools, returning its answer text. Model calls spend your credentials and money; their usage is added to the session's totals. Trusted projects only. |
-| `modelCalls.model` | unset | The model for Model calls, as exact `provider/id`. Unset means the session's current model. If it is not found or has no credentials, you get a warning at startup and every call fails; there is no fallback. Trusted projects only. |
+| `modelCalls.enabled` | `false` | Let Cells use `await pi.ask(prompt, system=None)` for text answers and `await pi.classify(state, questions)` for typed answers. Model calls spend your credentials and money; their usage is added to the session's totals. Trusted projects only. |
+| `modelCalls.model` | unset | The chat model for `pi.ask`, as exact `provider/id`. Unset means the session's current model. If it is not found or has no credentials, you get a warning at startup and `pi.ask` fails; there is no fallback. Trusted projects only. |
+| `modelCalls.classifier` | unset | The classifier for `pi.classify`, as exact `provider/id`. There is no default. If the configured classifier isn't found or has no credentials, you get a warning at startup (when Model calls are enabled) and `pi.classify` fails. Trusted projects only. |
 | `modelCalls.maxPerCell` | `100` | Model calls per Cell. The next call fails before it is sent. At most 8 run at once (fixed). Trusted projects only. |
-| `modelCalls.maxOutputTokens` | `4096` | Output-token cap per Model call (also capped by the model's own limit). Trusted projects only. |
-| `modelCalls.thinking` | `"off"` | Thinking level for Model calls: `"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, or `"max"`. Ignored by models without reasoning. Trusted projects only. |
+| `modelCalls.maxOutputTokens` | `4096` | Output-token cap for `pi.ask` (also capped by the model's own limit). Trusted projects only. |
+| `modelCalls.thinking` | `"off"` | Thinking level for `pi.ask`: `"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, or `"max"`. Ignored by models without reasoning. Trusted projects only. |
+
+One `pi.classify` request counts as one Model call, even when it answers several questions. It shares the per-Cell budget and eight in-flight slots with `pi.ask`. It accepts JSON state and returns bool, choice, or score answers by question ID; classifier image input is not supported yet.
 
 Rules for `prelude.imports`:
 

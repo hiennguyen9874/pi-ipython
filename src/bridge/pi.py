@@ -7,11 +7,12 @@ the event loop the Cell runs on, so the host's reply could never be received.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from rlm import repl as _repl
 
-__all__ = ["ModelCallError", "ToolError", "ask", "describe", "describe_namespace", "search", "tool", "tools"]
+__all__ = ["ModelCallError", "ToolError", "ask", "classify", "describe", "describe_namespace", "search", "tool", "tools"]
 
 
 class ToolError(RuntimeError):
@@ -27,8 +28,8 @@ class ToolError(RuntimeError):
 
 
 class ModelCallError(RuntimeError):
-    """A Model call failed: turned off, model not found or without credentials, per-Cell limit reached,
-    provider error, aborted, or called after its Cell ended. Carries the provider's error text when there is one.
+    """A Model call failed: turned off, classifier unset, model or classifier not found or without credentials,
+    per-Cell limit reached, provider error, aborted, or called after its Cell ended. Carries the provider's error text when there is one.
     """
 
 
@@ -43,7 +44,30 @@ async def ask(prompt: str, *, system: str | None = None) -> str:
         raise TypeError("prompt must be a non-empty str")
     if system is not None and not isinstance(system, str):
         raise TypeError(f"system must be a str or None, got {type(system).__name__}")
-    data = {"type": "pi.ask", "prompt": prompt, "system": system}
+    return await _model_call({"type": "pi.ask", "prompt": prompt, "system": system})
+
+
+async def classify(state: dict[str, Any], questions: dict[str, Any]) -> dict[str, Any]:
+    """Ask the configured classifier typed questions about ``state`` (a Model call); returns the answers by question ID.
+
+    ``questions`` maps question IDs to pi's classifier questions (``bool``, ``choice``, or ``score``); the
+    answers are pi's classifier answers, unchanged. Shares the 8-in-flight cap and the per-Cell limit with
+    ``ask``. Raises ModelCallError when the call fails.
+    """
+    if not isinstance(state, dict):
+        raise TypeError(f"state must be a dict, got {type(state).__name__}")
+    try:
+        json.dumps(state, allow_nan=False)
+    except (TypeError, ValueError) as e:
+        raise type(e)(f"state must be JSON-serializable: {e}") from None
+    if not isinstance(questions, dict):
+        raise TypeError(f"questions must be a dict, got {type(questions).__name__}")
+    if not questions:
+        raise ValueError("questions must not be empty")
+    return await _model_call({"type": "pi.classify", "state": state, "questions": questions})
+
+
+async def _model_call(data: dict[str, Any]) -> Any:
     reply = await _send(data, ModelCallError("Model calls are only allowed while their originating Cell runs"))
     if reply.get("status") == "ok":
         return reply.get("result")
