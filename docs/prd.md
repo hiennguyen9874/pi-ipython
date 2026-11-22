@@ -15,7 +15,7 @@ A pi package that, when loaded, turns the session into an Unharnessed-style harn
 - Sandboxing. The Kernel runs with the user's permissions, as in Unharnessed.
 - A real Jupyter/ipykernel. See `docs/adr/0001-rlm-runtime-not-ipykernel.md`.
 - Running next to pi's other tools. The extension is exclusive by design.
-- Recursive sub-agents (Prime's `rlm.spawn`) and Prime's continual-memory harness.
+- Recursive sub-agents (Prime's `rlm.spawn`) and Prime's continual-memory harness. Leaf Model calls are in scope instead (v5, ADR 0008).
 - Cells that return before they finish (Unreal Agent's "still running" tool result). The Kernel runs one Cell at a time, so the next Cell would wait anyway, and a Cell cut loose from its call risks the partial-state problems of ADR 0003. Long work goes in `bash()` handles (Background commands) instead.
 
 ## Users
@@ -75,6 +75,15 @@ Can ship in parallel with v1.1; it does not wait for #16.
 - MCP servers callable from Python through the pi tool bridge and pi's own MCP support, not a separate Python MCP stack. pi's MCP tools (`codemode` exposure by default) are plain Pi tools to the bridge; the runtime's `rlm.mcp` API is not revived.
 - MCP resources need no API of their own: `builtin:mcp`'s `list_mcp_resources`, `list_mcp_resource_templates`, and `read_mcp_resource` do not declare `reachesTools`, so they are in the callable set and return their JSON payloads as dicts. pi registers them with the widest exposure of the non-`hidden` servers with resources (so `deferred` by default: not listed, but found by `pi.tools()` and `pi.search`), makes them wait for every ready server, and never lets them reach `hidden` servers. With no such server they are not registered.
 - Goals and autonomous continuation are not planned for core (#29).
+
+### v5: Model calls and guardrails
+
+- **Model calls** (`GLOSSARY.md`, ADR 0008). A Cell can send a request to a model with no tools and no Kernel of its own (working names `pi.llm` / `pi.llm_batch`). Opt-in, off by default. Model selection, API shape, budget, usage accounting, and lifetime are open in #71. Can ship in parallel with #25.
+- **Cell timeout** (#72). Optional `cell.timeoutSeconds`, unset by default. On expiry the Cell is interrupted as on user abort; a Cell still running after the abort grace period causes a Kernel replacement.
+- **No limit on Bridged calls per Cell.** pi's hooks and permission checks guard each call; revisit only if runaway loops show up.
+- **Output limits stay at pi's defaults.** The README explains the trade-off of a lower `output.maxBytes` (#74). Revisit the default only with session stats (#57).
+- **README defaults are tested** against `config.ts` (#73).
+- Measurement (#57, #63) runs in parallel and does not block these.
 
 ## Open questions (decide before v2)
 
