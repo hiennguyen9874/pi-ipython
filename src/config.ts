@@ -20,7 +20,7 @@ export interface PiIpythonConfig {
 	/** `packages` concatenates global then project entries; Kernel packages apply only with `source: "uv"`. */
 	python: { source: "uv" | "project"; version: string; defaultPackages: boolean; packages: string[] };
 	output: { maxBytes: number; maxLines: number };
-	/** A `bash()` command's Command log rotates to `.1` once it reaches `maxBytes`. */
+	/** A `bash()` Command log holds at most `maxBytes` per file before rotating to `.1`. */
 	commandLog: { maxBytes: number };
 	piTools: { list: boolean; search: boolean };
 	/** `imports` concatenates global then project entries instead of the project winning. */

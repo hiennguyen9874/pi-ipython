@@ -4,7 +4,7 @@
 
 ### Added
 
-- Command log: when a `bash()` command's output outgrows what the Kernel keeps in memory (the first 512 KiB and last 1.5 MiB), its full output is written to `<state dir>/bash/<id>.log` under the session's state directory, which is deleted when the session shuts down. The dropped-middle marker in `.output()`, `.tail()`, and `BashResult.output` names the log, and so does the `[bash-done …]` notice (`Full output: <path>`). The log rotates to `.1` at `commandLog.maxBytes` (default 32 MiB). (#67)
+- Command log: when a `bash()` command's output outgrows what the Kernel keeps in memory (the first 512 KiB and last 1.5 MiB), its output is written to `<state dir>/bash/<id>.log` under the session's state directory, which is deleted when the session shuts down. The dropped-middle marker in `.output()`, `.tail()`, and `BashResult.output` names the log, and so does the `[bash-done …]` notice. When the log fills to `commandLog.maxBytes` (default 32 MiB), further output rotates it to `.1`, replacing the previous file. The marker and notice then name both files as the latest output. (#67)
 
 ### Changed
 

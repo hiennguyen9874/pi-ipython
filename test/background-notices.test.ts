@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fauxAssistantMessage, fauxToolCall, getSystemMessageText } from "@earendil-works/pi-ai";
 import { afterEach, expect, test, vi } from "vitest";
-import { createHarness, type Harness, type HarnessOptions, resultText } from "./harness.ts";
+import { createHarness, type Harness, type HarnessOptions, resultText, writeConfigs } from "./harness.ts";
 
 let h: Harness | undefined;
 afterEach(async () => {
@@ -129,6 +129,27 @@ test("a command whose output dropped the middle names its Command log, deleted w
 
 	await h.session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
 	expect(existsSync(dirname(dirname(logPath!)))).toBe(false);
+});
+
+test("a rotated Command log notice names both retained files without claiming full output", async () => {
+	h = await harness({ setup: (dirs) => writeConfigs(dirs, {
+		backgroundNotices: true,
+		commandLog: { maxBytes: 2_500_000 },
+	}) });
+	const command = "while [ ! -f release ]; do sleep 0.02; done; seq 1 600000";
+	const [started] = await h.runCells(`h = bash(${JSON.stringify(command)})\nh.pid`);
+	const pid = Number(resultText(started!));
+	h.setResponses([fauxAssistantMessage("noted")]);
+	writeFileSync(join(h.cwd, "release"), "");
+
+	await waitFor(() => notices(h!).length === 1);
+	await h.session.waitForIdle();
+	const content = notices(h)[0]!.content;
+	const logPath = /\n\nLatest output: (.+\.log)\.1 and \1\n/.exec(content)?.[1];
+	expect(logPath).toBeDefined();
+	expect(content).toBe(`[bash-done pid:${pid} exit:0]\n\nCommand: ${JSON.stringify(command)}\n\nLatest output: ${logPath}.1 and ${logPath}\n${HANDLE_LINE}`);
+	expect(readFileSync(logPath! + ".1")).toHaveLength(2_500_000);
+	expect(readFileSync(logPath!, "utf8").endsWith("600000\n")).toBe(true);
 });
 
 test.each([

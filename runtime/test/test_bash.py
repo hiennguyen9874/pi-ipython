@@ -418,7 +418,7 @@ class BashTest(unittest.IsolatedAsyncioTestCase):
             buffer = bash_module._BoundedBuffer(path)
             buffer.write(b"x" * (bash_module._HEAD_CAP + bash_module._TAIL_CAP))
             self.assertFalse(os.path.exists(path))
-            self.assertIsNone(buffer.log_path())
+            self.assertEqual(buffer.log_info(), (None, False))
             self.assertIsNone(buffer.snapshot()[1])
 
             buffer.write(b"y" * 1000)
@@ -429,7 +429,7 @@ class BashTest(unittest.IsolatedAsyncioTestCase):
                 logged = f.read()
             full = b"x" * (bash_module._HEAD_CAP + bash_module._TAIL_CAP) + b"y" * 1000 + b"z" * 10
             self.assertEqual(logged, full)
-            self.assertEqual(buffer.log_path(), path)
+            self.assertEqual(buffer.log_info(), (path, False))
             text, marker = buffer.snapshot()
             self.assertEqual(marker, f"... [1021 bytes dropped; full output in {path}] ...")
             self.assertIn(f"\n{marker}\n", text)
@@ -447,6 +447,29 @@ class BashTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(f.read(), first)
             with open(path, "rb") as f:
                 self.assertEqual(f.read(), b"b" * 200 + b"c" * 50)
+            buffer.close_log()
+            self.assertEqual(buffer.log_info(), (path, True))
+            self.assertIn(f"; latest output in {path}.1 and {path}]", buffer.snapshot()[1])
+
+    def test_small_command_log_cap_keeps_only_the_last_two_segments(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "id.log")
+            cap = 32 * 1024
+            buffer = bash_module._BoundedBuffer(path, cap)
+            buffer.write(b"a" * (bash_module._HEAD_CAP + bash_module._TAIL_CAP - 1))
+            buffer.write(b"bb")
+            with open(path + ".1", "rb") as f:
+                self.assertEqual(f.read(), b"a" * (cap - 1) + b"b")
+            with open(path, "rb") as f:
+                self.assertEqual(f.read(), b"b")
+
+            buffer.write(b"c" * (2 * cap))
+            buffer.write(b"end")
+            buffer.close_log()
+            with open(path + ".1", "rb") as f:
+                self.assertEqual(f.read(), b"c" * cap)
+            with open(path, "rb") as f:
+                self.assertEqual(f.read(), b"cend")
             self.assertIn(f"; latest output in {path}.1 and {path}]", buffer.snapshot()[1])
 
     def test_unwritable_command_log_is_not_named(self):
@@ -455,7 +478,7 @@ class BashTest(unittest.IsolatedAsyncioTestCase):
             open(blocker, "w").close()
             buffer = bash_module._BoundedBuffer(os.path.join(blocker, "id.log"))
             buffer.write(b"x" * (bash_module._HEAD_CAP + bash_module._TAIL_CAP + 1))
-            self.assertIsNone(buffer.log_path())
+            self.assertEqual(buffer.log_info(), (None, False))
             self.assertEqual(buffer.snapshot()[1], "... [1 bytes dropped] ...")
 
     async def test_command_log_holds_the_full_output_of_a_command(self):

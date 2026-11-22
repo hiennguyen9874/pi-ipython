@@ -24,6 +24,7 @@ interface Notice {
 	timeoutSeconds?: number;
 	/** The Command log, when the command's in-memory output dropped the middle. */
 	logPath?: string;
+	logRotated?: boolean;
 	/** When the host accepted it, on the monotonic clock. */
 	receivedAt: number;
 }
@@ -201,9 +202,11 @@ function noticeMessage(notices: Notice[]): NoticeMessage {
 	};
 }
 
-function noticeText({ pid, command, exitCode, timeoutSeconds, logPath }: Notice): string {
+function noticeText({ pid, command, exitCode, timeoutSeconds, logPath, logRotated }: Notice): string {
 	const killed = timeoutSeconds === undefined ? "" : `\n\nKilled: still running after its ${timeoutSeconds} s timeout.`;
-	const log = logPath === undefined ? "" : `\n\nFull output: ${logPath}`;
+	const log = logPath === undefined ? "" : logRotated
+		? `\n\nLatest output: ${logPath}.1 and ${logPath}`
+		: `\n\nFull output: ${logPath}`;
 	return `[bash-done pid:${pid} exit:${exitCode}]\n\nCommand: ${JSON.stringify(command)}${killed}${log}`;
 }
 
@@ -215,17 +218,18 @@ function parseIdentity(data: Record<string, unknown>): { pid: number; command: s
 }
 
 function parseCompleted(data: Record<string, unknown>): Notice {
-	const { exitCode, timeoutSeconds, logPath } = data;
+	const { exitCode, timeoutSeconds, logPath, logRotated } = data;
 	if (typeof exitCode !== "number" || !Number.isSafeInteger(exitCode)) throw new Error("bash.completed exitCode must be an integer");
 	if (timeoutSeconds !== undefined && timeoutSeconds !== null && (typeof timeoutSeconds !== "number" || !Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0)) {
 		throw new Error("bash.completed timeoutSeconds must be a positive number");
 	}
 	if (logPath !== undefined && (typeof logPath !== "string" || logPath === "")) throw new Error("bash.completed logPath must be a non-empty string");
+	if (logRotated !== undefined && typeof logRotated !== "boolean") throw new Error("bash.completed logRotated must be a boolean");
 	return {
 		...parseIdentity(data),
 		exitCode,
 		...(typeof timeoutSeconds === "number" ? { timeoutSeconds } : {}),
-		...(logPath !== undefined ? { logPath } : {}),
+		...(logPath !== undefined ? { logPath, logRotated } : {}),
 		receivedAt: performance.now(),
 	};
 }

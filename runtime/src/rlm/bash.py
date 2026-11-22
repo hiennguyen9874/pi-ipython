@@ -258,17 +258,25 @@ class _BoundedBuffer:
     def _log_write(self, data: bytes) -> None:
         assert self._log is not None and self._log_path is not None
         try:
-            if self._log_size and self._log_size + len(data) > self._log_max_bytes:
-                os.close(self._log)
-                self._log = None
-                os.replace(self._log_path, self._log_path + ".1")
-                self._log = os.open(self._log_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-                self._log_size = 0
-                self._log_rotated = True
+            cap = self._log_max_bytes
             view = memoryview(data)
             while view:
-                view = view[os.write(self._log, view) :]
-            self._log_size += len(data)
+                if self._log_size == cap:
+                    os.close(self._log)
+                    self._log = None
+                    os.replace(self._log_path, self._log_path + ".1")
+                    self._log = os.open(self._log_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                    self._log_size = 0
+                    self._log_rotated = True
+                    # Skip whole segments that this write would immediately rotate away.
+                    if len(view) > 2 * cap:
+                        skip_segments = (len(view) - 1) // cap - 1
+                        view = view[skip_segments * cap :]
+                written = os.write(self._log, view[: cap - self._log_size])
+                if written == 0:
+                    raise OSError("Command log write made no progress")
+                self._log_size += written
+                view = view[written:]
         except OSError:
             if self._log is not None:
                 try:
@@ -289,10 +297,10 @@ class _BoundedBuffer:
                     pass
                 self._log = None
 
-    def log_path(self) -> str | None:
-        """The Command log, named once the middle was dropped and while the log is whole."""
+    def log_info(self) -> tuple[str | None, bool]:
+        """The visible Command log path and whether it has rotated."""
         with self._lock:
-            return self._named_log()
+            return self._named_log(), self._log_rotated
 
     def _named_log(self) -> str | None:
         if not self._dropped or self._log_failed or self._log_size == 0:
@@ -873,6 +881,7 @@ class BashHandle:
             command = self.command
             if len(command) > _COMPLETION_NOTICE_COMMAND_CAP:
                 command = command[:_COMPLETION_NOTICE_COMMAND_CAP] + "\n... [command truncated]"
+            log_path, log_rotated = self._buffer.log_info()
             reply = await repl.host_request(
                 {
                     "type": "bash.completed",
@@ -880,7 +889,7 @@ class BashHandle:
                     "command": command,
                     "exitCode": result.exit_code,
                     **({"timeoutSeconds": self._timeout} if self._timed_out else {}),
-                    **({"logPath": log_path} if (log_path := self._buffer.log_path()) else {}),
+                    **({"logPath": log_path, "logRotated": log_rotated} if log_path else {}),
                 }
             )
             if isinstance(reply, dict) and reply.get("status") == "ok":
@@ -1137,7 +1146,8 @@ def bash(command: str, timeout: float | None = _DEFAULT_TIMEOUT) -> BashHandle:
     background job) is not in BashResult.output but stays visible via
     handle.output()/tail().
     Output past 2 MiB keeps its first 512 KiB and last 1.5 MiB in memory; the
-    marker between them names the Command log holding the full output.
+    marker between them names the Command log, which retains the latest
+    output once it rotates.
     """
     if not isinstance(command, str) or not command:
         raise TypeError("command must be a non-empty str")
