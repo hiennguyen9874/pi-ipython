@@ -8,6 +8,7 @@ A pi extension that gives the model one tool, `ipython`: a persistent Python Ker
 - **Build order** and pi extension integration points: `docs/plan.md`
 - **Porting** or vendoring code from `references/`: `docs/agents/references.md`
 - **Publishing**: prepare, verify, or recover an npm and GitHub release: `docs/agents/publishing.md`
+- **Prompt design**: before writing, optimizing, or reviewing system prompts, tool-use prompts, or tool descriptions, read `docs/agents/prompt-design.md`.
 - **Domain**: naming concepts or making architectural decisions (glossary, ADRs): `docs/agents/domain.md`
 - **Issues**: specs and tickets live in GitHub Issues (`gh`): `docs/agents/issue-tracker.md`; labels: `docs/agents/triage-labels.md`
 
