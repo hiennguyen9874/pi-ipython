@@ -22,6 +22,7 @@ import {
 	type ToolDefinition,
 	type ToolLoadout,
 	type TruncationOptions,
+	truncateHead,
 	truncateTail,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -89,7 +90,7 @@ const ipythonSchema = Type.Object({
 export interface IpythonToolDetails extends Omit<CellResult, "output"> {
 	/** Set when the text was truncated: the Spill file holding the full text. */
 	fullOutputPath?: string;
-	/** Truncation notice, including a failed attempt to save the full output. */
+	/** The elision markers of a cut result, including a failed attempt to save the full output. */
 	outputWarning?: string;
 	/** Raw-text limits shared by model output and the TUI renderer. */
 	outputLimits?: TruncationOptions;
@@ -140,11 +141,14 @@ type Segment = string | OutputBuffer;
 
 const BACKGROUND_HEADING = "[background output]";
 
+/** Share of a cut section's limits kept for its start; its end gets the rest. */
+const HEAD_SHARE = 0.2;
+
 /**
- * Model-facing text as segments: stdout, then stderr (labelled), then the trailing expression's repr,
- * then the traceback, then Background output (labelled), one per line.
+ * Model-facing text in two sections: the Cell's own (stdout, then stderr labelled, then the trailing
+ * expression's repr, then the traceback, one per line), and Background output, shown under its heading.
  */
-function cellSegments(r: CellResult): { segments: Segment[]; backgroundSegment?: number } {
+function cellSections(r: CellResult): { own: Segment[]; background?: OutputBuffer } {
 	const o = r.output ?? textOutput(r);
 	const parts: Segment[][] = [];
 	if (o.stdout.totalBytes) parts.push([o.stdout]);
@@ -155,10 +159,9 @@ function cellSegments(r: CellResult): { segments: Segment[]; backgroundSegment?:
 		parts.push([traceback || `${r.error.ename}: ${r.error.evalue}`]);
 	}
 	if (r.status === "aborted") parts.push(["[Cell aborted]"]);
-	const hasBackground = o.background.totalBytes > 0;
-	if (hasBackground) parts.push([`${BACKGROUND_HEADING}\n`, o.background]);
-	const segments = parts.flatMap((part, i) => (i === 0 ? part : ["\n", ...part]));
-	return { segments, backgroundSegment: hasBackground ? segments.length - 2 : undefined };
+	const background = o.background.totalBytes > 0 ? o.background : undefined;
+	if (!parts.length && !background) parts.push(["(no output)"]);
+	return { own: parts.flatMap((part, i) => (i === 0 ? part : ["\n", ...part])), background };
 }
 
 /** A result's streams from its text alone, for results without `output`. */
@@ -171,77 +174,124 @@ function textOutput(r: CellResult): CellOutput {
 	return { stdout: buffer(r.stdout), stderr: buffer(r.stderr), background: buffer(r.backgroundOutput) };
 }
 
+/** A section's text, read from stream starts and tails, never whole streams. */
+interface Section {
+	/** Its start: the whole text unless a stream dropped its middle. */
+	head: string;
+	/** Its end: the whole text unless a stream dropped its start. Each stream tail outlasts the limits. */
+	tail: string;
+	bytes: number;
+	lines: number;
+}
+
+function measure(segments: Segment[]): Section {
+	let head = "";
+	let headDone = false;
+	let tail = "";
+	let bytes = 0;
+	let newlines = 0;
+	for (const segment of segments) {
+		if (typeof segment === "string") {
+			tail += segment;
+			if (!headDone) head += segment;
+			bytes += Buffer.byteLength(segment);
+			newlines += countNewlines(segment);
+			continue;
+		}
+		const drop = segment.endsWithNewline ? 1 : 0;
+		const text = drop ? segment.tail.slice(0, -1) : segment.tail;
+		tail += text;
+		if (!headDone) {
+			headDone = segment.truncated;
+			head += headDone ? segment.head : text;
+		}
+		bytes += segment.totalBytes - drop;
+		newlines += segment.newlines - drop;
+	}
+	return { head, tail, bytes, lines: newlines + (tail.endsWith("\n") ? 0 : 1) };
+}
+
 /**
- * The model-facing text, its tail kept within the limits (tracebacks and results come last), with the
- * full text written to a Spill file when cut. Reads stream tails and spools, never whole streams.
- * `live` is for a running Cell: the notice counts output so far, and no Spill file is written.
+ * A section within the limits: whole, or its start and end around a marker saying what was elided.
+ * The end gets most of the limits, as it holds the traceback or summary.
+ */
+function cutMiddle(s: Section, maxLines: number, maxBytes: number, markerSuffix: string): { text: string; marker?: string } {
+	if (s.lines <= maxLines && s.bytes <= maxBytes) return { text: s.tail };
+	const head = truncateHead(s.head, { maxLines: Math.floor(maxLines * HEAD_SHARE), maxBytes: Math.floor(maxBytes * HEAD_SHARE) });
+	// The newline ending the start counts toward the limits.
+	const headBytes = head.outputLines > 0 ? head.outputBytes + 1 : 0;
+	const tail = truncateTail(s.tail, { maxLines: maxLines - head.outputLines, maxBytes: Math.max(0, maxBytes - headBytes) });
+	const elided = tail.lastLinePartial
+		? formatSize(s.bytes - headBytes - tail.outputBytes)
+		: plural(s.lines - head.outputLines - tail.outputLines, "line");
+	const marker = `[… ${elided} elided${markerSuffix}]`;
+	const parts = [marker];
+	if (head.outputLines > 0) parts.unshift(head.content);
+	if (tail.content || (tail.outputLines > 0 && !tail.lastLinePartial)) parts.push(tail.content);
+	return { text: parts.join("\n"), marker };
+}
+
+function plural(count: number, noun: string): string {
+	return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+/** One section's share of a limit both sections exceed together: all of a small one, else half. */
+function share(limit: number, need: number, other: number): number {
+	if (need + other <= limit || need <= limit / 2) return need;
+	if (other <= limit / 2) return limit - other;
+	return Math.floor(limit / 2);
+}
+
+/**
+ * The model-facing text within the limits. When cut, each section keeps its start and its end
+ * around an elision marker, so the Cell's traceback stays visible however much Background output
+ * follows it, and the full text is written to a Spill file. The Background output heading and the
+ * markers are labels outside the limits.
+ * `live` is for a running Cell: the markers count output so far, and no Spill file is written.
  */
 export function composeCellText(
 	r: CellResult,
 	limits: TruncationOptions,
 	{ live = false } = {},
 ): { text: string; fullOutputPath?: string; outputWarning?: string } {
-	const { segments, backgroundSegment } = cellSegments(r);
-	let tail = "";
-	let totalBytes = 0;
-	let newlines = 0;
-	let backgroundStart = -1;
-	for (const [i, segment] of segments.entries()) {
-		if (i === backgroundSegment) backgroundStart = tail.length;
-		if (typeof segment === "string") {
-			tail += segment;
-			totalBytes += Buffer.byteLength(segment);
-			newlines += countNewlines(segment);
-		} else {
-			const drop = segment.endsWithNewline ? 1 : 0;
-			tail += drop ? segment.tail.slice(0, -1) : segment.tail;
-			totalBytes += segment.totalBytes - drop;
-			newlines += segment.newlines - drop;
-		}
-	}
-	if (totalBytes === 0) {
-		tail = "(no output)";
-		totalBytes = tail.length;
-		segments.splice(0, segments.length, tail);
-	}
+	const { own, background } = cellSections(r);
+	const ownSection = own.length ? measure(own) : undefined;
+	const backgroundSection = background && measure([background]);
+	const joinSections = (ownText: string | undefined, backgroundText: string | undefined) =>
+		[ownText, backgroundText === undefined ? undefined : `${BACKGROUND_HEADING}\n${backgroundText}`]
+			.filter((text) => text !== undefined)
+			.join("\n");
 	const maxBytes = limits.maxBytes ?? DEFAULT_MAX_BYTES;
 	const maxLines = limits.maxLines ?? DEFAULT_MAX_LINES;
-	const totalLines = newlines + (tail.endsWith("\n") ? 0 : 1);
-	if (totalLines <= maxLines && totalBytes <= maxBytes) return { text: tail };
+	// The newline between the sections counts toward the limits.
+	const sectionBytes = Math.max(0, maxBytes - (ownSection && backgroundSection ? 1 : 0));
+	const ownLines = ownSection?.lines ?? 0;
+	const ownBytes = ownSection?.bytes ?? 0;
+	const backgroundLines = backgroundSection?.lines ?? 0;
+	const backgroundBytes = backgroundSection?.bytes ?? 0;
+	if (ownLines + backgroundLines <= maxLines && ownBytes + backgroundBytes <= sectionBytes) {
+		return { text: joinSections(ownSection?.tail, backgroundSection?.tail) };
+	}
 
-	// Each stream's tail is long enough that cutting the joined tails equals cutting the full text.
-	const t = truncateTail(tail, { maxBytes, maxLines });
-	let content = t.content;
-	let shown = t.lastLinePartial
-		? `the last ${formatSize(t.outputBytes)} of the last line`
-		: `the last ${t.outputLines} of ${totalLines} lines`;
-	if (backgroundStart >= 0 && tail.length - content.length > backgroundStart) {
-		// Restore the attribution unless it can only fit in the live notice.
-		const headingBytes = Buffer.byteLength(BACKGROUND_HEADING);
-		const showHeading = !live || headingBytes <= maxBytes;
-		const background = truncateTail(tail.slice(backgroundStart + BACKGROUND_HEADING.length + 1), {
-			maxLines: showHeading ? Math.max(0, maxLines - 1) : maxLines,
-			maxBytes: showHeading ? Math.max(0, maxBytes - headingBytes - 1) : maxBytes,
-		});
-		content = showHeading
-			? [BACKGROUND_HEADING, background.content].filter(Boolean).join("\n")
-			: background.content;
-		shown = `the tail of background output (${formatSize(background.outputBytes)})`;
+	let markerSuffix = "";
+	let fullOutputPath: string | undefined;
+	if (!live) {
+		const path = join(tmpdir(), `pi-ipython-${randomUUID()}.log`);
+		const spill: Segment[] = background ? [...own, ...(own.length ? ["\n"] : []), `${BACKGROUND_HEADING}\n`, background] : own;
+		try {
+			writeSpillFile(path, spill);
+			fullOutputPath = path;
+			markerSuffix = `, full output in ${path}`;
+		} catch (error) {
+			markerSuffix = `, full output could not be saved: ${error instanceof Error ? error.message : String(error)}`;
+		}
 	}
-	if (live) {
-		const outputWarning = `[Output truncated (${formatSize(totalBytes)} so far): showing ${shown}]`;
-		return { text: content ? `${content}\n\n${outputWarning}` : outputWarning, outputWarning };
-	}
-	const fullOutputPath = join(tmpdir(), `pi-ipython-${randomUUID()}.log`);
-	try {
-		writeSpillFile(fullOutputPath, segments);
-	} catch (error) {
-		const reason = error instanceof Error ? error.message : String(error);
-		const outputWarning = `[Output truncated (${formatSize(totalBytes)} total): showing ${shown}. Full output could not be saved: ${reason}]`;
-		return { text: `${content}\n\n${outputWarning}`, outputWarning };
-	}
-	const outputWarning = `[Output truncated (${formatSize(totalBytes)} total): showing ${shown}. Full output: ${fullOutputPath}]`;
-	return { text: `${content}\n\n${outputWarning}`, fullOutputPath, outputWarning };
+	const ownMaxLines = share(maxLines, ownLines, backgroundLines);
+	const ownMaxBytes = share(sectionBytes, ownBytes, backgroundBytes);
+	const ownCut = ownSection && cutMiddle(ownSection, ownMaxLines, ownMaxBytes, markerSuffix);
+	const backgroundCut = backgroundSection && cutMiddle(backgroundSection, maxLines - ownMaxLines, sectionBytes - ownMaxBytes, markerSuffix);
+	const outputWarning = [ownCut?.marker, backgroundCut?.marker].filter(Boolean).join("\n");
+	return { text: joinSections(ownCut?.text, backgroundCut?.text), fullOutputPath, outputWarning };
 }
 
 // The same throttle as pi's bash tool (BASH_UPDATE_THROTTLE_MS, not exported).
@@ -343,7 +393,7 @@ export function createIpythonTool({
 	describePiTools,
 }: IpythonToolOptions): ToolDefinition<typeof ipythonSchema, IpythonToolDetails> {
 	const description =
-		"Run Python code in a persistent Python Kernel. The output contains stdout, stderr, the repr of the trailing expression, and errors with tracebacks. Long output is truncated to its tail, with the full text saved to a Spill file. Images emitted with `from rlm.repl import emit; emit({'image/png': base64_str})` are returned as images. Output from background threads, tasks, and subprocesses is reported under [background output] in the next result.";
+		"Run Python code in a persistent Python Kernel. The output contains stdout, stderr, the repr of the trailing expression, and errors with tracebacks. Long output keeps its start and end, with the full text saved to a Spill file. Images emitted with `from rlm.repl import emit; emit({'image/png': base64_str})` are returned as images. Output from background threads, tasks, and subprocesses is reported under [background output] in the next result.";
 	return {
 		name: IPYTHON_TOOL_NAME,
 		label: "ipython",

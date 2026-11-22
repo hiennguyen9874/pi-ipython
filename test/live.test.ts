@@ -75,8 +75,10 @@ test("partial updates of a huge Cell stay within the output limits", async () =>
 	}
 	const last = live.at(-1)!;
 	expect(last.details!.stdout).toContain(`099999${"x".repeat(93)}`);
-	expect(text(last)).toMatch(/\[Output truncated \(\d+\.\dMB so far\): showing the last \d+ of 100000 lines\]$/);
-	expect(text(last)).not.toContain("Full output");
+	// The start and the end so far, around a marker; no Spill file yet.
+	expect(text(last).startsWith(`000000${"x".repeat(93)}\n`)).toBe(true);
+	expect(text(last)).toMatch(/\n\[… \d+ lines elided\]\n/);
+	expect(text(last)).not.toContain("full output");
 });
 
 test("Background output arriving while a Cell runs streams with it", async () => {
@@ -101,7 +103,7 @@ test("live RPC text respects a byte limit smaller than the Background output hea
 	const { updates } = recordUpdates(h);
 	const [r] = await h.runCells("import threading, time\nthreading.Thread(target=lambda: print('tick', end='', flush=True)).start()\ntime.sleep(0.6)");
 	expect(r!.isError).toBe(false);
-	expect(updates.map(text)).toContainEqual(expect.stringMatching(/^k\n\n\[Output truncated .* so far\): showing the tail of background output.*\]$/));
+	expect(updates.map(text)).toContainEqual("[background output]\n[… 3B elided]\nk");
 });
 
 test("real Cell updates render the last five visual lines, expand to all stream tails, and stop the timer", async () => {

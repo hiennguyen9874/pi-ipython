@@ -1,5 +1,5 @@
-// One stream of Cell output with bounded memory: a tail in memory, the full text spooled to a file
-// once an output limit is crossed.
+// One stream of Cell output with bounded memory: its start and its tail in memory, the full text
+// spooled to a file once an output limit is crossed.
 //
 // Adapted from pi's OutputAccumulator (packages/coding-agent/src/core/tools/output-accumulator.ts),
 // which pi does not export: the input is decoded text, and the spool is written synchronously so a
@@ -27,9 +27,13 @@ export interface OutputBufferSnapshot {
 /**
  * Keep twice the output limits, with room to strip a trailing newline. A later cut to the
  * actual limits will stop before reaching any incomplete first line.
+ * The start is kept up to the limits (`maxBytes` UTF-16 units, at least as many bytes), so a cut
+ * keeping part of the limits for the start stops before its end too.
  */
 export class OutputBuffer {
 	private text = "";
+	private headText = "";
+	private headNewlines = 0;
 	private textBytes = 0;
 	private textNewlines = 0;
 	private pendingHigh = "";
@@ -63,6 +67,7 @@ export class OutputBuffer {
 		if (this.fd !== undefined) {
 			this.writeSpool(previousHigh + (this.pendingHigh ? text.slice(0, -1) : text));
 		}
+		this.captureHead(text);
 		this.text += text;
 		this.textBytes += bytes;
 		this.textNewlines += newlines;
@@ -76,6 +81,16 @@ export class OutputBuffer {
 	get tail(): string {
 		if (this.textBytes > this.keepBytes || this.textNewlines > this.keepLines) this.trim();
 		return this.text;
+	}
+
+	/** The output's start: the whole output unless `truncated`. */
+	get head(): string {
+		return this.trimmed ? this.headText : this.text;
+	}
+
+	/** True once the tail dropped the output's start, so `head` and `tail` are not contiguous. */
+	get truncated(): boolean {
+		return this.trimmed;
 	}
 
 	private get totalLines(): number {
@@ -115,6 +130,19 @@ export class OutputBuffer {
 	/** Close and delete the spool. */
 	dispose(): void {
 		this.closeSpool();
+	}
+
+	private captureHead(text: string): void {
+		const room = this.maxBytes - this.headText.length;
+		if (room <= 0 || this.headNewlines >= this.maxLines) return;
+		let piece = text.length > room ? text.slice(0, room) : text;
+		for (let i = piece.indexOf("\n"); i !== -1; i = piece.indexOf("\n", i + 1)) {
+			if (++this.headNewlines === this.maxLines) {
+				piece = piece.slice(0, i + 1);
+				break;
+			}
+		}
+		this.headText += piece;
 	}
 
 	private trim(): void {

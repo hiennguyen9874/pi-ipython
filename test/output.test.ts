@@ -12,16 +12,18 @@ afterEach(async () => {
 	h = undefined;
 });
 
-const fullOutputPath = (text: string) => text.match(/Full output: (\S+)\]$/)?.[1];
+const fullOutputPath = (text: string) => text.match(/, full output in (\S+)\]/)?.[1];
+/** The text within the output limits: without elision markers and the Background output heading. */
+const counted = (text: string) => text.split("\n").filter((l) => !/^\[… .* elided.*\]$/.test(l) && l !== "[background output]").join("\n");
 
-test("output over the line limit is truncated to its tail, with the full text in a Spill file", async () => {
+test("output over the line limit keeps its start and end around a marker, with the full text in a Spill file", async () => {
 	h = await createHarness();
 	const [r] = await h.runCells("for i in range(3000): print(f'line {i}')");
 	const text = resultText(r!);
-	expect(text).toContain("line 2999");
-	expect(text).not.toContain("line 999\n");
-	expect(text).toContain("showing the last 2000 of 3000 lines");
 	const path = fullOutputPath(text);
+	const lines = (from: number, to: number) => Array.from({ length: to - from }, (_, i) => `line ${from + i}`).join("\n");
+	expect(text).toBe(`${lines(0, 400)}\n[… 1000 lines elided, full output in ${path}]\n${lines(1400, 3000)}`);
+	expect(r?.details).toMatchObject({ fullOutputPath: path, outputWarning: `[… 1000 lines elided, full output in ${path}]` });
 	expect(path).toBeDefined();
 	if (process.platform !== "win32") expect(statSync(path!).mode & 0o777).toBe(0o600);
 	const full = readFileSync(path!, "utf8").split("\n");
@@ -39,7 +41,7 @@ test("output limits come from config", async () => {
 	});
 	const [r] = await h.runCells("print('x' * 50)\nprint('y' * 50)\nprint('z' * 50)");
 	const text = resultText(r!);
-	expect(text.startsWith(`${"z".repeat(50)}\n\n[Output truncated`)).toBe(true);
+	expect(text).toBe(`[… 2 lines elided, full output in ${fullOutputPath(text)}]\n${"z".repeat(50)}`);
 	expect(readFileSync(fullOutputPath(text)!, "utf8")).toContain("x".repeat(50));
 });
 
@@ -58,7 +60,7 @@ test("the line limit opens a spool during the Cell and bounds the retained tail"
 	);
 	expect(r?.isError).toBe(false);
 	const text = resultText(r!);
-	expect(text).toMatch(/^28\n29\n\n\[Output truncated .*last 2 of 30 lines/);
+	expect(text).toMatch(/^\[… 28 lines elided, full output in \S+\]\n28\n29$/);
 	expect((r!.details as { stdout: string }).stdout).toBe("26\n27\n28\n29\n");
 	expect(readFileSync(fullOutputPath(text)!, "utf8")).toBe(Array.from({ length: 30 }, (_, i) => i).join("\n"));
 });
@@ -77,10 +79,10 @@ test("small byte limits preserve the partial-line notice and spooled Unicode acr
 	);
 	for (const [r, full] of [[results[0]!, "a😀"], [results[1]!, "prefix😀"]] as const) {
 		const text = resultText(r);
-		expect(text).toContain("showing the last 0B of the last line");
+		expect(text).toBe(`[… ${Buffer.byteLength(full)}B elided, full output in ${fullOutputPath(text)}]`);
 		expect(readFileSync(fullOutputPath(text)!, "utf8")).toBe(full);
 	}
-	expect(resultText(results[2]!)).toMatch(/^\n\n\[Output truncated .*last 1 of 3 lines/);
+	expect(resultText(results[2]!)).toMatch(/^\[… 2 lines elided, full output in \S+\]\n$/);
 });
 
 test("a one-line limit preserves the suffix when the stream ends with a blank line", async () => {
@@ -91,8 +93,8 @@ test("a one-line limit preserves the suffix when the stream ends with a blank li
 		},
 	});
 	const [blank, empty] = await h.runCells("print('\\na\\n😀\\n界\\n')", "pass");
-	expect(resultText(blank!)).toMatch(/^界\n\n\[Output truncated .*last 1 of 4 lines/);
-	expect(resultText(empty!)).toMatch(/^put\)\n\n\[Output truncated .*last 4B of the last line/);
+	expect(resultText(blank!)).toMatch(/^\[… 3 lines elided, full output in \S+\]\n界$/);
+	expect(resultText(empty!)).toMatch(/^\[… 7B elided, full output in \S+\]\nput\)$/);
 	expect(readFileSync(fullOutputPath(resultText(empty!))!, "utf8")).toBe("(no output)");
 });
 
@@ -146,14 +148,14 @@ test("a spill failure preserves output, images, execution status, and completed 
 	);
 	expect(r?.isError).toBe(false);
 	expect(resultText(r!)).toContain("kept");
-	expect(resultText(r!)).toContain("Full output could not be saved");
+	expect(resultText(r!)).toMatch(/\n\[… 100 lines elided, full output could not be saved: .+\]\n/);
 	expect(r?.content.some((b) => b.type === "image")).toBe(true);
 	expect(r?.details).not.toHaveProperty("fullOutputPath", expect.any(String));
 	expect(resultText(next!)).toBe("42");
 	const [failed] = await h.runCells("print('kept\\n' * 2100, end='')\nraise ValueError('original Python error')");
 	expect(failed?.isError).toBe(true);
-	expect(resultText(failed!)).toContain("ValueError: original Python error");
-	expect(resultText(failed!)).toContain("Full output could not be saved");
+	expect(resultText(failed!)).toMatch(/ValueError: original Python error$/);
+	expect(resultText(failed!)).toContain("full output could not be saved");
 });
 
 test("large background output keeps its heading and spills all text beyond the old buffer cap", async () => {
@@ -163,9 +165,10 @@ test("large background output keeps its heading and spills all text beyond the o
 		"1",
 	);
 	const text = resultText(r!);
-	expect(text.startsWith("[background output]\n")).toBe(true);
-	expect(text).toContain("END");
-	const displayed = text.split("\n\n[Output truncated")[0]!;
+	expect(text.startsWith("[background output]\nstart\n0000:")).toBe(true);
+	expect(text).toMatch(/\n\[… \d+ lines elided, full output in \S+\]\n\d{4}:/);
+	expect(text.endsWith("\nEND")).toBe(true);
+	const displayed = counted(text);
 	expect(displayed.split("\n").length).toBeLessThanOrEqual(2000);
 	expect(Buffer.byteLength(displayed)).toBeLessThanOrEqual(50 * 1024);
 	const full = readFileSync(fullOutputPath(text)!, "utf8");
@@ -190,11 +193,31 @@ test.each([
 		"import threading\nt = threading.Thread(target=lambda: print('background line\\n' * 20, end=''))\nt.start()\nt.join()",
 	);
 	const text = resultText(r!);
-	const displayed = text.split("\n\n[Output truncated")[0]!;
-	expect(displayed.startsWith("[background output]\n")).toBe(true);
+	expect(text.startsWith("[background output]\n")).toBe(true);
+	const displayed = counted(text);
 	expect(displayed.split("\n").length).toBeLessThanOrEqual(limits.maxLines ?? 2000);
 	expect(Buffer.byteLength(displayed)).toBeLessThanOrEqual(limits.maxBytes ?? 50 * 1024);
 	expect(readFileSync(fullOutputPath(text)!, "utf8")).toBe("[background output]\n" + "background line\n".repeat(20).trimEnd());
+});
+
+test("a traceback stays at the end of the Cell's own output when its output and Background output are both huge", async () => {
+	h = await createHarness();
+	const [r] = await h.runCells(
+		"import threading\nt = threading.Thread(target=lambda: [print(f'bg {i}') for i in range(5000)])\nt.start()\nt.join()\nfor i in range(5000): print(f'own {i}')\nraise ValueError('boom')",
+	);
+	expect(r?.isError).toBe(true);
+	const text = resultText(r!);
+	const [own, background] = text.split("\n[background output]\n");
+	expect(own!.startsWith("own 0\nown 1\n")).toBe(true);
+	expect(own).toMatch(/\nown 4999\nTraceback[^]*ValueError: boom$/);
+	expect(own).toMatch(/\n\[… \d+ lines elided, full output in \S+\]\n/);
+	expect(background!.startsWith("bg 0\nbg 1\n")).toBe(true);
+	expect(background).toMatch(/\n\[… \d+ lines elided, full output in \S+\]\n/);
+	expect(background!.endsWith("\nbg 4999")).toBe(true);
+	expect(counted(text).split("\n").length).toBeLessThanOrEqual(2000);
+	const full = readFileSync(fullOutputPath(text)!, "utf8");
+	expect(full.startsWith("own 0\n")).toBe(true);
+	expect(full).toContain("ValueError: boom\n[background output]\nbg 0\n");
 });
 
 test("literal background truncation markers do not discard subsequent output", async () => {
@@ -239,8 +262,11 @@ test("a Cell printing far beyond the limits keeps bounded details and session en
 	const count = 200_000;
 	const [r] = await h.runCells(`import sys\n${NUMBERED_LINES_CODE(count)}\nprint('last words', file=sys.stderr)`);
 	const text = resultText(r!);
-	expect(text).toContain(`(9.5MB total): showing the last 1025 of ${count + 2} lines. Full output: `);
-	expect(text.split("\n\n[Output truncated")[0]!.endsWith("[stderr]\nlast words")).toBe(true);
+	expect(text.startsWith(`000000${"x".repeat(43)}\n000001`)).toBe(true);
+	expect(text).toMatch(/\n\[… \d+ lines elided, full output in \S+\]\n\d{6}x{43}\n/);
+	expect(text.endsWith("[stderr]\nlast words")).toBe(true);
+	expect(counted(text).split("\n").length).toBeLessThanOrEqual(2000);
+	expect(Buffer.byteLength(counted(text))).toBeLessThanOrEqual(50 * 1024);
 	expect(readFileSync(fullOutputPath(text)!, "utf8")).toBe(`${numberedLines(count).slice(0, -1)}\n[stderr]\nlast words`);
 	const details = r!.details as { stdout: string; stderr: string };
 	expect(Buffer.byteLength(details.stdout)).toBeLessThanOrEqual(2 * 50 * 1024);
@@ -256,9 +282,10 @@ test("noisy background output is bounded in details and spilled byte-exact", asy
 		`import threading\nt = threading.Thread(target=lambda: [print(f'{i:06d}' + 'x' * 43) for i in range(${count})])\nt.start()\nt.join()\nprint('own')`,
 	);
 	const text = resultText(r!);
-	const displayed = text.split("\n\n[Output truncated")[0]!;
-	expect(displayed.startsWith("[background output]\n")).toBe(true);
-	expect(Buffer.byteLength(displayed)).toBeLessThanOrEqual(50 * 1024);
+	// The Cell's own output is not crowded out: Background output is cut on its own.
+	expect(text.startsWith(`own\n[background output]\n000000${"x".repeat(43)}\n`)).toBe(true);
+	expect(text.endsWith(`${String(count - 1).padStart(6, "0")}${"x".repeat(43)}`)).toBe(true);
+	expect(Buffer.byteLength(counted(text))).toBeLessThanOrEqual(50 * 1024);
 	expect(readFileSync(fullOutputPath(text)!, "utf8")).toBe(`own\n[background output]\n${numberedLines(count).slice(0, -1)}`);
 	expect(Buffer.byteLength((r!.details as { backgroundOutput: string }).backgroundOutput)).toBeLessThanOrEqual(2 * 50 * 1024);
 });
@@ -281,8 +308,8 @@ test("a spool failure mid-Cell keeps the tail and reports that the full output c
 	const [r] = await h.runCells(`${NUMBERED_LINES_CODE(20_000)}\n'still ok'`);
 	expect(r?.isError).toBe(false);
 	const text = resultText(r!);
-	expect(text).toContain("'still ok'");
-	expect(text).toContain("Full output could not be saved");
+	expect(text.endsWith("'still ok'")).toBe(true);
+	expect(text).toContain("full output could not be saved");
 	expect(r?.details).not.toHaveProperty("fullOutputPath", expect.any(String));
 });
 
@@ -322,7 +349,7 @@ test("a write and cleanup failure after opening the spool does not fail the Cell
 		const [r] = await h.runCells(NUMBERED_LINES_CODE(3000) + "\nprint('still ok')");
 		expect(r?.isError).toBe(false);
 		expect(resultText(r!)).toContain("still ok");
-		expect(resultText(r!)).toContain("Full output could not be saved: spool disk full");
+		expect(resultText(r!)).toContain("full output could not be saved: spool disk full]");
 		expect(failedRemoval).toBe(true);
 		expect(readdirSync(temp)).toEqual([]);
 	} finally {

@@ -62,7 +62,7 @@ test.each([undefined, { maxBytes: 100000, maxLines: 3000 }])(
 		const expanded = plain(renderRow(h, r!, { expanded: true }));
 		expect(expanded).toContain("0000" + "x".repeat(36));
 		expect(expanded).toContain(String(count - 1).padStart(4, "0") + "x".repeat(36));
-		expect(expanded).not.toContain("Output truncated");
+		expect(expanded).not.toContain("elided");
 	},
 );
 
@@ -95,7 +95,7 @@ test("a large exception stays compact and its full message is saved", async () =
 	expect(plain(collapsed)).toContain("to expand");
 	const expanded = plain(renderRow(h, r!, { expanded: true }));
 	expect(expanded).toContain("-end");
-	expect(expanded).toContain("Output truncated");
+	expect(expanded).toContain("elided, full output in");
 	const path = (r!.details as { fullOutputPath: string }).fullOutputPath;
 	expect(readFileSync(path, "utf8")).toContain("start-" + "x".repeat(100000) + "-end");
 });
@@ -106,7 +106,7 @@ test("a failed output spill remains visible in collapsed and expanded rows", asy
 	for (const key of ["TMPDIR", "TMP", "TEMP"]) vi.stubEnv(key, join(h.cwd, "missing"));
 	const [r] = await h.runCells("print('kept\\n' * 2100, end='')");
 	for (const expanded of [false, true]) {
-		expect(plain(renderRow(h, r!, { expanded })).replace(/\s+/g, " ")).toContain("Full output could not be saved");
+		expect(plain(renderRow(h, r!, { expanded })).replace(/\s+/g, " ")).toContain("full output could not be saved");
 	}
 });
 

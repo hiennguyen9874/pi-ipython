@@ -247,7 +247,7 @@ Defaults:
 | `python.version` | `"3.13"` | Python version for the uv environment (3.11 or newer). |
 | `python.defaultPackages` | `true` | Install the default [Kernel packages](#kernel-packages) and pre-import `np`, `pd`, `requests`, `httpx`, `yaml` (uv only). |
 | `python.packages` | `[]` | Kernel packages for the uv environment, as uv requirement strings. Entries that are empty or start with `-` are skipped with a warning. |
-| `output.maxBytes` / `output.maxLines` | `51200` / `2000` | When a Cell prints more than this, only the end is shown. The full output is saved to a Spill file, and the result includes its path. |
+| `output.maxBytes` / `output.maxLines` | `51200` / `2000` | When a Cell prints more than this, the result keeps its start and end (about 20% / 80%) around a `[… N lines elided, full output in <path>]` marker. The full output is saved to that Spill file. |
 | `prelude.defaults` | `true` | Load the [ready-made imports](#what-changes-when-its-enabled). |
 | `prelude.imports` | `[]` | Extra imports for every Kernel, e.g. `"import numpy as np"`. See the rules below. |
 | `prelude.prompt` | `true` | List the prelude in the system prompt. With `false` the imports still run, just without telling the model. |
