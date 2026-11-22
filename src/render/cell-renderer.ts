@@ -11,6 +11,7 @@ import {
 	truncateToVisualLines,
 } from "@earendil-works/pi-coding-agent";
 import { type Component, Container, getCapabilities, getImageDimensions, imageFallback, Text, truncateToWidth } from "@earendil-works/pi-tui";
+import type { ModelCallsSummary } from "../bridge/model-calls.ts";
 import type { IpythonToolDetails } from "../tool/ipython-tool.ts";
 
 const CODE_PREVIEW_LINES = 10;
@@ -47,6 +48,7 @@ export function renderCellResult(
 	const elapsed = elapsedText(context, isPartial && d?.running ? d.startedAt : undefined);
 	if (isPartial) {
 		if (d?.running) addStreams(container, d, expanded, theme, context);
+		if (d?.running && d.modelCalls) add(theme.fg("muted", modelCallsLine(d.modelCalls)));
 		if (elapsed !== undefined) add(theme.fg("muted", `Running… ${elapsed}`));
 		return container;
 	}
@@ -84,7 +86,24 @@ export function renderCellResult(
 			add(theme.fg("muted", imageFallback(block.mimeType, getImageDimensions(block.data, block.mimeType) ?? undefined)));
 		}
 	}
+	if (d?.modelCalls) add(theme.fg("muted", modelCallsLine(d.modelCalls)));
 	return container;
+}
+
+/** `N model calls · X tok · $Y`, formatted like pi's footer; no cost when it is 0 or unknown. */
+function modelCallsLine({ count, totalTokens, cost }: ModelCallsSummary): string {
+	const parts = [`${count} model call${count === 1 ? "" : "s"}`, `${formatTokens(totalTokens)} tok`];
+	if (cost > 0) parts.push(`$${cost.toFixed(3)}`);
+	return parts.join(" · ");
+}
+
+/** Token counts as pi's footer shows them (its `formatTokens` is not exported). */
+function formatTokens(count: number): string {
+	if (count < 1000) return count.toString();
+	if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
+	if (count < 1000000) return `${Math.round(count / 1000)}k`;
+	if (count < 10000000) return `${(count / 1000000).toFixed(1)}M`;
+	return `${Math.round(count / 1000000)}M`;
 }
 
 /** Stream tails, followed by the traceback on expanded final results. */

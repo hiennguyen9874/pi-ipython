@@ -142,7 +142,7 @@ export default function piIpython(pi: ExtensionAPI): void {
 				const listed = config.piTools.list ? listPiTools(loadout, bridged) : undefined;
 				return [piToolsSection(config.piTools.search, config.parallelWorkPrompt), ...(listed ? [listed] : [])].join("\n\n");
 			},
-			startModelCalls: (ctx, signal) => new CellModelCalls(() => config.modelCalls, ctx, signal),
+			startModelCalls: (ctx, signal, onChange) => new CellModelCalls(() => config.modelCalls, ctx, signal, onChange),
 			describeModelCalls: () => (config.modelCalls.enabled ? modelCallsSection(config.modelCalls.maxPerCell) : undefined),
 		}),
 	);

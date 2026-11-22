@@ -12,15 +12,18 @@ import {
 	type ToolResultMessage,
 	type TranscriptContext,
 } from "@earendil-works/pi-ai";
-import { ModelRegistry } from "@earendil-works/pi-coding-agent";
-import { afterEach, expect, test, vi } from "vitest";
+import { initTheme, ModelRegistry, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
+import type { TUI } from "@earendil-works/pi-tui";
+import { afterEach, beforeAll, expect, test, vi } from "vitest";
 import { createHarness, type Harness, type HarnessOptions, kernelPids, resultText, writeConfigs } from "./harness.ts";
 
 let h: Harness | undefined;
 afterEach(async () => {
+	vi.restoreAllMocks();
 	await h?.dispose();
 	h = undefined;
 });
+beforeAll(() => initTheme("dark"));
 
 /** What one Model call sent. */
 interface ModelRequest {
@@ -368,4 +371,100 @@ test("valid modelCalls values apply: maxOutputTokens, maxPerCell, and thinking r
 	// Budget-based reasoning adapters may add thinking tokens up to the request model's ceiling.
 	expect(requests[0]!.modelMaxTokens).toBe(77);
 	expect(h.session.model?.maxTokens).toBeGreaterThan(77);
+});
+
+
+interface ToolUpdate {
+	content: ToolResultMessage["content"];
+	details?: unknown;
+}
+
+/** Record the partial results of ipython tool calls. */
+function recordUpdates(harness: Harness): ToolUpdate[] {
+	const updates: ToolUpdate[] = [];
+	harness.session.subscribe((event) => {
+		if (event.type === "tool_execution_update" && event.toolName === "ipython") updates.push(event.partialResult as ToolUpdate);
+	});
+	return updates;
+}
+
+const ANSI = /\x1b\[[0-9;]*m/g;
+const ui = { requestRender: () => {} } as unknown as TUI;
+
+/** Draw each partial update, then the final result, in one tool row as interactive mode does; returns the plain text of each. */
+function renderRows(harness: Harness, updates: ToolUpdate[], result: ToolResultMessage): { live: string[]; final: string } {
+	const row = new ToolExecutionComponent("ipython", "call", { code: "" }, { showImages: false }, harness.session.getToolDefinition("ipython"), ui, harness.cwd);
+	row.markExecutionStarted();
+	row.setArgsComplete();
+	const draw = () => row.render(100).map((line) => line.replace(ANSI, "").trim()).join("\n");
+	const live = updates.map((u) => {
+		row.updateResult({ ...u, isError: false }, true);
+		return draw();
+	});
+	// The final result also stops the row's running timer.
+	row.updateResult({ content: result.content, details: result.details, isError: result.isError });
+	return { live, final: draw() };
+}
+
+/** Give every Model call reply this cost, as a priced model would; faux replies are free. */
+function priceModelCalls(cost: number): void {
+	const original = ModelRegistry.prototype.streamSimple;
+	vi.spyOn(ModelRegistry.prototype, "streamSimple").mockImplementation(function (this: ModelRegistry, ...args) {
+		const stream = original.apply(this, args);
+		const result = stream.result.bind(stream);
+		stream.result = async () => {
+			const message = await result();
+			return { ...message, usage: { ...message.usage, cost: { ...message.usage.cost, total: cost } } };
+		};
+		return stream;
+	});
+}
+
+test("a Cell without Model calls shows no Model-call line, live or final", async () => {
+	h = await createHarness({ setup: enabled() });
+	const updates = recordUpdates(h);
+	const { result } = await runCell(h, "await asyncio.sleep(0.3)\nprint('ok')");
+	expect(updates.length).toBeGreaterThan(0);
+	expect(result.details).not.toHaveProperty("modelCalls");
+	const { live, final } = renderRows(h, updates, result);
+	expect(final).toContain("ok");
+	for (const text of [...live, final]) expect(text).not.toMatch(/model call/i);
+});
+
+test("one free Model call shows its count and tokens without a cost, live and final", async () => {
+	h = await createHarness({ setup: enabled() });
+	const updates = recordUpdates(h);
+	const { result } = await runCell(h, "print(await pi.ask('hi'))\nawait asyncio.sleep(0.3)");
+	const tokens = result.usage!.totalTokens;
+	expect(tokens).toBeGreaterThan(0);
+	expect(tokens).toBeLessThan(1000);
+	expect(result.details).toMatchObject({ modelCalls: { count: 1, totalTokens: tokens, cost: 0 } });
+	const { live, final } = renderRows(h, updates, result);
+	expect(final).toContain("answer: hi");
+	expect(final.split("\n")).toContain(`1 model call · ${tokens} tok`);
+	expect(final).not.toContain("$");
+	// While the Cell still runs after its call, the line is already there.
+	expect(live.some((text) => text.split("\n").includes(`1 model call · ${tokens} tok`) && text.includes("Running…"))).toBe(true);
+});
+
+test("N priced Model calls show the growing count live, and the summed tokens and cost in the final result", async () => {
+	priceModelCalls(0.01);
+	h = await createHarness({ setup: enabled() });
+	const updates = recordUpdates(h);
+	const long = "x".repeat(2000);
+	const { result } = await runCell(h, "for i in range(3):\n    await pi.ask(f'q{i}')\nawait asyncio.sleep(0.3)", async () => {
+		await sleep(150);
+		return fauxAssistantMessage(long);
+	});
+	expect(result.usage!.cost.total).toBeCloseTo(0.03);
+	expect(result.usage!.totalTokens).toBeGreaterThan(1000);
+	expect(result.details).toMatchObject({ modelCalls: { count: 3, totalTokens: result.usage!.totalTokens } });
+	const { live, final } = renderRows(h, updates, result);
+	expect(final).toMatch(/^3 model calls · \d+(\.\d)?k tok · \$0\.030$/m);
+	expect(final.match(/model call/g)).toHaveLength(1);
+	const counts = live.flatMap((text) => text.match(/^(\d) model calls? · /m)?.[1] ?? []);
+	expect(new Set(counts)).toEqual(new Set(["1", "2", "3"]));
+	expect(counts).toEqual([...counts].sort());
+	// Cost appears live once the first reply is in.
+	expect(live.some((text) => /^\d model calls? · \S+ tok · \$0\.010$/m.test(text))).toBe(true);
 });

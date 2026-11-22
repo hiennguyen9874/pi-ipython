@@ -26,7 +26,7 @@ import {
 	truncateTail,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { type CellModelCalls, PI_ASK_REQUEST } from "../bridge/model-calls.ts";
+import { type CellModelCalls, type ModelCallsSummary, PI_ASK_REQUEST } from "../bridge/model-calls.ts";
 import { type CellOutput, type CellResult, disposeCellOutput, type KernelClient, KernelBusyError } from "../kernel/client.ts";
 import { countNewlines, OutputBuffer, writeAll } from "../kernel/output-buffer.ts";
 import { preludeCode } from "../kernel/prelude.ts";
@@ -99,6 +99,8 @@ export interface IpythonToolDetails extends Omit<CellResult, "output"> {
 	running?: true;
 	/** Dispatch timestamp used by the TUI timer; only present on partial updates. */
 	startedAt?: number;
+	/** The Cell's Model calls so far; absent when it made none. */
+	modelCalls?: ModelCallsSummary;
 	/** True when this result carries the State-loss notice. */
 	stateLost?: boolean;
 	stateLossCause?: string;
@@ -118,8 +120,11 @@ export interface IpythonToolOptions {
 	answerHostRequest?: (data: Record<string, unknown>, ctx: ExtensionToolContext, signal: AbortSignal | undefined) => Promise<unknown>;
 	/** Text appended to the model-facing description (the `pi` API and Listed Pi tools), or undefined to leave it unchanged. */
 	describePiTools?: (loadout: ToolLoadout) => string | undefined;
-	/** Starts one Cell's Model calls, which answer its `pi.ask` requests and sum their usage into the result. */
-	startModelCalls?: (ctx: ExtensionToolContext, signal: AbortSignal | undefined) => CellModelCalls;
+	/**
+	 * Starts one Cell's Model calls, which answer its `pi.ask` requests and sum their usage into the result.
+	 * `onChange` is called whenever their summary changes.
+	 */
+	startModelCalls?: (ctx: ExtensionToolContext, signal: AbortSignal | undefined, onChange: () => void) => CellModelCalls;
 	/** The `pi.ask` paragraph of the description, or undefined while Model calls are off. */
 	describeModelCalls?: () => string | undefined;
 }
@@ -325,7 +330,12 @@ export function composeCellText(
 const LIVE_UPDATE_INTERVAL_MS = 100;
 
 /** A running Cell's streams (none yet when undefined) as a partial update: tails cut to the limits, no Spill file. */
-function liveResult(output: CellOutput | undefined, limits: TruncationOptions, startedAt: number) {
+function liveResult(
+	output: CellOutput | undefined,
+	limits: TruncationOptions,
+	startedAt: number,
+	modelCalls: ModelCallsSummary | undefined,
+) {
 	const cut = (b: OutputBuffer | undefined) => (b ? truncateTail(b.tail, limits).content : "");
 	const details: IpythonToolDetails = {
 		stdout: cut(output?.stdout),
@@ -337,6 +347,7 @@ function liveResult(output: CellOutput | undefined, limits: TruncationOptions, s
 		outputLimits: limits,
 		running: true,
 		startedAt,
+		...(modelCalls ? { modelCalls } : {}),
 	};
 	if (!output || output.stdout.totalBytes + output.stderr.totalBytes + output.background.totalBytes === 0) {
 		return { content: [], details };
@@ -347,9 +358,13 @@ function liveResult(output: CellOutput | undefined, limits: TruncationOptions, s
 
 /**
  * Throttled partial updates for one Cell: the first at once, then at most one per interval while its
- * output grows. None after `close`, so none outlives the tool call.
+ * output or Model calls grow. None after `close`, so none outlives the tool call.
  */
-function liveUpdates(onUpdate: AgentToolUpdateCallback<IpythonToolDetails>, limits: TruncationOptions) {
+function liveUpdates(
+	onUpdate: AgentToolUpdateCallback<IpythonToolDetails>,
+	limits: TruncationOptions,
+	getModelCalls: () => ModelCallsSummary | undefined,
+) {
 	let startedAt: number | undefined;
 	let output: CellOutput | undefined;
 	let timer: ReturnType<typeof setTimeout> | undefined;
@@ -360,8 +375,18 @@ function liveUpdates(onUpdate: AgentToolUpdateCallback<IpythonToolDetails>, limi
 		if (closed || startedAt === undefined) return;
 		lastAt = Date.now();
 		try {
-			onUpdate(liveResult(output, limits, startedAt));
+			onUpdate(liveResult(output, limits, startedAt, getModelCalls()));
 		} catch {} // Progress must never fail the Cell.
+	};
+	const changed = () => {
+		if (closed) return;
+		const wait = LIVE_UPDATE_INTERVAL_MS - (Date.now() - lastAt);
+		if (wait <= 0) {
+			clearTimeout(timer);
+			emit();
+		} else {
+			timer ??= setTimeout(emit, wait);
+		}
 	};
 	return {
 		/** Like pi's bash tool: an update with no output marks the start. */
@@ -372,14 +397,10 @@ function liveUpdates(onUpdate: AgentToolUpdateCallback<IpythonToolDetails>, limi
 		notify(current: CellOutput) {
 			if (closed) return;
 			output = current;
-			const wait = LIVE_UPDATE_INTERVAL_MS - (Date.now() - lastAt);
-			if (wait <= 0) {
-				clearTimeout(timer);
-				emit();
-			} else {
-				timer ??= setTimeout(emit, wait);
-			}
+			changed();
 		},
+		/** The Model-call summary changed. */
+		modelCallsChanged: changed,
 		close() {
 			closed = true;
 			clearTimeout(timer);
@@ -453,10 +474,14 @@ export function createIpythonTool({
 				if (!(await ctx.ui.confirm("Run this Python Cell?", params.code, { signal }))) throw new Error(CELL_REJECTED_ERROR);
 			}
 			let r: CellResult;
-			const live = onUpdate && liveUpdates(onUpdate, getOutputLimits());
-			const modelCalls = startModelCalls?.(ctx, signal);
-			// Usage gathered so far stays on every result of a Cell that ran, even an aborted one.
-			const withUsage = <T extends object>(result: T) => (modelCalls?.usage ? { ...result, usage: modelCalls.usage } : result);
+			const live = onUpdate && liveUpdates(onUpdate, getOutputLimits(), () => modelCalls?.summary());
+			const modelCalls = startModelCalls?.(ctx, signal, () => live?.modelCallsChanged());
+			// Model calls gathered so far stay on every result of a Cell that ran, even an aborted one.
+			const withModelCalls = <T extends { details: IpythonToolDetails }>(result: T) => {
+				const summary = modelCalls?.summary();
+				if (!summary) return result;
+				return { ...result, details: { ...result.details, modelCalls: summary }, ...(modelCalls!.usage ? { usage: modelCalls!.usage } : {}) };
+			};
 			const onHostRequest = modelCalls || answerHostRequest
 				? (data: Record<string, unknown>) => {
 					if (modelCalls && data.type === PI_ASK_REQUEST) return modelCalls.ask(data);
@@ -481,7 +506,7 @@ export function createIpythonTool({
 						if (!(error instanceof KernelBusyError) || signal?.aborted) {
 							// This Cell's Kernel died under it: its own error tells the model. Never replay it.
 							const cause = takeStateLoss();
-							if (cause !== undefined) return withUsage(stateLostResult(cause, true));
+							if (cause !== undefined) return withModelCalls(stateLostResult(cause, true));
 							throw error;
 						}
 						// Like the branch-switch choice, only the TUI prompts; elsewhere the model gets the busy error.
@@ -513,7 +538,7 @@ export function createIpythonTool({
 			const text = r.imageNotice ? `${composed.text}\n\n${r.imageNotice}` : composed.text;
 			const images: ImageContent[] = r.images.map((i) => ({ type: "image", ...i }));
 			const content: (TextContent | ImageContent)[] = [{ type: "text", text }, ...images];
-			return withUsage({
+			return withModelCalls({
 				content,
 				details: { ...result, fullOutputPath: composed.fullOutputPath, outputWarning: composed.outputWarning, outputLimits },
 				isError: r.status !== "ok",

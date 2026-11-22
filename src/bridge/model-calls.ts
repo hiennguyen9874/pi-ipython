@@ -33,6 +33,15 @@ export function resolveModelCallModel(config: ModelCallsConfig, ctx: ModelContex
 	return model;
 }
 
+/** What a Cell's Model calls cost so far, for the TUI. */
+export interface ModelCallsSummary {
+	/** Model calls sent to the model, including those still in flight. */
+	count: number;
+	totalTokens: number;
+	/** In USD; 0 when the model is free or unpriced. */
+	cost: number;
+}
+
 /**
  * One Cell's Model calls: at most `MAX_MODEL_CALLS_IN_FLIGHT` in flight, at most `modelCalls.maxPerCell` sent,
  * and their usage summed. `close()` when the Cell's tool call returns: calls still in flight are aborted, and later
@@ -41,6 +50,8 @@ export function resolveModelCallModel(config: ModelCallsConfig, ctx: ModelContex
 export class CellModelCalls {
 	/** The summed usage of every Model call this Cell got a reply to, or undefined before the first. */
 	usage: Usage | undefined;
+	/** Calls sent to the model, including those still in flight. */
+	private count = 0;
 	private sent = 0;
 	private inFlight = 0;
 	private readonly waiting: (() => void)[] = [];
@@ -53,9 +64,17 @@ export class CellModelCalls {
 		private readonly ctx: ModelContext,
 		/** The Cell's signal: Esc aborts its Model calls. */
 		private readonly cellSignal: AbortSignal | undefined,
+		/** Called when `summary()` changes. */
+		private readonly onChange: () => void = () => {},
 	) {
 		if (cellSignal?.aborted) this.controller.abort();
 		else cellSignal?.addEventListener("abort", this.onAbort, { once: true });
+	}
+
+	/** The Cell's Model calls so far, or undefined before the first is sent. */
+	summary(): ModelCallsSummary | undefined {
+		if (this.count === 0) return undefined;
+		return { count: this.count, totalTokens: this.usage?.totalTokens ?? 0, cost: this.usage?.cost.total ?? 0 };
 	}
 
 	close(): void {
@@ -85,7 +104,7 @@ export class CellModelCalls {
 			const maxTokens = Math.min(config.maxOutputTokens, model.maxTokens);
 			// Budget-based reasoning adapters add thinking tokens, up to the model ceiling.
 			const requestModel = thinking !== "off" && maxTokens < model.maxTokens ? { ...model, maxTokens } : model;
-			const message = await this.ctx.modelRegistry.streamSimple(
+			const stream = this.ctx.modelRegistry.streamSimple(
 				requestModel,
 				{ ...(system ? { systemPrompt: system } : {}), messages: [{ role: "user", content: prompt, timestamp: Date.now() }] },
 				{
@@ -93,8 +112,12 @@ export class CellModelCalls {
 					maxTokens,
 					...(thinking === "off" ? {} : { reasoning: thinking }),
 				},
-			).result();
+			);
+			this.count++;
+			this.onChange();
+			const message = await stream.result();
 			this.usage = this.usage ? addUsage(this.usage, message.usage) : message.usage;
+			this.onChange();
 			if (message.stopReason === "aborted") throw new Error(message.errorMessage || ABORTED_ERROR);
 			if (message.stopReason === "error") throw new Error(message.errorMessage || "Model call failed");
 			// The answer text only: thinking parts are dropped.
