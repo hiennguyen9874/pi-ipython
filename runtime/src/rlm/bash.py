@@ -34,6 +34,11 @@ if _IS_POSIX:
 
 _HEAD_CAP = 512 * 1024
 _TAIL_CAP = 3 * 512 * 1024
+# Command log: once a command's output outgrows head + tail, its full output goes
+# to <UNHARNESSED_BASH_LOG_DIR>/<activity id>.log, rotated to .log.1 at the cap.
+_LOG_DIR_ENV = "UNHARNESSED_BASH_LOG_DIR"
+_LOG_MAX_BYTES_ENV = "UNHARNESSED_BASH_LOG_MAX_BYTES"
+_LOG_MAX_BYTES = 32 * 1024 * 1024
 _READ_CHUNK = 65536
 # Fixed child-side fd for the status channel; POSIX shells (notably dash) only
 # guarantee single-digit fds in redirection syntax.
@@ -186,17 +191,39 @@ class BashResult:
 
 
 class _BoundedBuffer:
-    """First _HEAD_CAP bytes plus a rolling _TAIL_CAP-byte tail; the middle is dropped."""
+    """First _HEAD_CAP bytes plus a rolling _TAIL_CAP-byte tail; the middle is dropped.
 
-    def __init__(self) -> None:
+    With a log path, the Command log starts holding everything once the middle
+    would first drop (head and tail still hold all output then).
+    """
+
+    def __init__(self, log_path: str | None = None, log_max_bytes: int = _LOG_MAX_BYTES) -> None:
         self._head = bytearray()
         self._tail: deque[bytes] = deque()
         self._tail_size = 0
         self._dropped = 0
         self._lock = threading.Lock()
+        self._log_path = log_path
+        self._log_max_bytes = log_max_bytes
+        self._log: int | None = None
+        self._log_size = 0
+        self._log_rotated = False
+        # Failed or closed: no more writes; a failed log is never named.
+        self._log_failed = False
+        self._log_closed = False
 
     def write(self, chunk: bytes) -> None:
         with self._lock:
+            if (
+                self._log is None
+                and self._log_path is not None
+                and not self._log_failed
+                and not self._log_closed
+                and len(self._head) + self._tail_size + len(chunk) > _HEAD_CAP + _TAIL_CAP
+            ):
+                self._open_log()
+            if self._log is not None:
+                self._log_write(chunk)
             if len(self._head) < _HEAD_CAP:
                 take = _HEAD_CAP - len(self._head)
                 self._head.extend(chunk[:take])
@@ -218,19 +245,83 @@ class _BoundedBuffer:
                     self._tail_size -= excess
                     self._dropped += excess
 
+    def _open_log(self) -> None:
+        assert self._log_path is not None
+        try:
+            os.makedirs(os.path.dirname(self._log_path), mode=0o700, exist_ok=True)
+            self._log = os.open(self._log_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        except OSError:
+            self._log_failed = True
+            return
+        self._log_write(bytes(self._head) + b"".join(self._tail))
+
+    def _log_write(self, data: bytes) -> None:
+        assert self._log is not None and self._log_path is not None
+        try:
+            if self._log_size and self._log_size + len(data) > self._log_max_bytes:
+                os.close(self._log)
+                self._log = None
+                os.replace(self._log_path, self._log_path + ".1")
+                self._log = os.open(self._log_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                self._log_size = 0
+                self._log_rotated = True
+            view = memoryview(data)
+            while view:
+                view = view[os.write(self._log, view) :]
+            self._log_size += len(data)
+        except OSError:
+            if self._log is not None:
+                try:
+                    os.close(self._log)
+                except OSError:
+                    pass
+            self._log = None
+            self._log_failed = True
+
+    def close_log(self) -> None:
+        """Stop logging; the file stays for reading."""
+        with self._lock:
+            self._log_closed = True
+            if self._log is not None:
+                try:
+                    os.close(self._log)
+                except OSError:
+                    pass
+                self._log = None
+
+    def log_path(self) -> str | None:
+        """The Command log, named once the middle was dropped and while the log is whole."""
+        with self._lock:
+            return self._named_log()
+
+    def _named_log(self) -> str | None:
+        if not self._dropped or self._log_failed or self._log_size == 0:
+            return None
+        return self._log_path
+
     def size(self) -> int:
         with self._lock:
             return len(self._head) + self._tail_size
 
     def text(self) -> str:
+        return self.snapshot()[0]
+
+    def snapshot(self) -> tuple[str, str | None]:
+        """The text, and its dropped-middle marker line (None when nothing was dropped)."""
         with self._lock:
             head = bytes(self._head)
             tail = b"".join(self._tail)
             dropped = self._dropped
+            log = self._named_log()
+            rotated = self._log_rotated
         if not dropped:
-            return (head + tail).decode("utf-8", errors="replace")
-        marker = f"\n... [{dropped} bytes dropped] ...\n"
-        return head.decode("utf-8", errors="replace") + marker + tail.decode("utf-8", errors="replace")
+            return (head + tail).decode("utf-8", errors="replace"), None
+        where = ""
+        if log is not None:
+            where = f"; latest output in {log}.1 and {log}" if rotated else f"; full output in {log}"
+        marker = f"... [{dropped} bytes dropped{where}] ..."
+        text = head.decode("utf-8", errors="replace") + f"\n{marker}\n" + tail.decode("utf-8", errors="replace")
+        return text, marker
 
 
 class BashHandle:
@@ -262,7 +353,7 @@ class BashHandle:
         self._killed = False
         # Stopped by the agent's own code before it ended: no completion notice.
         self._killed_by_agent = False
-        self._buffer = _BoundedBuffer()
+        self._buffer = _command_log_buffer(self._activity_id)
         self._done = threading.Event()
         self._eof = threading.Event()
         self._completion_terminal = threading.Event()
@@ -408,7 +499,12 @@ class BashHandle:
     def tail(self, n: int = 50) -> str:
         self._released = True
         self._note_result_consumed()
-        return "\n".join(self._buffer.text().splitlines()[-n:])
+        text, marker = self._buffer.snapshot()
+        lines = text.splitlines()[-n:]
+        # Name the Command log even when the dropped-middle marker is above the tail.
+        if marker is not None and marker not in lines:
+            lines.insert(0, marker)
+        return "\n".join(lines)
 
     def poll(self) -> BashResult | None:
         self._released = True
@@ -483,6 +579,7 @@ class BashHandle:
             except (OSError, ValueError):
                 pass
             stdout.close()
+            self._buffer.close_log()
             self._eof.set()
             return
         fd = stdout.fileno()
@@ -506,6 +603,7 @@ class BashHandle:
             stdout.close()
         except OSError:
             pass
+        self._buffer.close_log()
         self._eof.set()
 
     def _consume_output(self, chunk: bytes) -> None:
@@ -782,6 +880,7 @@ class BashHandle:
                     "command": command,
                     "exitCode": result.exit_code,
                     **({"timeoutSeconds": self._timeout} if self._timed_out else {}),
+                    **({"logPath": log_path} if (log_path := self._buffer.log_path()) else {}),
                 }
             )
             if isinstance(reply, dict) and reply.get("status") == "ok":
@@ -1037,6 +1136,8 @@ def bash(command: str, timeout: float | None = _DEFAULT_TIMEOUT) -> BashHandle:
     Output written after the completion fence (e.g. by an EXIT trap or a
     background job) is not in BashResult.output but stays visible via
     handle.output()/tail().
+    Output past 2 MiB keeps its first 512 KiB and last 1.5 MiB in memory; the
+    marker between them names the Command log holding the full output.
     """
     if not isinstance(command, str) or not command:
         raise TypeError("command must be a non-empty str")
@@ -1051,6 +1152,20 @@ def bash(command: str, timeout: float | None = _DEFAULT_TIMEOUT) -> BashHandle:
     if timeout is not None:
         handle._arm_timeout(timeout)
     return handle
+
+
+def _command_log_buffer(activity_id: str) -> _BoundedBuffer:
+    # Read per call, like _shell(): the host sets both when the session has a state directory.
+    log_dir = os.environ.get(_LOG_DIR_ENV)
+    if not log_dir:
+        return _BoundedBuffer()
+    try:
+        max_bytes = int(os.environ.get(_LOG_MAX_BYTES_ENV, ""))
+    except ValueError:
+        max_bytes = _LOG_MAX_BYTES
+    if max_bytes <= 0:
+        max_bytes = _LOG_MAX_BYTES
+    return _BoundedBuffer(os.path.join(log_dir, f"{activity_id}.log"), max_bytes)
 
 
 def _shell() -> str:

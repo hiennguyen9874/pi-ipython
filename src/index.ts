@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { type ExtensionAPI, getAgentDir, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { listPiTools } from "./bridge/pi-tool-listing.ts";
@@ -24,6 +26,8 @@ export default function piIpython(pi: ExtensionAPI): void {
 	let cwd = process.cwd();
 	let config: PiIpythonConfig = loadConfig(cwd).config;
 	let journalPath: string | undefined;
+	/** The session's state directory: Command logs live in it, and it is deleted when the session shuts down. */
+	const stateDir = newStateDir();
 	/** A Python-state notice pi has not persisted yet; `sent` once a request has carried it. */
 	let pendingStateNotice: { content: string; id: string; timestamp: number; sent: boolean } | undefined;
 	/** Cause of a Kernel replacement the model has not been told about. */
@@ -68,6 +72,10 @@ export default function piIpython(pi: ExtensionAPI): void {
 	const createKernel = (): KernelClient => {
 		const { source, version } = config.python;
 		const bootstrapCode = kernelBootstrapCode(prelude());
+		const commandLogEnv = {
+			UNHARNESSED_BASH_LOG_DIR: path.join(stateDir, "bash"),
+			UNHARNESSED_BASH_LOG_MAX_BYTES: String(config.commandLog.maxBytes),
+		};
 		if (source === "project") {
 			// The project venv lacks the runtime: import it from the package's vendored sources.
 			const pythonPath = [RUNTIME_SRC_DIR, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter);
@@ -76,7 +84,7 @@ export default function piIpython(pi: ExtensionAPI): void {
 				resolvePython: () => resolveProjectPython(cwd),
 				bootstrapCode,
 				onBootstrapStderr,
-				env: { PYTHONPATH: pythonPath },
+				env: { PYTHONPATH: pythonPath, ...commandLogEnv },
 				journalPath,
 				onLost,
 				hostHandlers,
@@ -89,7 +97,7 @@ export default function piIpython(pi: ExtensionAPI): void {
 			resolvePython: async () => (await ensureKernelPython({ pythonVersion: version, packages })).python,
 			bootstrapCode,
 			onBootstrapStderr,
-			env: kernelPathEnv(),
+			env: { ...kernelPathEnv(), ...commandLogEnv },
 			journalPath,
 			onLost,
 			hostHandlers,
@@ -281,7 +289,13 @@ export default function piIpython(pi: ExtensionAPI): void {
 		notices.drop();
 		await kernel?.shutdown();
 		kernel = undefined;
+		rmSync(stateDir, { recursive: true, force: true });
 	});
+}
+
+/** A fresh path for a session's state directory; whoever writes into it creates it. */
+function newStateDir(): string {
+	return path.join(tmpdir(), `pi-ipython-session-${randomUUID()}`);
 }
 
 export const STATE_LOST_TYPE = "ipython_state_lost";

@@ -412,6 +412,73 @@ class BashTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(text.endswith("b" * 1000))
         self.assertIn("a" * 1000 + "b" * 1000, text)
 
+    def test_command_log_starts_only_when_the_middle_drops(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "bash", "id.log")
+            buffer = bash_module._BoundedBuffer(path)
+            buffer.write(b"x" * (bash_module._HEAD_CAP + bash_module._TAIL_CAP))
+            self.assertFalse(os.path.exists(path))
+            self.assertIsNone(buffer.log_path())
+            self.assertIsNone(buffer.snapshot()[1])
+
+            buffer.write(b"y" * 1000)
+            buffer.write(b"z" * 10)
+            buffer.close_log()
+            buffer.write(b"after close")
+            with open(path, "rb") as f:
+                logged = f.read()
+            full = b"x" * (bash_module._HEAD_CAP + bash_module._TAIL_CAP) + b"y" * 1000 + b"z" * 10
+            self.assertEqual(logged, full)
+            self.assertEqual(buffer.log_path(), path)
+            text, marker = buffer.snapshot()
+            self.assertEqual(marker, f"... [1021 bytes dropped; full output in {path}] ...")
+            self.assertIn(f"\n{marker}\n", text)
+
+    def test_command_log_rotates_at_its_cap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "id.log")
+            cap = bash_module._HEAD_CAP + bash_module._TAIL_CAP + 100
+            buffer = bash_module._BoundedBuffer(path, cap)
+            first = b"a" * cap
+            buffer.write(first)
+            buffer.write(b"b" * 200)
+            buffer.write(b"c" * 50)
+            with open(path + ".1", "rb") as f:
+                self.assertEqual(f.read(), first)
+            with open(path, "rb") as f:
+                self.assertEqual(f.read(), b"b" * 200 + b"c" * 50)
+            self.assertIn(f"; latest output in {path}.1 and {path}]", buffer.snapshot()[1])
+
+    def test_unwritable_command_log_is_not_named(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            blocker = os.path.join(tmp, "file")
+            open(blocker, "w").close()
+            buffer = bash_module._BoundedBuffer(os.path.join(blocker, "id.log"))
+            buffer.write(b"x" * (bash_module._HEAD_CAP + bash_module._TAIL_CAP + 1))
+            self.assertIsNone(buffer.log_path())
+            self.assertEqual(buffer.snapshot()[1], "... [1 bytes dropped] ...")
+
+    async def test_command_log_holds_the_full_output_of_a_command(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"UNHARNESSED_BASH_LOG_DIR": tmp}):
+            handle = bash("seq 1 400000; echo last")
+            result = await asyncio.wait_for(handle, timeout=30)
+            for _ in range(100):
+                if handle._eof.is_set():
+                    break
+                await asyncio.sleep(0.02)
+            path = os.path.join(tmp, f"{handle._activity_id}.log")
+            with open(path) as f:
+                self.assertEqual(f.read(), "".join(f"{i}\n" for i in range(1, 400001)) + "last\n")
+            self.assertIn(f"bytes dropped; full output in {path}] ...", result.output)
+            tail = handle.tail(2).splitlines()
+            self.assertEqual(len(tail), 3)
+            self.assertIn(f"full output in {path}", tail[0])
+            self.assertEqual(tail[1:], ["400000", "last"])
+
+            small = bash("echo small")
+            self.assertNotIn("dropped", (await small).output)
+            self.assertFalse(os.path.exists(os.path.join(tmp, f"{small._activity_id}.log")))
+
     async def test_running_reflects_group_liveness(self):
         handle = bash("echo fg; sleep 30 &")
         result = await asyncio.wait_for(handle, timeout=5)

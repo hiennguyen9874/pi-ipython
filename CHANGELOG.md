@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Command log: when a `bash()` command's output outgrows what the Kernel keeps in memory (the first 512 KiB and last 1.5 MiB), its full output is written to `<state dir>/bash/<id>.log` under the session's state directory, which is deleted when the session shuts down. The dropped-middle marker in `.output()`, `.tail()`, and `BashResult.output` names the log, and so does the `[bash-done …]` notice (`Full output: <path>`). The log rotates to `.1` at `commandLog.maxBytes` (default 32 MiB). (#67)
+
 ### Changed
 
 - A cut Cell result keeps its start and its end instead of only its tail: about 20% of the output limits for the start and 80% for the end, around a `[… N lines elided, full output in <path>]` marker that replaces the trailing `[Output truncated …]` notice. Background output is cut on its own, with its heading always shown, so the Cell's traceback stays visible however much Background output follows it. Running Cells stream the same shape without a Spill file. (#65)

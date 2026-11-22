@@ -20,6 +20,8 @@ export interface PiIpythonConfig {
 	/** `packages` concatenates global then project entries; Kernel packages apply only with `source: "uv"`. */
 	python: { source: "uv" | "project"; version: string; defaultPackages: boolean; packages: string[] };
 	output: { maxBytes: number; maxLines: number };
+	/** A `bash()` command's Command log rotates to `.1` once it reaches `maxBytes`. */
+	commandLog: { maxBytes: number };
 	piTools: { list: boolean; search: boolean };
 	/** `imports` concatenates global then project entries instead of the project winning. */
 	prelude: { defaults: boolean; imports: string[]; prompt: boolean };
@@ -62,6 +64,9 @@ export interface LoadedConfig {
 	warnings: string[];
 }
 
+/** Default `commandLog.maxBytes`: 32 MiB. */
+export const DEFAULT_COMMAND_LOG_MAX_BYTES = 32 * 1024 * 1024;
+
 const isPositiveInt = (v: unknown) => Number.isInteger(v) && (v as number) > 0;
 const sectionTagName = new RegExp(`^${SECTION_TAG_NAME}$`);
 const isSectionNames = (v: unknown) =>
@@ -89,6 +94,7 @@ const FIELDS: Record<string, { valid: (v: unknown) => boolean; expected: string 
 	"python.packages": { valid: Array.isArray, expected: "an array of uv requirement strings" },
 	"output.maxBytes": { valid: isPositiveInt, expected: "a positive integer" },
 	"output.maxLines": { valid: isPositiveInt, expected: "a positive integer" },
+	"commandLog.maxBytes": { valid: isPositiveInt, expected: "a positive integer" },
 	"piTools.list": { valid: (v) => typeof v === "boolean", expected: "true or false" },
 	"piTools.search": { valid: (v) => typeof v === "boolean", expected: "true or false" },
 	"prelude.defaults": { valid: (v) => typeof v === "boolean", expected: "true or false" },
@@ -97,7 +103,7 @@ const FIELDS: Record<string, { valid: (v: unknown) => boolean; expected: string 
 	[PROMPT_AFTER]: { valid: isSectionNames, expected: SECTION_NAMES_EXPECTED },
 	[PROMPT_BEFORE]: { valid: isSectionNames, expected: SECTION_NAMES_EXPECTED },
 };
-const SECTIONS = new Set(["python", "output", "piTools", "prelude", "systemPrompt"]);
+const SECTIONS = new Set(["python", "output", "commandLog", "piTools", "prelude", "systemPrompt"]);
 const IMPORT_EXPECTED = 'one "import …" or "from … import …" statement (absolute, without "*")';
 const PACKAGE_EXPECTED = 'a uv requirement string, not empty and not starting with "-"';
 
@@ -135,6 +141,7 @@ export function loadConfig(cwd: string, agentDir = getAgentDir(), projectTrusted
 			parallelWorkPrompt: get("parallelWorkPrompt", true),
 			python: { source, version: get("python.version", DEFAULT_PYTHON_VERSION), defaultPackages: get("python.defaultPackages", true), packages },
 			output: { maxBytes: get("output.maxBytes", DEFAULT_MAX_BYTES), maxLines: get("output.maxLines", DEFAULT_MAX_LINES) },
+			commandLog: { maxBytes: get("commandLog.maxBytes", DEFAULT_COMMAND_LOG_MAX_BYTES) },
 			piTools: { list: get("piTools.list", true), search: get("piTools.search", true) },
 			prelude: { defaults: get("prelude.defaults", true), imports: get<string[]>("prelude.imports", []), prompt: get("prelude.prompt", true) },
 			systemPrompt: {

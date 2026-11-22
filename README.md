@@ -229,6 +229,7 @@ Defaults:
   "parallelWorkPrompt": true,
   "python": { "source": "uv", "version": "3.13", "defaultPackages": true, "packages": [] },
   "output": { "maxBytes": 51200, "maxLines": 2000 },
+  "commandLog": { "maxBytes": 33554432 },
   "piTools": { "list": true, "search": true },
   "prelude": { "defaults": true, "imports": [], "prompt": true },
   "systemPrompt": {
@@ -248,6 +249,7 @@ Defaults:
 | `python.defaultPackages` | `true` | Install the default [Kernel packages](#kernel-packages) and pre-import `np`, `pd`, `requests`, `httpx`, `yaml` (uv only). |
 | `python.packages` | `[]` | Kernel packages for the uv environment, as uv requirement strings. Entries that are empty or start with `-` are skipped with a warning. |
 | `output.maxBytes` / `output.maxLines` | `51200` / `2000` | When a Cell prints more than this, the result keeps its start and end (about 20% / 80%) around a `[… N lines elided, full output in <path>]` marker. The full output is saved to that Spill file. |
+| `commandLog.maxBytes` | `33554432` (32 MiB) | A `bash()` command that prints more than 2 MiB keeps its first 512 KiB and last 1.5 MiB in memory; its full output goes to a Command log under the session's state directory (deleted when the session ends), named in the dropped-middle marker of `.output()` / `.tail()` and in the `[bash-done …]` notice. When the log reaches this size it moves to `<log>.1`, replacing the previous one, and a new log starts. |
 | `prelude.defaults` | `true` | Load the [ready-made imports](#what-changes-when-its-enabled). |
 | `prelude.imports` | `[]` | Extra imports for every Kernel, e.g. `"import numpy as np"`. See the rules below. |
 | `prelude.prompt` | `true` | List the prelude in the system prompt. With `false` the imports still run, just without telling the model. |

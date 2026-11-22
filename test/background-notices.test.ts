@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fauxAssistantMessage, fauxToolCall, getSystemMessageText } from "@earendil-works/pi-ai";
 import { afterEach, expect, test, vi } from "vitest";
@@ -109,6 +109,26 @@ test("the notice says when the command's timeout killed it", async () => {
 	await waitFor(() => notices(h!).length === 1);
 	await h.session.waitForIdle();
 	expect(notices(h)[0]!.content).toMatch(new RegExp(`^\\[bash-done pid:${pid} exit:-?\\d+\\]\n\nCommand: "sleep 30"\n\nKilled: still running after its 0.5 s timeout.\n`));
+});
+
+test("a command whose output dropped the middle names its Command log, deleted with the session", async () => {
+	h = await harness();
+	const [started] = await h.runCells("h = bash('sleep 0.5; seq 1 400000; echo last')\nh.pid");
+	const pid = Number(resultText(started!));
+	h.setResponses([fauxAssistantMessage("noted")]);
+
+	await waitFor(() => notices(h!).length === 1);
+	await h.session.waitForIdle();
+	const content = notices(h)[0]!.content;
+	const logPath = /\n\nFull output: (\S+\.log)\n/.exec(content)?.[1];
+	expect(content).toBe(`[bash-done pid:${pid} exit:0]\n\nCommand: "sleep 0.5; seq 1 400000; echo last"\n\nFull output: ${logPath}\n${HANDLE_LINE}`);
+	expect(readFileSync(logPath!, "utf8")).toBe(`${Array.from({ length: 400_000 }, (_, i) => i + 1).join("\n")}\nlast\n`);
+
+	const [tail] = await h.runCells("print(h.tail(1))");
+	expect(resultText(tail!)).toMatch(new RegExp(`^\\.\\.\\. \\[\\d+ bytes dropped; full output in ${logPath}\\] \\.\\.\\.\nlast$`));
+
+	await h.session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+	expect(existsSync(dirname(dirname(logPath!)))).toBe(false);
 });
 
 test.each([

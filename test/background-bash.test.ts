@@ -2,12 +2,24 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterEach, expect, test } from "vitest";
-import { createHarness, type Harness, resultText } from "./harness.ts";
+import { createHarness, type Harness, resultText, writeConfigs } from "./harness.ts";
 
 let h: Harness | undefined;
 afterEach(async () => {
 	await h?.dispose();
 	h = undefined;
+});
+
+test("the Command log rotates at commandLog.maxBytes", async () => {
+	h = await createHarness({ setup: (dirs) => writeConfigs(dirs, { commandLog: { maxBytes: 2_500_000 } }) });
+	// 3.9 MB of output: the log moves to .1 at 2.5 MB and the rest goes to a new log.
+	const [result] = await h.runCells("r = await bash('seq 1 600000')\n[l for l in r.output.splitlines() if 'dropped' in l][0]");
+	const match = /latest output in (\S+\.log)\.1 and \1\]/.exec(resultText(result!));
+	expect(match).not.toBeNull();
+	const [sizes] = await h.runCells(`import os\n[os.path.getsize(p) for p in (${JSON.stringify(match![1] + ".1")}, ${JSON.stringify(match![1])})]`);
+	const [rotated, current] = JSON.parse(resultText(sizes!)) as number[];
+	expect(rotated! + current!).toBe(Array.from({ length: 600_000 }, (_, i) => `${i + 1}\n`).join("").length);
+	expect(rotated).toBeLessThanOrEqual(2_500_000);
 });
 
 test("a Background command that finishes between Cells leaves no warning in the next Cell", async () => {

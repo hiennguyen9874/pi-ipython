@@ -22,6 +22,8 @@ interface Notice {
 	command: string;
 	exitCode: number;
 	timeoutSeconds?: number;
+	/** The Command log, when the command's in-memory output dropped the middle. */
+	logPath?: string;
 	/** When the host accepted it, on the monotonic clock. */
 	receivedAt: number;
 }
@@ -199,9 +201,10 @@ function noticeMessage(notices: Notice[]): NoticeMessage {
 	};
 }
 
-function noticeText({ pid, command, exitCode, timeoutSeconds }: Notice): string {
+function noticeText({ pid, command, exitCode, timeoutSeconds, logPath }: Notice): string {
 	const killed = timeoutSeconds === undefined ? "" : `\n\nKilled: still running after its ${timeoutSeconds} s timeout.`;
-	return `[bash-done pid:${pid} exit:${exitCode}]\n\nCommand: ${JSON.stringify(command)}${killed}`;
+	const log = logPath === undefined ? "" : `\n\nFull output: ${logPath}`;
+	return `[bash-done pid:${pid} exit:${exitCode}]\n\nCommand: ${JSON.stringify(command)}${killed}${log}`;
 }
 
 function parseIdentity(data: Record<string, unknown>): { pid: number; command: string } {
@@ -212,15 +215,17 @@ function parseIdentity(data: Record<string, unknown>): { pid: number; command: s
 }
 
 function parseCompleted(data: Record<string, unknown>): Notice {
-	const { exitCode, timeoutSeconds } = data;
+	const { exitCode, timeoutSeconds, logPath } = data;
 	if (typeof exitCode !== "number" || !Number.isSafeInteger(exitCode)) throw new Error("bash.completed exitCode must be an integer");
 	if (timeoutSeconds !== undefined && timeoutSeconds !== null && (typeof timeoutSeconds !== "number" || !Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0)) {
 		throw new Error("bash.completed timeoutSeconds must be a positive number");
 	}
+	if (logPath !== undefined && (typeof logPath !== "string" || logPath === "")) throw new Error("bash.completed logPath must be a non-empty string");
 	return {
 		...parseIdentity(data),
 		exitCode,
 		...(typeof timeoutSeconds === "number" ? { timeoutSeconds } : {}),
+		...(logPath !== undefined ? { logPath } : {}),
 		receivedAt: performance.now(),
 	};
 }
