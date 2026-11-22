@@ -49,7 +49,7 @@ One call a Cell makes to a Pi tool, subject to pi's tool hooks and permission ch
 _Avoid_: nested call, host request, tool bridge call
 
 **Model call**:
-One request a Cell makes to a model outside the session's conversation, with no tools and no Kernel of its own.
+One request a Cell makes to a model outside the session's conversation, with no tools and no Kernel of its own: either a chat model answering a prompt with text, or a classifier answering typed questions about given data.
 _Avoid_: sub-call, LLM call, subagent, Bridged call (that is a Pi tool's)
 
 **Kernel package**:

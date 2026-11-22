@@ -15,3 +15,4 @@ The PRD rules out Prime's `rlm.spawn` (recursive sub-agents), yet the research b
 - Usage goes on the `ipython` tool result's `usage`, which pi already adds to session totals, so no separate accounting exists.
 - Model calls share the Bridged-call lifetime (the Cell's signal; nothing after the Cell ends) but raise their own `pi.ModelCallError`, because `pi.ToolError.result` has no meaning here.
 - A configured model that cannot be resolved fails every call instead of falling back to the session model, which may cost more.
+- A classifier call (pi's `classify`: typed choice, score, or bool answers with probabilities) is also a Model call: still a leaf with no tools, so it shares the switch, the per-Cell budget, the in-flight cap, usage, lifetime, and `pi.ModelCallError`, rather than adding a second concept.
