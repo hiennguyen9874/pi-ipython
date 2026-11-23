@@ -1,4 +1,4 @@
-import { readFile, mkdir, writeFile } from "node:fs/promises";
+import { readFile, mkdir, symlink, writeFile } from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
 import { join } from "node:path";
 import {
@@ -854,7 +854,9 @@ test("classifier detects mixed paths and bytes from content, using the Kernel's 
 		`os.chdir(${JSON.stringify(dir)})`,
 		"payloads = [Path(f'{i}.txt').read_bytes() for i in range(4)]",
 		"paths = ['0.txt', Path('1.txt'), '2.txt', Path('3.txt')]",
-		"raw = [payloads[0], bytearray(payloads[1]), memoryview(payloads[2]), payloads[3]]",
+		"interleaved = bytearray(2 * len(payloads[2]))",
+		"interleaved[::2] = payloads[2]",
+		"raw = [payloads[0], bytearray(payloads[1]), memoryview(interleaved)[::2], payloads[3]]",
 		`print(await pi.classify({}, ${QUESTIONS}, images=paths + raw))`,
 	].join("\n"));
 	expect(result.isError).toBe(false);
@@ -864,6 +866,26 @@ test("classifier detects mixed paths and bytes from content, using the Kernel's 
 	expect(description).toContain("questions: dict, *, images=None)");
 	expect(description).toContain("a list of paths or bytes; PNG/JPEG/WebP/GIF");
 	expect(description).not.toMatch(/PIL.Image|Faux Judge|faux-classifier/);
+});
+
+test.skipIf(process.platform === "win32")("classifier paths follow symlinks before resolving .., like open()", async () => {
+	h = await createHarness({ ...withClassifier(), fauxClassifier: { input: ["text", "image"] } });
+	const target = join(h.cwd, "images", "nested");
+	await mkdir(target, { recursive: true });
+	await symlink(target, join(h.cwd, "link"));
+	const png = await readFile(new URL("./fixtures/classifier/pixel.png", import.meta.url));
+	const gif = await readFile(new URL("./fixtures/classifier/pixel.gif", import.meta.url));
+	await writeFile(join(h.cwd, "images", "photo"), png);
+	await writeFile(join(h.cwd, "photo"), gif);
+
+	const { result } = await runCell(h, [
+		`os.chdir(${JSON.stringify(h.cwd)})`,
+		"with open('link/../photo', 'rb') as photo:",
+		`    await pi.classify({}, ${QUESTIONS}, images=['link/../photo', photo.read()])`,
+	].join("\n"));
+	expect(result.isError).toBe(false);
+	const image = { type: "image", data: png.toString("base64"), mimeType: "image/png" };
+	expect(h.classifier.requests[0]!.images).toEqual([image, image]);
 });
 
 test("image preparation errors send nothing and spend no budget or TUI count", async () => {

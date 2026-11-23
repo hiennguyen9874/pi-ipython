@@ -75,9 +75,16 @@ async def classify(
             raise TypeError("images must be a list or None")
         for image in images:
             if isinstance(image, (str, os.PathLike)):
-                encoded_images.append({"path": os.fsdecode(os.path.abspath(os.fspath(image)))})
+                path = os.fsdecode(os.fspath(image))
+                if os.name == "nt":
+                    path = os.path.abspath(path)
+                elif not os.path.isabs(path):
+                    # Leave ".." for the filesystem to resolve after following symlinks.
+                    path = os.path.join(os.getcwd(), path)
+                encoded_images.append({"path": path})
             elif isinstance(image, (bytes, bytearray, memoryview)):
-                encoded_images.append({"data": base64.b64encode(image).decode("ascii")})
+                data = image.tobytes() if isinstance(image, memoryview) else image
+                encoded_images.append({"data": base64.b64encode(data).decode("ascii")})
             else:
                 raise TypeError(f"images items must be paths or bytes, got {type(image).__name__}")
     try:
