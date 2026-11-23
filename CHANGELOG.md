@@ -5,6 +5,7 @@
 ### Fixed
 
 - Classifier images accept non-contiguous memoryviews. On POSIX, image paths containing a symlink followed by `..` select the same file as Python’s `open()`. (#80)
+- Classifier images preserve transparency when converting 32-bit grayscale Pillow images to PNG. (#81)
 
 ## [0.4.0] - 2026-11-22
 

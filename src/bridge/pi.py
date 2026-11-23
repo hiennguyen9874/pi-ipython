@@ -102,7 +102,16 @@ async def classify(
 
 
 def _pillow_png(image: Any) -> str:
-    if image.mode not in {"1", "L", "LA", "P", "RGB", "RGBA", "I;16", "I;16B"}:
+    transparency = image.info.get("transparency")
+    if image.mode == "I" and isinstance(transparency, int):
+        # Compare the original samples before RGB conversion clips them to 8 bits.
+        pixels = image.load()
+        width, height = image.size
+        alpha = bytes(0 if pixels[x, y] == transparency else 255 for y in range(height) for x in range(width))
+        image = image.convert("RGB")
+        image.info.pop("transparency", None)
+        image.putalpha(sys.modules["PIL.Image"].frombytes("L", image.size, alpha))
+    elif image.mode not in {"1", "L", "LA", "P", "RGB", "RGBA", "I;16", "I;16B"}:
         # Pillow needs to unpremultiply grayscale alpha before converting to RGBA.
         if image.mode == "La":
             image = image.convert("LA")
