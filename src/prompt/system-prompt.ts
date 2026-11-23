@@ -152,13 +152,17 @@ export function piToolsSection(search: boolean, parallelWorkPrompt = true): stri
 	].join("\n");
 }
 
-const PI_ASK_LINES = [
-	"- `await pi.ask(prompt: str, *, system: str | None = None) -> str`: send `prompt` to a model without tools or history and return its answer text",
-	"  - Use it for semantic work code cannot do reliably, such as summarizing or extracting from text. Check the answer against the task before using it.",
-];
+const PI_ASK_SIGNATURE_START = "- `await pi.ask(prompt: str, *, system: str | None = None";
+const PI_ASK_SIGNATURE_END = ") -> str`: send `prompt` to a model without tools or history and return its answer text";
+const PI_ASK_USE_LINE = "  - Use it for semantic work code cannot do reliably, such as summarizing or extracting from text. Check the answer against the task before using it.";
+const PI_ASK_IMAGES_LINE = "  - Pass `images` to read or describe many images without adding them to the context; they are sent before `prompt`.";
 
 const PI_ASK_FALLBACK_LINE = "  - For yes/no, labels, or scores, request a structured answer and validate it before using it.";
 const PI_ASK_BATCH_LINE = "  - For independent prompts, take `batch = prompts[:remaining]` (`remaining` is the unused Cell budget), then `rs = await asyncio.gather(*(pi.ask(p) for p in batch), return_exceptions=True)`. Pair results with inputs; keep answers and handle exceptions separately.";
+
+/** The shared images line; `apis` names the APIs it applies to when more than one takes images. */
+const imagesLine = (apis = "") =>
+	`  - \`images\`${apis} takes a list of paths, bytes, or PIL.Image; PNG/JPEG/WebP/GIF. Relative paths use the Kernel's current directory.`;
 
 const PI_CLASSIFY_LINES = [
 	"  - Prefer typed answers to parsing free text for yes/no, label selection, or scoring. Ask all questions about one `state` in one call.",
@@ -168,16 +172,29 @@ const PI_CLASSIFY_LINES = [
 ];
 
 /** Model-call limits and guidance for the APIs that resolve in the live `ipython` loadout. */
-export function modelCallsSection({ maxPerCell, ask, classify, classifierImages = false }: { maxPerCell: number; ask: boolean; classify: boolean; classifierImages?: boolean }): string | undefined {
+export function modelCallsSection({ maxPerCell, ask, classify, askImages = false, classifierImages = false }: {
+	maxPerCell: number;
+	ask: boolean;
+	classify: boolean;
+	askImages?: boolean;
+	classifierImages?: boolean;
+}): string | undefined {
 	const calls = [ask && "`pi.ask`", classify && "`pi.classify`"].filter(Boolean).join(" and ");
 	if (!calls) return undefined;
 	return [
 		`- Model calls (${calls}): at most ${maxPerCell} total per Cell, with at most ${MAX_MODEL_CALLS_IN_FLIGHT} in flight. The host queues calls waiting for a slot. Fit each batch within the remaining Cell budget and process the rest in later Cells.`,
 		"  - Await Model calls in their originating Cell. Failed requests raise `pi.ModelCallError`.",
-		...(ask ? [...PI_ASK_LINES, ...(!classify ? [PI_ASK_FALLBACK_LINE] : []), PI_ASK_BATCH_LINE] : []),
+		...(ask ? [
+			`${PI_ASK_SIGNATURE_START}${askImages ? ", images: list | None = None" : ""}${PI_ASK_SIGNATURE_END}`,
+			PI_ASK_USE_LINE,
+			// The images line appears once, under the first API that takes images.
+			...(askImages ? [PI_ASK_IMAGES_LINE, imagesLine(classifierImages ? " (for `pi.ask` and `pi.classify`)" : "")] : []),
+			...(!classify ? [PI_ASK_FALLBACK_LINE] : []),
+			PI_ASK_BATCH_LINE,
+		] : []),
 		...(classify ? [
 			`- \`await pi.classify(state: dict, questions: dict${classifierImages ? ", *, images=None" : ""}) -> dict\`: ask a classifier model typed questions about the JSON \`state\`; returns the answers by question ID`,
-			...(classifierImages ? ["  - `images` takes a list of paths, bytes, or PIL.Image; PNG/JPEG/WebP/GIF. Relative paths use the Kernel's current directory."] : []),
+			...(classifierImages && !askImages ? [imagesLine()] : []),
 			...PI_CLASSIFY_LINES,
 		] : []),
 	].join("\n");

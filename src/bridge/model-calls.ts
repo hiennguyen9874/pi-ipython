@@ -131,8 +131,14 @@ export class CellModelCalls {
 		if (system !== undefined && system !== null && typeof system !== "string") throw new Error("system must be a string");
 		const message = await this.call(
 			config,
-			() => resolveModelCallModel(config, this.ctx),
-			(model, signal) => {
+			async () => {
+				const model = resolveModelCallModel(config, this.ctx);
+				if (typeof model === "string") return model;
+				// Checked here: pi-ai would replace each image with a placeholder for a text-only model and send anyway.
+				const images = await prepareImages(data.images, model, `Model ${model.provider}/${model.id} does not accept image input`);
+				return { model, images };
+			},
+			({ model, images }, signal) => {
 				const thinking = clampThinkingLevel(model, config.thinking);
 				const maxTokens = Math.min(config.maxOutputTokens, model.maxTokens);
 				// Budget-based reasoning adapters add thinking tokens, up to the model ceiling.
@@ -140,7 +146,14 @@ export class CellModelCalls {
 				return this.ctx.modelRegistry
 					.streamSimple(
 						requestModel,
-						{ ...(system ? { systemPrompt: system } : {}), messages: [{ role: "user", content: prompt, timestamp: Date.now() }] },
+						{
+							...(system ? { systemPrompt: system } : {}),
+							messages: [{
+								role: "user",
+								content: images.length ? [...images, { type: "text", text: prompt }] : prompt,
+								timestamp: Date.now(),
+							}],
+						},
 						{ signal, maxTokens, ...(thinking === "off" ? {} : { reasoning: thinking }) },
 					)
 					.result();
@@ -165,7 +178,7 @@ export class CellModelCalls {
 			async () => {
 				const model = resolveClassifier(config, this.ctx.modelRegistry);
 				if (typeof model === "string") return model;
-				const images = await prepareClassifierImages(data.images, model);
+				const images = await prepareImages(data.images, model, "Classifier does not accept image input");
 				return { model, images };
 			},
 			({ model, images }, signal) =>
@@ -256,17 +269,20 @@ export class CellModelCalls {
 	}
 }
 
-/** Read Kernel-resolved paths and detect formats from content before spending a Model call. */
-async function prepareClassifierImages(value: unknown, model: ClassifierModel<ClassifierApi>): Promise<ImageContent[]> {
+/**
+ * Read Kernel-resolved paths and detect formats from content before spending a Model call. Images for a `model`
+ * without image input fail with `noImageInput`.
+ */
+async function prepareImages(value: unknown, model: { input: readonly string[] }, noImageInput: string): Promise<ImageContent[]> {
 	if (value === undefined || value === null) return [];
 	if (!Array.isArray(value)) throw new Error("images must be a list");
-	if (value.length && !model.input.includes("image")) throw new Error("Classifier does not accept image input");
+	if (value.length && !model.input.includes("image")) throw new Error(noImageInput);
 	return Promise.all(value.map(async (item): Promise<ImageContent> => {
-		if (!isPlainObject(item)) throw new Error("Invalid classifier image");
+		if (!isPlainObject(item)) throw new Error("Invalid image");
 		let bytes: Buffer;
 		if (typeof item.path === "string") bytes = await readFile(item.path);
 		else if (typeof item.data === "string") bytes = Buffer.from(item.data, "base64");
-		else throw new Error("Invalid classifier image");
+		else throw new Error("Invalid image");
 		let mimeType: string;
 		if (bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) mimeType = "image/png";
 		else if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) mimeType = "image/jpeg";

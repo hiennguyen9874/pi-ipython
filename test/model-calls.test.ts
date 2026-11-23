@@ -9,6 +9,7 @@ import {
 	fauxThinking,
 	fauxToolCall,
 	getCurrentTools,
+	type ImageContent,
 	getSystemMessageText,
 	type SimpleStreamOptions,
 	type ToolResultMessage,
@@ -33,7 +34,11 @@ interface ModelRequest {
 	model: string;
 	modelMaxTokens: number;
 	system: string | undefined;
+	/** The user message's text. */
 	prompt: string;
+	/** The user message's content blocks in order, as `image/<type>` MIME types and `text`. */
+	blocks: string[];
+	images: ImageContent[];
 	options: SimpleStreamOptions | undefined;
 }
 
@@ -58,7 +63,13 @@ async function runCell(harness: Harness, code: string, reply: ModelReply = echo,
 				model: `${model.provider}/${model.id}`,
 				modelMaxTokens: model.maxTokens,
 				system: system && getSystemMessageText(system),
-				prompt: typeof user?.content === "string" ? user.content : "",
+				prompt: typeof user?.content === "string"
+					? user.content
+					: (user?.content ?? []).flatMap((block) => (block.type === "text" ? [block.text] : [])).join(""),
+				blocks: typeof user?.content === "string"
+					? ["text"]
+					: (user?.content ?? []).map((block) => (block.type === "image" ? block.mimeType : block.type)),
+				images: typeof user?.content === "string" ? [] : (user?.content ?? []).filter((block) => block.type === "image"),
 				options,
 			};
 			requests.push(request);
@@ -74,6 +85,9 @@ async function runCell(harness: Harness, code: string, reply: ModelReply = echo,
 	const result = harness.session.messages.slice(before).find((m): m is ToolResultMessage => m.role === "toolResult")!;
 	return { result, text: resultText(result), description, requests };
 }
+
+/** A session model without image input, so `pi.ask` takes no images. */
+const TEXT_ONLY: HarnessOptions["fauxModels"] = [{ id: "faux-1", input: ["text"] }];
 
 function enabled(modelCalls: Record<string, unknown> = {}): HarnessOptions["setup"] {
 	return (dirs) => writeConfigs(dirs, { modelCalls: { enabled: true, ...modelCalls } });
@@ -104,7 +118,7 @@ test("turning Model calls on appends only the pi.ask paragraph to the descriptio
 	h = await createHarness();
 	const off = (await runCell(h, "1")).description;
 	await h.dispose();
-	h = await createHarness({ setup: enabled({ maxPerCell: 7, model: "faux/faux-1" }) });
+	h = await createHarness({ fauxModels: TEXT_ONLY, setup: enabled({ maxPerCell: 7, model: "faux/faux-1" }) });
 	const on = (await runCell(h, "1")).description;
 	expect(on.startsWith(`${off}\n\n`)).toBe(true);
 	const paragraph = on.slice(off.length + 2);
@@ -568,7 +582,7 @@ function withClassifier(modelCalls: Record<string, unknown> = {}): HarnessOption
 const CLASSIFY_SIGNATURE = "- `await pi.classify(state: dict, questions: dict) -> dict`";
 
 test("pi.classify returns the classifier's bool, choice, and score answers unchanged, sending exactly the Cell's state and questions", async () => {
-	h = await createHarness(withClassifier());
+	h = await createHarness({ ...withClassifier(), fauxModels: TEXT_ONLY });
 	h.classifier.setReply(() => ({ answers: ANSWERS, usage: USAGE }));
 	const { result, text, description, requests } = await runCell(h, [
 		"print('classify' in pi.__all__)",
@@ -972,7 +986,7 @@ test("image preparation errors send nothing and spend no budget or TUI count", a
 });
 
 test("text-only classifier rejects images before counting and omits image guidance", async () => {
-	h = await createHarness(withClassifier({ maxPerCell: 1 }));
+	h = await createHarness({ ...withClassifier({ maxPerCell: 1 }), fauxModels: TEXT_ONLY });
 	const { result, text, description } = await runCell(h, [
 		CATCH(`await pi.classify({}, ${QUESTIONS}, images=[b'anything'])`),
 		`print(await pi.classify({}, ${QUESTIONS}, images=None))`,
@@ -1000,4 +1014,134 @@ test("invalid images arguments raise TypeError locally without spending budget",
 	expect(text.split("\n")).toEqual([...invalid.map(() => "TypeError"), "{}"]);
 	expect(h.classifier.requests).toHaveLength(1);
 	expect(result.details).toMatchObject({ modelCalls: { count: 1 } });
+});
+
+const ASK_SIGNATURE = "- `await pi.ask(prompt: str, *, system: str | None = None) -> str`";
+const ASK_IMAGES_SIGNATURE = "- `await pi.ask(prompt: str, *, system: str | None = None, images: list | None = None) -> str`";
+const ASK_IMAGES_USE = "Pass `images` to read or describe many images without adding them to the context";
+const IMAGES_LINE = "takes a list of paths, bytes, or PIL.Image; PNG/JPEG/WebP/GIF. Relative paths use the Kernel's current directory.";
+
+test("pi.ask sends mixed paths, bytes, and Pillow images in list order before the prompt text", async () => {
+	h = await createHarness({ setup: enabled() });
+	const dir = join(h.cwd, "images");
+	await mkdir(dir);
+	const fixtures = await Promise.all(IMAGE_FORMATS.map(async (format, i) => {
+		const bytes = await readFile(new URL(`./fixtures/classifier/pixel.${format}`, import.meta.url));
+		await writeFile(join(dir, `${i}.bin`), bytes);
+		return { type: "image", data: bytes.toString("base64"), mimeType: `image/${format}` };
+	}));
+	const { result, text, description, requests } = await runCell(h, [
+		"from pathlib import Path",
+		"from PIL import Image",
+		`os.chdir(${JSON.stringify(dir)})`,
+		"interleaved = bytearray(2 * len(Path('2.bin').read_bytes()))",
+		"interleaved[::2] = Path('2.bin').read_bytes()",
+		"images = ['0.bin', Image.new('RGB', (3, 2), (1, 2, 3)), Path('1.bin'), memoryview(interleaved)[::2], bytearray(Path('3.bin').read_bytes())]",
+		"print(await pi.ask('Describe them', system='Be brief.', images=images))",
+	].join("\n"));
+	expect(result.isError).toBe(false);
+	expect(text).toBe("answer: Describe them");
+	expect(requests).toHaveLength(1);
+	expect(requests[0]).toMatchObject({ system: "Be brief.", prompt: "Describe them" });
+	expect(requests[0]!.blocks).toEqual(["image/png", "image/png", "image/jpeg", "image/webp", "image/gif", "text"]);
+	const [first, pillow, ...rest] = requests[0]!.images;
+	expect([first, ...rest]).toEqual(fixtures);
+	const png = Buffer.from(pillow!.data, "base64");
+	expect([png.readUInt32BE(16), png.readUInt32BE(20), png[25]]).toEqual([3, 2, 2]);
+	expect(result.details).toMatchObject({ modelCalls: { count: 1 } });
+	expect(description).toContain(ASK_IMAGES_SIGNATURE);
+	expect(description).toContain(ASK_IMAGES_USE);
+	expect(description.split(IMAGES_LINE)).toHaveLength(2);
+});
+
+test("images for a text-only ask model raise before sending or counting; images=[] works", async () => {
+	h = await createHarness({ fauxModels: TEXT_ONLY, setup: enabled({ maxPerCell: 1 }) });
+	const { result, text, description, requests } = await runCell(h, [
+		CATCH("await pi.ask('hi', images=[b'anything'])"),
+		"print(await pi.ask('hi', images=[]))",
+	].join("\n"));
+	expect(text).toBe("ModelCallError: Model faux/faux-1 does not accept image input\nanswer: hi");
+	expect(requests.map((r) => r.blocks)).toEqual([["text"]]);
+	expect(result.details).toMatchObject({ modelCalls: { count: 1 } });
+	expect(description).toContain(ASK_SIGNATURE);
+	expect(description).not.toMatch(/images[=:]|`images`|PIL\.Image|PNG\/JPEG/);
+});
+
+test("pi.ask image errors raise ModelCallError before counting; invalid arguments raise TypeError", async () => {
+	h = await createHarness({ setup: enabled({ maxPerCell: 1 }) });
+	await writeFile(join(h.cwd, "bad.png"), "not an image");
+	const invalid = ["'a.png'", "b'abc'", "()", "[1]", "[None]", "['ok.png', []]"];
+	const { result, text, requests } = await runCell(h, [
+		`os.chdir(${JSON.stringify(h.cwd)})`,
+		CATCH("await pi.ask('hi', images=['bad.png'])"),
+		CATCH("await pi.ask('hi', images=[b'GIF87'])"),
+		CATCH("await pi.ask('hi', images=['missing.png'])"),
+		...invalid.map((value) => [
+			"try:",
+			`    await pi.ask('hi', images=${value})`,
+			"except TypeError as e:",
+			"    print(type(e).__name__)",
+		].join("\n")),
+		"print(await pi.ask('hi'))",
+	].join("\n"));
+	const lines = text.split("\n");
+	expect(lines.slice(0, 3)).toEqual([
+		"ModelCallError: Unsupported image format; expected PNG/JPEG/WebP/GIF",
+		"ModelCallError: Unsupported image format; expected PNG/JPEG/WebP/GIF",
+		expect.stringMatching(/^ModelCallError: ENOENT/),
+	]);
+	expect(lines.slice(3)).toEqual([...invalid.map(() => "TypeError"), "answer: hi"]);
+	expect(requests).toHaveLength(1);
+	expect(result.details).toMatchObject({ modelCalls: { count: 1 } });
+});
+
+test("a provider rejecting an image call counts it, raises ModelCallError, and keeps its usage", async () => {
+	h = await createHarness({ setup: enabled({ maxPerCell: 1 }) });
+	const png = await readFile(new URL("./fixtures/classifier/pixel.png", import.meta.url));
+	const { result, text, requests } = await runCell(h, [
+		CATCH(`await pi.ask('hi', images=[bytes.fromhex(${JSON.stringify(png.toString("hex"))})])`),
+		CATCH("await pi.ask('again')"),
+	].join("\n"), () => fauxAssistantMessage([], { stopReason: "error", errorMessage: "image too large" }));
+	expect(text).toBe([
+		"ModelCallError: image too large",
+		"ModelCallError: Model call limit reached: at most 1 per Cell (modelCalls.maxPerCell)",
+	].join("\n"));
+	expect(requests).toHaveLength(1);
+	expect(result.details).toMatchObject({ modelCalls: { count: 1 } });
+	expect(result.usage?.input).toBeGreaterThan(0);
+});
+
+test("pi.ask image guidance follows the session model only while modelCalls.model is unset", async () => {
+	const models: HarnessOptions["fauxModels"] = [{ id: "faux-1", input: ["text"] }, { id: "vision", input: ["text", "image"] }];
+	h = await createHarness({ fauxModels: models, setup: enabled() });
+	const registry = h.session.modelRuntime;
+	const textOnly = (await runCell(h, "1")).description;
+	expect(textOnly).toContain(ASK_SIGNATURE);
+	expect((await runCell(h, "1")).description).toBe(textOnly);
+	await h.session.setModel(registry.getModel("faux", "vision")!);
+	const vision = (await runCell(h, "1")).description;
+	expect(vision).toContain(ASK_IMAGES_SIGNATURE);
+	expect(vision).toContain(ASK_IMAGES_USE);
+	expect(vision.replace(ASK_IMAGES_SIGNATURE, ASK_SIGNATURE).split("\n").filter((line) => !line.includes("`images`"))).toEqual(textOnly.split("\n"));
+	await h.session.setModel(registry.getModel("faux", "faux-1")!);
+	expect((await runCell(h, "1")).description).toBe(textOnly);
+	await h.dispose();
+
+	h = await createHarness({ fauxModels: models, setup: enabled({ model: "faux/vision" }) });
+	const configured = (await runCell(h, "1")).description;
+	expect(configured).toContain(ASK_IMAGES_SIGNATURE);
+	await h.session.setModel(h.session.modelRuntime.getModel("faux", "faux-1")!);
+	expect((await runCell(h, "1")).description).toBe(configured);
+});
+
+test("when pi.ask and pi.classify both take images, the images line appears once and names both", async () => {
+	h = await createHarness({ ...withClassifier(), fauxClassifier: { input: ["text", "image"] } });
+	const { description } = await runCell(h, "1");
+	expect(description).toContain(ASK_IMAGES_SIGNATURE);
+	expect(description).toContain("questions: dict, *, images=None)");
+	expect(description.split(IMAGES_LINE)).toHaveLength(2);
+	const lines = description.split("\n");
+	const shared = lines.findIndex((line) => line.endsWith(IMAGES_LINE));
+	expect(lines[shared]).toBe(`  - \`images\` (for \`pi.ask\` and \`pi.classify\`) ${IMAGES_LINE}`);
+	expect(shared).toBeLessThan(lines.findIndex((line) => line.startsWith("- `await pi.classify(")));
 });

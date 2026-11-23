@@ -37,18 +37,20 @@ class ModelCallError(RuntimeError):
     """
 
 
-async def ask(prompt: str, *, system: str | None = None) -> str:
+async def ask(prompt: str, *, system: str | None = None, images: list | None = None) -> str:
     """Ask a model with no tools and no Kernel of its own (a Model call); returns its answer text.
 
-    ``system`` is an optional system prompt. Each call is one request without history. The host runs at
-    most 8 Model calls of a Cell at once and queues the rest, up to the per-Cell budget.
-    Raises ModelCallError when the call fails, including an answer cut off at its output limit.
+    ``system`` is an optional system prompt. ``images`` accepts the same values as ``classify``'s and is
+    sent before ``prompt`` in one user message; the model must accept image input. Each call is one request
+    without history. The host runs at most 8 Model calls of a Cell at once and queues the rest, up to the
+    per-Cell budget. Raises ModelCallError when the call fails, including an answer cut off at its output limit.
     """
     if not isinstance(prompt, str) or not prompt:
         raise TypeError("prompt must be a non-empty str")
     if system is not None and not isinstance(system, str):
         raise TypeError(f"system must be a str or None, got {type(system).__name__}")
-    return await _model_call({"type": "pi.ask", "prompt": prompt, "system": system})
+    encoded_images = _encode_images(images)
+    return await _model_call({"type": "pi.ask", "prompt": prompt, "system": system, "images": encoded_images})
 
 
 async def classify(
@@ -72,33 +74,40 @@ async def classify(
         raise TypeError(f"questions must be a dict, got {type(questions).__name__}")
     if not questions:
         raise ValueError("questions must not be empty")
-    encoded_images = []
-    if images is not None:
-        if not isinstance(images, list):
-            raise TypeError("images must be a list or None")
-        pillow_image_type = getattr(sys.modules.get("PIL.Image"), "Image", ())
-        for image in images:
-            if isinstance(image, (str, os.PathLike)):
-                path = os.fsdecode(os.fspath(image))
-                if os.name == "nt":
-                    path = os.path.abspath(path)
-                elif not os.path.isabs(path):
-                    # Leave ".." for the filesystem to resolve after following symlinks.
-                    path = os.path.join(os.getcwd(), path)
-                encoded_images.append({"path": path})
-            elif isinstance(image, (bytes, bytearray, memoryview)):
-                data = image.tobytes() if isinstance(image, memoryview) else image
-                encoded_images.append({"data": base64.b64encode(data).decode("ascii")})
-            elif isinstance(image, pillow_image_type):
-                encoded_images.append({"data": _pillow_png(image)})
-            else:
-                raise TypeError(f"images items must be paths, bytes, or PIL.Image, got {type(image).__name__}")
+    encoded_images = _encode_images(images)
     try:
         return await _model_call({
             "type": "pi.classify", "state": state, "questions": questions, "images": encoded_images
         })
     except (TypeError, ValueError) as e:
         raise ModelCallError(str(e)) from None
+
+
+def _encode_images(images: list | None) -> list[dict[str, str]]:
+    """Encode ``images`` for the host: paths resolved against the Kernel cwd, bytes and Pillow images as base64."""
+    encoded_images: list[dict[str, str]] = []
+    if images is None:
+        return encoded_images
+    if not isinstance(images, list):
+        raise TypeError("images must be a list or None")
+    pillow_image_type = getattr(sys.modules.get("PIL.Image"), "Image", ())
+    for image in images:
+        if isinstance(image, (str, os.PathLike)):
+            path = os.fsdecode(os.fspath(image))
+            if os.name == "nt":
+                path = os.path.abspath(path)
+            elif not os.path.isabs(path):
+                # Leave ".." for the filesystem to resolve after following symlinks.
+                path = os.path.join(os.getcwd(), path)
+            encoded_images.append({"path": path})
+        elif isinstance(image, (bytes, bytearray, memoryview)):
+            data = image.tobytes() if isinstance(image, memoryview) else image
+            encoded_images.append({"data": base64.b64encode(data).decode("ascii")})
+        elif isinstance(image, pillow_image_type):
+            encoded_images.append({"data": _pillow_png(image)})
+        else:
+            raise TypeError(f"images items must be paths, bytes, or PIL.Image, got {type(image).__name__}")
+    return encoded_images
 
 
 def _pillow_png(image: Any) -> str:

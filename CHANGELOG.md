@@ -6,6 +6,7 @@
 
 - Classifier image input: `pi.classify(state, questions, images=[...])` accepts mixed paths and bytes-like values. Relative paths use the Kernel's current directory; the host detects PNG/JPEG/WebP/GIF from content and rejects unsupported input before spending Model-call budget. Image guidance appears only for image-capable classifiers. (#80)
 - Pillow is installed in the default Kernel environment without being pre-imported. `pi.classify` accepts Pillow images alongside paths and bytes, encoding them as PNG without resizing and converting unsupported modes to RGB or RGBA as needed. (#81)
+- `pi.ask` image input: `pi.ask(prompt, images=[...])` accepts the same paths, bytes-like values, and Pillow images as `pi.classify`, sent before the prompt text to the same model. Images for a model without image input, unreadable files, and unsupported formats raise `pi.ModelCallError` before spending Model-call budget. The `ipython` description mentions `images` for `pi.ask` only while its model accepts images. (#85)
 
 ### Fixed
 
