@@ -7,7 +7,9 @@ the event loop the Cell runs on, so the host's reply could never be received.
 
 from __future__ import annotations
 
+import base64
 import json
+import os
 from typing import Any
 
 from rlm import repl as _repl
@@ -47,12 +49,15 @@ async def ask(prompt: str, *, system: str | None = None) -> str:
     return await _model_call({"type": "pi.ask", "prompt": prompt, "system": system})
 
 
-async def classify(state: dict[str, Any], questions: dict[str, Any]) -> dict[str, Any]:
+async def classify(
+    state: dict[str, Any], questions: dict[str, Any], *, images: list | None = None
+) -> dict[str, Any]:
     """Ask the configured classifier typed questions about ``state`` (a Model call); returns the answers by question ID.
 
     ``questions`` maps question IDs to pi's classifier questions (``bool``, ``choice``, or ``score``); the
     answers are pi's classifier answers, unchanged. Shares the 8-in-flight cap and the per-Cell limit with
-    ``ask``. Raises ModelCallError when the call fails.
+    ``ask``. ``images`` accepts paths (relative to the Kernel cwd) and bytes-like values;
+    PNG, JPEG, WebP, and GIF are detected by the host. Raises ModelCallError when the call fails.
     """
     if not isinstance(state, dict):
         raise TypeError(f"state must be a dict, got {type(state).__name__}")
@@ -64,8 +69,21 @@ async def classify(state: dict[str, Any], questions: dict[str, Any]) -> dict[str
         raise TypeError(f"questions must be a dict, got {type(questions).__name__}")
     if not questions:
         raise ValueError("questions must not be empty")
+    encoded_images = []
+    if images is not None:
+        if not isinstance(images, list):
+            raise TypeError("images must be a list or None")
+        for image in images:
+            if isinstance(image, (str, os.PathLike)):
+                encoded_images.append({"path": os.fsdecode(os.path.abspath(os.fspath(image)))})
+            elif isinstance(image, (bytes, bytearray, memoryview)):
+                encoded_images.append({"data": base64.b64encode(image).decode("ascii")})
+            else:
+                raise TypeError(f"images items must be paths or bytes, got {type(image).__name__}")
     try:
-        return await _model_call({"type": "pi.classify", "state": state, "questions": questions})
+        return await _model_call({
+            "type": "pi.classify", "state": state, "questions": questions, "images": encoded_images
+        })
     except (TypeError, ValueError) as e:
         raise ModelCallError(str(e)) from None
 

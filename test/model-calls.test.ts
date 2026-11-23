@@ -1,3 +1,4 @@
+import { readFile, mkdir, writeFile } from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
 import { join } from "node:path";
 import {
@@ -833,4 +834,89 @@ test("a background task calling pi.classify after its Cell returned raises pi.Mo
 	const later = await runCell(h, "print(background.done(), await background)");
 	expect(later.text).toBe("True ModelCallError: Model calls are only allowed while their originating Cell runs");
 	expect(h.classifier.requests).toEqual([]);
+});
+
+
+const IMAGE_FORMATS = ["png", "jpeg", "webp", "gif"];
+
+test("classifier detects mixed paths and bytes from content, using the Kernel's changed cwd", async () => {
+	h = await createHarness({ ...withClassifier(), fauxClassifier: { input: ["text", "image"] } });
+	const dir = join(h.cwd, "images");
+	await mkdir(dir);
+	const images = await Promise.all(IMAGE_FORMATS.map(async (format, i) => {
+		const bytes = await readFile(new URL(`./fixtures/classifier/pixel.${format}`, import.meta.url));
+		// Misleading suffix: the content, not the extension, determines MIME type.
+		await writeFile(join(dir, `${i}.txt`), bytes);
+		return { type: "image", data: bytes.toString("base64"), mimeType: `image/${format}` };
+	}));
+	const { result, text, description } = await runCell(h, [
+		"from pathlib import Path",
+		`os.chdir(${JSON.stringify(dir)})`,
+		"payloads = [Path(f'{i}.txt').read_bytes() for i in range(4)]",
+		"paths = ['0.txt', Path('1.txt'), '2.txt', Path('3.txt')]",
+		"raw = [payloads[0], bytearray(payloads[1]), memoryview(payloads[2]), payloads[3]]",
+		`print(await pi.classify({}, ${QUESTIONS}, images=paths + raw))`,
+	].join("\n"));
+	expect(result.isError).toBe(false);
+	expect(text).toBe("{}");
+	expect(h.classifier.requests[0]!.images).toEqual([...images, ...images]);
+	expect(result.details).toMatchObject({ modelCalls: { count: 1 } });
+	expect(description).toContain("questions: dict, *, images=None)");
+	expect(description).toContain("a list of paths or bytes; PNG/JPEG/WebP/GIF");
+	expect(description).not.toMatch(/PIL.Image|Faux Judge|faux-classifier/);
+});
+
+test("image preparation errors send nothing and spend no budget or TUI count", async () => {
+	h = await createHarness({ ...withClassifier({ maxPerCell: 1 }), fauxClassifier: { input: ["text", "image"] } });
+	const badFile = join(h.cwd, "bad.png");
+	await writeFile(badFile, "not an image");
+	const { result, text } = await runCell(h, [
+		CATCH(`await pi.classify({}, ${QUESTIONS}, images=[${JSON.stringify(badFile)}])`),
+		CATCH(`await pi.classify({}, ${QUESTIONS}, images=[b'not an image'])`),
+		CATCH(`await pi.classify({}, ${QUESTIONS}, images=[${JSON.stringify(join(h.cwd, "missing.png"))}])`),
+		CATCH(`await pi.classify({}, ${QUESTIONS}, images=[${JSON.stringify(h.cwd)}])`),
+	].join("\n"));
+	expect(result.isError).toBe(false);
+	expect(text.match(/ModelCallError:/g)).toHaveLength(4);
+	expect(text.match(/Unsupported image format/g)).toHaveLength(2);
+	expect(h.classifier.requests).toEqual([]);
+	expect(result.details).not.toHaveProperty("modelCalls");
+	const next = await runCell(h, [
+		CATCH(`await pi.classify({}, ${QUESTIONS}, images=[b'bad'])`),
+		`print(await pi.classify({}, ${QUESTIONS}, images=[]))`,
+	].join("\n"));
+	expect(next.text).toMatch(/Unsupported image format.*\n\{\}/s);
+	expect(h.classifier.requests).toHaveLength(1);
+	expect(next.result.details).toMatchObject({ modelCalls: { count: 1, totalTokens: 0, cost: 0 } });
+});
+
+test("text-only classifier rejects images before counting and omits image guidance", async () => {
+	h = await createHarness(withClassifier({ maxPerCell: 1 }));
+	const { result, text, description } = await runCell(h, [
+		CATCH(`await pi.classify({}, ${QUESTIONS}, images=[b'anything'])`),
+		`print(await pi.classify({}, ${QUESTIONS}, images=None))`,
+	].join("\n"));
+	expect(text).toBe("ModelCallError: Classifier does not accept image input\n{}");
+	expect(description).toContain(CLASSIFY_SIGNATURE);
+	expect(description).not.toMatch(/images=|paths or bytes|PNG\/JPEG/);
+	expect(h.classifier.requests).toHaveLength(1);
+	expect(result.details).toMatchObject({ modelCalls: { count: 1 } });
+});
+
+test("invalid images arguments raise TypeError locally without spending budget", async () => {
+	h = await createHarness(withClassifier({ maxPerCell: 1 }));
+	const invalid = ["'a.png'", "b'abc'", "()", "{}", "[1]", "[None]", "[object()]", "['ok.png', []]"];
+	const { result, text } = await runCell(h, [
+		...invalid.map((value) => [
+			"try:",
+			`    await pi.classify({}, ${QUESTIONS}, images=${value})`,
+			"except TypeError as e:",
+			"    print(type(e).__name__)",
+		].join("\n")),
+		`print(await pi.classify({}, ${QUESTIONS}))`,
+	].join("\n"));
+	expect(result.isError).toBe(false);
+	expect(text.split("\n")).toEqual([...invalid.map(() => "TypeError"), "{}"]);
+	expect(h.classifier.requests).toHaveLength(1);
+	expect(result.details).toMatchObject({ modelCalls: { count: 1 } });
 });

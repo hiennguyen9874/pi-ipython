@@ -161,7 +161,6 @@ const PI_ASK_FALLBACK_LINE = "  - For yes/no, labels, or scores, request a struc
 const PI_ASK_BATCH_LINE = "  - For independent prompts, take `batch = prompts[:remaining]` (`remaining` is the unused Cell budget), then `rs = await asyncio.gather(*(pi.ask(p) for p in batch), return_exceptions=True)`. Pair results with inputs; keep answers and handle exceptions separately.";
 
 const PI_CLASSIFY_LINES = [
-	"- `await pi.classify(state: dict, questions: dict) -> dict`: ask a classifier model typed questions about the JSON `state`; returns the answers by question ID",
 	"  - Prefer typed answers to parsing free text for yes/no, label selection, or scoring. Ask all questions about one `state` in one call.",
 	'  - Pass a non-empty `questions` dict mapping string IDs to question objects. For example: `a = await pi.classify({"review": text}, {"positive": {"type": "bool", "instructions": "Is the review positive?", "criteria": {"true": "Positive", "false": "Not positive"}}})`; read `a["positive"]["probability"]`.',
 	'  - Each question has `type`, `instructions` (a string), and `criteria`: for `bool`, `{"true": meaning, "false": meaning}`; for `choice`, `{label: meaning}`; for `score`, `[level, ...]` (lowest first). Meanings and levels are strings.',
@@ -169,14 +168,18 @@ const PI_CLASSIFY_LINES = [
 ];
 
 /** Model-call limits and guidance for the APIs that resolve in the live `ipython` loadout. */
-export function modelCallsSection({ maxPerCell, ask, classify }: { maxPerCell: number; ask: boolean; classify: boolean }): string | undefined {
+export function modelCallsSection({ maxPerCell, ask, classify, classifierImages = false }: { maxPerCell: number; ask: boolean; classify: boolean; classifierImages?: boolean }): string | undefined {
 	const calls = [ask && "`pi.ask`", classify && "`pi.classify`"].filter(Boolean).join(" and ");
 	if (!calls) return undefined;
 	return [
 		`- Model calls (${calls}): at most ${maxPerCell} total per Cell, with at most ${MAX_MODEL_CALLS_IN_FLIGHT} in flight. The host queues calls waiting for a slot. Fit each batch within the remaining Cell budget and process the rest in later Cells.`,
 		"  - Await Model calls in their originating Cell. Failed requests raise `pi.ModelCallError`.",
 		...(ask ? [...PI_ASK_LINES, ...(!classify ? [PI_ASK_FALLBACK_LINE] : []), PI_ASK_BATCH_LINE] : []),
-		...(classify ? PI_CLASSIFY_LINES : []),
+		...(classify ? [
+			`- \`await pi.classify(state: dict, questions: dict${classifierImages ? ", *, images=None" : ""}) -> dict\`: ask a classifier model typed questions about the JSON \`state\`; returns the answers by question ID`,
+			...(classifierImages ? ["  - `images` takes a list of paths or bytes; PNG/JPEG/WebP/GIF. Relative paths use the Kernel's current directory."] : []),
+			...PI_CLASSIFY_LINES,
+		] : []),
 	].join("\n");
 }
 

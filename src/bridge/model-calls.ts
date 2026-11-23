@@ -1,6 +1,7 @@
 // Host side of Model calls (ADR 0008): `pi.ask` and `pi.classify` in `src/bridge/pi.py` send the host requests
 // answered here.
 
+import { readFile } from "node:fs/promises";
 import {
 	type Api,
 	type ClassifierAnswer,
@@ -8,6 +9,7 @@ import {
 	type ClassifierModel,
 	type ClassifierQuestion,
 	clampThinkingLevel,
+	type ImageContent,
 	type JsonObject,
 	type Model,
 	type Usage,
@@ -160,11 +162,16 @@ export class CellModelCalls {
 		// Question shapes are left to pi and the provider: a bad one comes back as an error result.
 		const result = await this.call(
 			config,
-			() => resolveClassifier(config, this.ctx.modelRegistry),
-			(model, signal) =>
+			async () => {
+				const model = resolveClassifier(config, this.ctx.modelRegistry);
+				if (typeof model === "string") return model;
+				const images = await prepareClassifierImages(data.images, model);
+				return { model, images };
+			},
+			({ model, images }, signal) =>
 				this.ctx.modelRegistry.classify(
 					model,
-					{ state: state as JsonObject, questions: questions as Record<string, ClassifierQuestion> },
+					{ state: state as JsonObject, questions: questions as Record<string, ClassifierQuestion>, ...(images.length ? { images } : {}) },
 					{ signal },
 				),
 		);
@@ -247,6 +254,27 @@ export class CellModelCalls {
 		if (next) next();
 		else this.inFlight--;
 	}
+}
+
+/** Read Kernel-resolved paths and detect formats from content before spending a Model call. */
+async function prepareClassifierImages(value: unknown, model: ClassifierModel<ClassifierApi>): Promise<ImageContent[]> {
+	if (value === undefined || value === null) return [];
+	if (!Array.isArray(value)) throw new Error("images must be a list");
+	if (value.length && !model.input.includes("image")) throw new Error("Classifier does not accept image input");
+	return Promise.all(value.map(async (item): Promise<ImageContent> => {
+		if (!isPlainObject(item)) throw new Error("Invalid classifier image");
+		let bytes: Buffer;
+		if (typeof item.path === "string") bytes = await readFile(item.path);
+		else if (typeof item.data === "string") bytes = Buffer.from(item.data, "base64");
+		else throw new Error("Invalid classifier image");
+		let mimeType: string;
+		if (bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) mimeType = "image/png";
+		else if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) mimeType = "image/jpeg";
+		else if (bytes.toString("latin1", 0, 4) === "RIFF" && bytes.toString("latin1", 8, 12) === "WEBP") mimeType = "image/webp";
+		else if (["GIF87a", "GIF89a"].includes(bytes.toString("latin1", 0, 6))) mimeType = "image/gif";
+		else throw new Error("Unsupported image format; expected PNG/JPEG/WebP/GIF");
+		return { type: "image", data: bytes.toString("base64"), mimeType };
+	}));
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

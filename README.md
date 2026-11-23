@@ -265,7 +265,9 @@ Defaults:
 | `modelCalls.maxOutputTokens` | `4096` | Output-token cap for `pi.ask` (also capped by the model's own limit). Trusted projects only. |
 | `modelCalls.thinking` | `"off"` | Thinking level for `pi.ask`: `"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, or `"max"`. Ignored by models without reasoning. Trusted projects only. |
 
-One `pi.classify` request counts as one Model call, even when it answers several questions. It shares the per-Cell budget and eight in-flight slots with `pi.ask`. It accepts JSON state and returns bool, choice, or score answers by question ID; classifier image input is not supported yet.
+One `pi.classify` request counts as one Model call, even when it answers several questions. It shares the per-Cell budget and eight in-flight slots with `pi.ask`. It accepts JSON state and returns bool, choice, or score answers by question ID; `images=[...]` optionally accepts a mixed list of paths (`str`/`os.PathLike`) and bytes-like values (`bytes`, `bytearray`, `memoryview`). The classifier must support images. Relative paths use the Kernel's current directory. The host detects PNG/JPEG/WebP/GIF from content, with no resizing, size limit, or path restrictions; provider limits still apply. Invalid image arguments raise `TypeError`; unreadable files, unsupported formats, or images for a text-only classifier raise `pi.ModelCallError` before spending budget.
+
+OpenRouter accepts images in TypeSafe's format but silently drops them. GPT-6 Luna needs an API key; ChatGPT `/login` does not work.
 
 Rules for `prelude.imports`:
 

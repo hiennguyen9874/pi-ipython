@@ -148,10 +148,12 @@ export default function piIpython(pi: ExtensionAPI): void {
 			describeModelCalls: () => {
 				const settings = config.modelCalls;
 				if (!settings.enabled || !modelContext) return undefined;
+				const classifier = resolveClassifier(settings, modelContext.modelRegistry);
 				return modelCallsSection({
 					maxPerCell: settings.maxPerCell,
 					ask: typeof resolveModelCallModel(settings, modelContext) !== "string",
-					classify: typeof resolveClassifier(settings, modelContext.modelRegistry) !== "string",
+					classify: typeof classifier !== "string",
+					classifierImages: typeof classifier !== "string" && classifier.input.includes("image"),
 				});
 			},
 		}),
