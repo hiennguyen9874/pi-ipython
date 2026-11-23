@@ -102,7 +102,7 @@ async def classify(
 
 
 def _pillow_png(image: Any) -> str:
-    if image.mode not in {"1", "L", "LA", "P", "RGB", "RGBA", "I", "I;16", "I;16B"}:
+    if image.mode not in {"1", "L", "LA", "P", "RGB", "RGBA", "I;16", "I;16B"}:
         # Pillow needs to unpremultiply grayscale alpha before converting to RGBA.
         if image.mode == "La":
             image = image.convert("LA")

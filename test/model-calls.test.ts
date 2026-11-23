@@ -892,16 +892,17 @@ test("Pillow images mix with paths and bytes and reach the classifier as PNG wit
 		"rgba = Image.new('RGBA', (9, 5), (1, 2, 3, 4))",
 		"cmyk = Image.new('CMYK', (7, 13), (10, 20, 30, 40))",
 		"premultiplied = Image.new('La', (3, 5), (25, 50))",
-		`print(await pi.classify({}, ${QUESTIONS}, images=[path, rgba, path.read_bytes(), cmyk, premultiplied]))`,
+		"integer = Image.new('I', (6, 2), 127)",
+		`print(await pi.classify({}, ${QUESTIONS}, images=[path, rgba, path.read_bytes(), cmyk, premultiplied, integer]))`,
 		"assert cmyk.mode == 'CMYK'",
 	].join("\n"));
 	expect(text).toBe("Figure rejected\n{}");
 	expect(h.classifier.requests).toHaveLength(1);
 	expect(description).toContain("a list of paths, bytes, or PIL.Image; PNG/JPEG/WebP/GIF");
 	const images = h.classifier.requests[0]!.images!;
-	expect(images.map((image) => image.mimeType)).toEqual(["image/gif", "image/png", "image/gif", "image/png", "image/png"]);
+	expect(images.map((image) => image.mimeType)).toEqual(["image/gif", "image/png", "image/gif", "image/png", "image/png", "image/png"]);
 	for (const index of [0, 2]) expect(images[index]!.data).toBe(gif.toString("base64"));
-	for (const [index, width, height, colorType] of [[1, 9, 5, 6], [3, 7, 13, 2], [4, 3, 5, 6]] as const) {
+	for (const [index, width, height, colorType] of [[1, 9, 5, 6], [3, 7, 13, 2], [4, 3, 5, 6], [5, 6, 2, 2]] as const) {
 		const png = Buffer.from(images[index]!.data, "base64");
 		// PNG IHDR stores dimensions and color type (6 = RGBA, 2 = RGB).
 		expect([png.readUInt32BE(16), png.readUInt32BE(20), png[25]]).toEqual([width, height, colorType]);
