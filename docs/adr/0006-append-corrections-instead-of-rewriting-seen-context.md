@@ -9,5 +9,5 @@ Provider prompt caches reuse the longest prefix that matches the previous reques
 
 ## Consequences
 
-- Exception: the `ipython` tool description still changes whenever the callable Pi tool set changes (late MCP connections, tools toggled mid-session), and that costs one cache miss each time. It must not change for any other reason; a test pins it byte-for-byte while the callable set stays the same.
+- Exception: the `ipython` tool description still changes whenever the callable Pi tool set changes (late MCP connections, tools toggled mid-session), and that costs one cache miss each time. A second exception: whether `pi.ask` is described as taking images follows the `input` of the model it resolves to, so with `modelCalls.model` unset it changes when the session model is switched. That switch already starts a cold provider cache, so it costs no extra miss. The description must not change for any other reason; a test pins it byte-for-byte while the callable set stays the same.
 - The system prompt is forced and fixed for each run (ADR 0005), and the wording must stay the same from one run to the next unless the config or skills change.
