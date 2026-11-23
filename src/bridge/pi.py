@@ -8,8 +8,10 @@ the event loop the Cell runs on, so the host's reply could never be received.
 from __future__ import annotations
 
 import base64
+import io
 import json
 import os
+import sys
 from typing import Any
 
 from rlm import repl as _repl
@@ -56,8 +58,9 @@ async def classify(
 
     ``questions`` maps question IDs to pi's classifier questions (``bool``, ``choice``, or ``score``); the
     answers are pi's classifier answers, unchanged. Shares the 8-in-flight cap and the per-Cell limit with
-    ``ask``. ``images`` accepts paths (relative to the Kernel cwd) and bytes-like values;
-    PNG, JPEG, WebP, and GIF are detected by the host. Raises ModelCallError when the call fails.
+    ``ask``. ``images`` accepts paths (relative to the Kernel cwd), bytes-like values, and Pillow
+    images (encoded as PNG). PNG, JPEG, WebP, and GIF are detected by the host.
+    Raises ModelCallError when the call fails.
     """
     if not isinstance(state, dict):
         raise TypeError(f"state must be a dict, got {type(state).__name__}")
@@ -73,6 +76,7 @@ async def classify(
     if images is not None:
         if not isinstance(images, list):
             raise TypeError("images must be a list or None")
+        pillow_image_type = getattr(sys.modules.get("PIL.Image"), "Image", ())
         for image in images:
             if isinstance(image, (str, os.PathLike)):
                 path = os.fsdecode(os.fspath(image))
@@ -85,14 +89,27 @@ async def classify(
             elif isinstance(image, (bytes, bytearray, memoryview)):
                 data = image.tobytes() if isinstance(image, memoryview) else image
                 encoded_images.append({"data": base64.b64encode(data).decode("ascii")})
+            elif isinstance(image, pillow_image_type):
+                encoded_images.append({"data": _pillow_png(image)})
             else:
-                raise TypeError(f"images items must be paths or bytes, got {type(image).__name__}")
+                raise TypeError(f"images items must be paths, bytes, or PIL.Image, got {type(image).__name__}")
     try:
         return await _model_call({
             "type": "pi.classify", "state": state, "questions": questions, "images": encoded_images
         })
     except (TypeError, ValueError) as e:
         raise ModelCallError(str(e)) from None
+
+
+def _pillow_png(image: Any) -> str:
+    if image.mode not in {"1", "L", "LA", "P", "RGB", "RGBA", "I", "I;16", "I;16B"}:
+        # Pillow needs to unpremultiply grayscale alpha before converting to RGBA.
+        if image.mode == "La":
+            image = image.convert("LA")
+        image = image.convert("RGBA" if {"A", "a"}.intersection(image.getbands()) else "RGB")
+    with io.BytesIO() as buffer:
+        image.save(buffer, format="PNG")
+        return base64.b64encode(buffer.getbuffer()).decode("ascii")
 
 
 async def _model_call(data: dict[str, Any]) -> Any:

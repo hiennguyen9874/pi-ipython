@@ -111,7 +111,7 @@ What happens to the rest:
 
 ## Kernel packages
 
-The uv environment comes with these packages installed: requests, httpx, pyyaml, tomli, python-dotenv, pandas, numpy, scipy, beautifulsoup4, lxml, pydantic, tyro. The system prompt lists them.
+The uv environment comes with these packages installed: requests, httpx, pyyaml, tomli, python-dotenv, pandas, numpy, scipy, beautifulsoup4, lxml, pydantic, tyro, pillow (listed as `PIL (Pillow)` in the system prompt). Pillow is not pre-imported; use `from PIL import Image`.
 
 - **Add your own** with `python.packages` (uv requirement strings, e.g. `"polars"` or `"rich>=13"`). Global and trusted project lists are combined; pi ignores package entries from untrusted projects. Use absolute paths for local packages.
 - **Turn the defaults off** with `python.defaultPackages: false`.
@@ -265,7 +265,7 @@ Defaults:
 | `modelCalls.maxOutputTokens` | `4096` | Output-token cap for `pi.ask` (also capped by the model's own limit). Trusted projects only. |
 | `modelCalls.thinking` | `"off"` | Thinking level for `pi.ask`: `"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, or `"max"`. Ignored by models without reasoning. Trusted projects only. |
 
-One `pi.classify` request counts as one Model call, even when it answers several questions. It shares the per-Cell budget and eight in-flight slots with `pi.ask`. It accepts JSON state and returns bool, choice, or score answers by question ID; `images=[...]` optionally accepts a mixed list of paths (`str`/`os.PathLike`) and bytes-like values (`bytes`, `bytearray`, `memoryview`). The classifier must support images. Relative paths use the Kernel's current directory. The host detects PNG/JPEG/WebP/GIF from content, with no resizing, size limit, or path restrictions; provider limits still apply. Invalid image arguments raise `TypeError`; unreadable files, unsupported formats, or images for a text-only classifier raise `pi.ModelCallError` before spending budget.
+One `pi.classify` request counts as one Model call, even when it answers several questions. It shares the per-Cell budget and eight in-flight slots with `pi.ask`. It accepts JSON state and returns bool, choice, or score answers by question ID; `images=[...]` optionally accepts a mixed list of paths (`str`/`os.PathLike`), bytes-like values (`bytes`, `bytearray`, `memoryview`), and Pillow images (`PIL.Image.Image`). The Kernel encodes Pillow images as PNG without resizing, converting to RGB or RGBA when needed. The classifier must support images. Relative paths use the Kernel's current directory. The host detects PNG/JPEG/WebP/GIF from content, with no resizing, size limit, or path restrictions; provider limits still apply. Invalid image arguments raise `TypeError`; unreadable files, unsupported formats, or images for a text-only classifier raise `pi.ModelCallError` before spending budget.
 
 OpenRouter accepts images in TypeSafe's format but silently drops them. GPT-6 Luna needs an API key; ChatGPT `/login` does not work.
 

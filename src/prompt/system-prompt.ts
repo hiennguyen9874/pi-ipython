@@ -177,7 +177,7 @@ export function modelCallsSection({ maxPerCell, ask, classify, classifierImages 
 		...(ask ? [...PI_ASK_LINES, ...(!classify ? [PI_ASK_FALLBACK_LINE] : []), PI_ASK_BATCH_LINE] : []),
 		...(classify ? [
 			`- \`await pi.classify(state: dict, questions: dict${classifierImages ? ", *, images=None" : ""}) -> dict\`: ask a classifier model typed questions about the JSON \`state\`; returns the answers by question ID`,
-			...(classifierImages ? ["  - `images` takes a list of paths or bytes; PNG/JPEG/WebP/GIF. Relative paths use the Kernel's current directory."] : []),
+			...(classifierImages ? ["  - `images` takes a list of paths, bytes, or PIL.Image; PNG/JPEG/WebP/GIF. Relative paths use the Kernel's current directory."] : []),
 			...PI_CLASSIFY_LINES,
 		] : []),
 	].join("\n");

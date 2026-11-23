@@ -1,6 +1,6 @@
 // Kernel packages: third-party packages installed into the uv-managed Kernel venv.
 //
-// The default set is Unharnessed's (7d442aafa, packages/coding-agent/src/core/kernel/bootstrap.ts,
+// The default set builds on Unharnessed's (7d442aafa, packages/coding-agent/src/core/kernel/bootstrap.ts,
 // DEFAULT_RLM_EXTRA_PACKAGES).
 // Copyright (c) 2026 Unharnessed
 // MIT License, see LICENSE.
@@ -22,6 +22,7 @@ export const DEFAULT_PACKAGES: readonly { requirement: string; label: string; pr
 	{ requirement: "lxml", label: "lxml" },
 	{ requirement: "pydantic", label: "pydantic" },
 	{ requirement: "tyro", label: "tyro" },
+	{ requirement: "pillow", label: "PIL (Pillow)" },
 ];
 
 export const DEFAULT_PACKAGE_REQUIREMENTS: readonly string[] = DEFAULT_PACKAGES.map((p) => p.requirement);

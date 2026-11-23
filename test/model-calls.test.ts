@@ -851,6 +851,7 @@ test("classifier detects mixed paths and bytes from content, using the Kernel's 
 	}));
 	const { result, text, description } = await runCell(h, [
 		"from pathlib import Path",
+		"import sys",
 		`os.chdir(${JSON.stringify(dir)})`,
 		"payloads = [Path(f'{i}.txt').read_bytes() for i in range(4)]",
 		"paths = ['0.txt', Path('1.txt'), '2.txt', Path('3.txt')]",
@@ -858,14 +859,53 @@ test("classifier detects mixed paths and bytes from content, using the Kernel's 
 		"interleaved[::2] = payloads[2]",
 		"raw = [payloads[0], bytearray(payloads[1]), memoryview(interleaved)[::2], payloads[3]]",
 		`print(await pi.classify({}, ${QUESTIONS}, images=paths + raw))`,
+		"assert not any(name == 'PIL' or name.startswith('PIL.') for name in sys.modules)",
 	].join("\n"));
 	expect(result.isError).toBe(false);
 	expect(text).toBe("{}");
 	expect(h.classifier.requests[0]!.images).toEqual([...images, ...images]);
 	expect(result.details).toMatchObject({ modelCalls: { count: 1 } });
 	expect(description).toContain("questions: dict, *, images=None)");
-	expect(description).toContain("a list of paths or bytes; PNG/JPEG/WebP/GIF");
-	expect(description).not.toMatch(/PIL.Image|Faux Judge|faux-classifier/);
+	expect(description).not.toMatch(/Faux Judge|faux-classifier/);
+});
+
+test("Pillow images mix with paths and bytes and reach the classifier as PNG without resizing", async () => {
+	h = await createHarness({
+		fauxClassifier: { input: ["text", "image"] },
+		setup: (dirs) => writeConfigs(dirs, {
+			python: { defaultPackages: false, packages: ["pillow", "matplotlib"] },
+			modelCalls: { enabled: true, classifier: FAUX_CLASSIFIER },
+		}),
+	});
+	const path = join(h.cwd, "pixel.gif");
+	const gif = await readFile(new URL("./fixtures/classifier/pixel.gif", import.meta.url));
+	await writeFile(path, gif);
+	const { text, description } = await runCell(h, [
+		"from pathlib import Path",
+		"from PIL import Image",
+		"from matplotlib.figure import Figure",
+		"try:",
+		`    await pi.classify({}, ${QUESTIONS}, images=[Figure()])`,
+		"except TypeError:",
+		"    print('Figure rejected')",
+		`path = Path(${JSON.stringify(path)})`,
+		"rgba = Image.new('RGBA', (9, 5), (1, 2, 3, 4))",
+		"cmyk = Image.new('CMYK', (7, 13), (10, 20, 30, 40))",
+		"premultiplied = Image.new('La', (3, 5), (25, 50))",
+		`print(await pi.classify({}, ${QUESTIONS}, images=[path, rgba, path.read_bytes(), cmyk, premultiplied]))`,
+		"assert cmyk.mode == 'CMYK'",
+	].join("\n"));
+	expect(text).toBe("Figure rejected\n{}");
+	expect(h.classifier.requests).toHaveLength(1);
+	expect(description).toContain("a list of paths, bytes, or PIL.Image; PNG/JPEG/WebP/GIF");
+	const images = h.classifier.requests[0]!.images!;
+	expect(images.map((image) => image.mimeType)).toEqual(["image/gif", "image/png", "image/gif", "image/png", "image/png"]);
+	for (const index of [0, 2]) expect(images[index]!.data).toBe(gif.toString("base64"));
+	for (const [index, width, height, colorType] of [[1, 9, 5, 6], [3, 7, 13, 2], [4, 3, 5, 6]] as const) {
+		const png = Buffer.from(images[index]!.data, "base64");
+		// PNG IHDR stores dimensions and color type (6 = RGBA, 2 = RGB).
+		expect([png.readUInt32BE(16), png.readUInt32BE(20), png[25]]).toEqual([width, height, colorType]);
+	}
 });
 
 test.skipIf(process.platform === "win32")("classifier paths follow symlinks before resolving .., like open()", async () => {
@@ -920,14 +960,14 @@ test("text-only classifier rejects images before counting and omits image guidan
 	].join("\n"));
 	expect(text).toBe("ModelCallError: Classifier does not accept image input\n{}");
 	expect(description).toContain(CLASSIFY_SIGNATURE);
-	expect(description).not.toMatch(/images=|paths or bytes|PNG\/JPEG/);
+	expect(description).not.toMatch(/images=|PIL\.Image|PNG\/JPEG/);
 	expect(h.classifier.requests).toHaveLength(1);
 	expect(result.details).toMatchObject({ modelCalls: { count: 1 } });
 });
 
 test("invalid images arguments raise TypeError locally without spending budget", async () => {
 	h = await createHarness(withClassifier({ maxPerCell: 1 }));
-	const invalid = ["'a.png'", "b'abc'", "()", "{}", "[1]", "[None]", "[object()]", "['ok.png', []]"];
+	const invalid = ["'a.png'", "b'abc'", "()", "{}", "[1]", "[None]", "[object()]", "[np.zeros((2, 2, 3), dtype=np.uint8)]", "['ok.png', []]"];
 	const { result, text } = await runCell(h, [
 		...invalid.map((value) => [
 			"try:",

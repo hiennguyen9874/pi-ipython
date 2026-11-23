@@ -16,7 +16,7 @@ You have one tool, `ipython`. Each call runs a Cell in a persistent CPython Kern
 - Pre-imported in Cells only; files and scripts you write need their own imports:
   - stdlib: json, os, re, sys, time, math, shutil, itertools, functools, collections, textwrap, Path, datetime (the class), timedelta, Counter, defaultdict
   - packages: np, pd, requests, httpx, yaml
-- Other Kernel packages: tomli, dotenv (python-dotenv), scipy, bs4 (Beautiful Soup), lxml, pydantic, tyro. Add one with `import shlex, sys; r = await bash(f"uv pip install --python {shlex.quote(sys.executable)} package-name")`, then check `r.exit_code`.
+- Other Kernel packages: tomli, dotenv (python-dotenv), scipy, bs4 (Beautiful Soup), lxml, pydantic, tyro, PIL (Pillow). Add one with `import shlex, sys; r = await bash(f"uv pip install --python {shlex.quote(sys.executable)} package-name")`, then check `r.exit_code`.
 
 ## Working in Cells
 

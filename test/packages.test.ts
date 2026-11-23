@@ -16,9 +16,9 @@ const INSTALL_HINT = `Add one with \`${INSTALL_CODE}\`, then check \`r.exit_code
 test("by default the Kernel has the default packages, pre-imports the common ones, and the prompt lists them", async () => {
 	h = await createHarness();
 	const [where, used, imported] = await h.runCells(
-		"import sys\nsys.prefix",
+		"import sys\nassert not any(name == 'PIL' or name.startswith('PIL.') for name in sys.modules)\nsys.prefix",
 		"(np.arange(3).sum().item(), pd.DataFrame({'a': [1]}).shape, requests.__name__, httpx.__name__, yaml.safe_load('a: 1'))",
-		"import tomli, dotenv, scipy, bs4, lxml, pydantic, tyro\n'ok'",
+		"import tomli, dotenv, scipy, bs4, lxml, pydantic, tyro\nfrom PIL import Image\n'ok'",
 	);
 	expect(resultText(where!)).toBe(`'${defaultKernelVenv()}'`);
 	expect(resultText(used!)).toBe("(3, (1, 1), 'requests', 'httpx', {'a': 1})");
@@ -26,7 +26,7 @@ test("by default the Kernel has the default packages, pre-imports the common one
 	const prompt = await systemPrompt(h);
 	expect(prompt).toContain("  - packages: np, pd, requests, httpx, yaml\n");
 	expect(prompt).toContain(
-		"- Other Kernel packages: tomli, dotenv (python-dotenv), scipy, bs4 (Beautiful Soup), lxml, pydantic, tyro. "
+		"- Other Kernel packages: tomli, dotenv (python-dotenv), scipy, bs4 (Beautiful Soup), lxml, pydantic, tyro, PIL (Pillow). "
 			+ `${INSTALL_HINT}\n`,
 	);
 	expect(prompt).toContain("Kernel packages serve Cells only.");
