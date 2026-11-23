@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- Classifier image input: `pi.classify(state, questions, images=[...])` accepts mixed paths and bytes-like values. Relative paths use the Kernel's current directory; the host detects PNG/JPEG/WebP/GIF from content and rejects unsupported input before spending Model-call budget. Image guidance appears only for image-capable classifiers. (#80)
+- Pillow is installed in the default Kernel environment without being pre-imported. `pi.classify` accepts Pillow images alongside paths and bytes, encoding them as PNG without resizing and converting unsupported modes to RGB or RGBA as needed. (#81)
+
 ### Fixed
 
 - Classifier images accept non-contiguous memoryviews. On POSIX, image paths containing a symlink followed by `..` select the same file as Python’s `open()`. (#80)
