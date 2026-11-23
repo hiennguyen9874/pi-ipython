@@ -212,6 +212,7 @@ export class CellModelCalls {
 	): Promise<R> {
 		this.checkOpen();
 		const prepared = await prepare();
+		this.checkOpen();
 		if (typeof prepared === "string") throw new Error(prepared);
 		if (this.sent >= config.maxPerCell) {
 			throw new Error(`Model call limit reached: at most ${config.maxPerCell} per Cell (modelCalls.maxPerCell)`);

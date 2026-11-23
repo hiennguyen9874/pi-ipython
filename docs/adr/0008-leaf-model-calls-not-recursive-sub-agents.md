@@ -10,7 +10,7 @@ The PRD rules out Prime's `rlm.spawn` (recursive sub-agents), yet the research b
 
 ## Consequences
 
-- One function, `pi.ask(prompt, *, system=None) -> str`, and no batch function: the host caps Model calls at 8 in flight per Cell, so the model fans out with `asyncio.gather`, which it already knows. The glossary avoids "LLM call", so the API is not named `pi.llm`.
+- `pi.ask(prompt, *, system=None, images=None) -> str` has no batch function: the host caps Model calls at 8 in flight per Cell, so the model fans out with `asyncio.gather`, which it already knows. The glossary avoids "LLM call", so the API is not named `pi.llm`.
 - The budget is a call count per Cell (`modelCalls.maxPerCell`), checked before sending, plus an output-token cap per call. USD is not used: cost is 0 or unknown for local, unpriced, and subscription models. Tokens cannot be checked before a call is sent.
 - Usage goes on the `ipython` tool result's `usage`, which pi already adds to session totals, so no separate accounting exists.
 - Model calls share the Bridged-call lifetime (the Cell's signal; nothing after the Cell ends) but raise their own `pi.ModelCallError`, because `pi.ToolError.result` has no meaning here.

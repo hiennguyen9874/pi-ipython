@@ -1,5 +1,5 @@
 import { readFile, mkdir, symlink, writeFile } from "node:fs/promises";
-import { setTimeout as sleep } from "node:timers/promises";
+import { setImmediate as nextTurn, setTimeout as sleep } from "node:timers/promises";
 import { join } from "node:path";
 import {
 	type ClassifierAnswer,
@@ -18,6 +18,8 @@ import {
 import { initTheme, ModelRegistry, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
 import { afterEach, beforeAll, expect, test, vi } from "vitest";
+import { CellModelCalls, MAX_MODEL_CALLS_IN_FLIGHT } from "../src/bridge/model-calls.ts";
+import { loadConfig } from "../src/config.ts";
 import { createHarness, FAUX_CLASSIFIER, type Harness, type HarnessOptions, kernelPids, resultText, writeConfigs } from "./harness.ts";
 
 let h: Harness | undefined;
@@ -59,17 +61,14 @@ async function runCell(harness: Harness, code: string, reply: ModelReply = echo,
 		if (tools.length === 0) {
 			const system = context.messages.find((m) => m.role === "system");
 			const user = context.messages.find((m) => m.role === "user");
+			const blocks = typeof user?.content === "string" ? [{ type: "text" as const, text: user.content }] : user?.content ?? [];
 			const request: ModelRequest = {
 				model: `${model.provider}/${model.id}`,
 				modelMaxTokens: model.maxTokens,
 				system: system && getSystemMessageText(system),
-				prompt: typeof user?.content === "string"
-					? user.content
-					: (user?.content ?? []).flatMap((block) => (block.type === "text" ? [block.text] : [])).join(""),
-				blocks: typeof user?.content === "string"
-					? ["text"]
-					: (user?.content ?? []).map((block) => (block.type === "image" ? block.mimeType : block.type)),
-				images: typeof user?.content === "string" ? [] : (user?.content ?? []).filter((block) => block.type === "image"),
+				prompt: blocks.flatMap((block) => (block.type === "text" ? [block.text] : [])).join(""),
+				blocks: blocks.map((block) => (block.type === "image" ? block.mimeType : block.type)),
+				images: blocks.filter((block) => block.type === "image"),
 				options,
 			};
 			requests.push(request);
@@ -339,6 +338,42 @@ test("aborting a Cell during a Model call aborts the call and retains completed 
 	expect(text).toContain("KeyboardInterrupt");
 	// The interrupted request may itself report usage before the Cell settles.
 	expect(result.usage?.output).toBeGreaterThanOrEqual(completed.output);
+});
+
+// The Kernel stops waiting for host replies on abort, so observe settlement at the host boundary.
+test.each(["abort", "close"])("image preparation cannot queue after Cell %s", async (action) => {
+	h = await createHarness();
+	const { config } = loadConfig(h.cwd, h.agentDir);
+	const controller = new AbortController();
+	const modelRegistry = new ModelRegistry(h.session.modelRuntime);
+	await modelRegistry.refresh({ allowNetwork: false });
+	const calls = new CellModelCalls(() => ({ ...config.modelCalls, enabled: true }), { model: h.session.model, modelRegistry }, controller.signal);
+	let release!: () => void;
+	const held = new Promise<void>((resolve) => { release = resolve; });
+	const reply = async () => {
+		await held;
+		return fauxAssistantMessage("done");
+	};
+	h.setResponses(Array.from({ length: MAX_MODEL_CALLS_IN_FLIGHT + 1 }, () => reply));
+	const inFlight = Array.from({ length: MAX_MODEL_CALLS_IN_FLIGHT }, () => calls.ask({ prompt: "hold a slot" }));
+	const settled = Promise.allSettled(inFlight);
+	try {
+		await expect.poll(() => calls.summary()?.count).toBe(MAX_MODEL_CALLS_IN_FLIGHT);
+		const data = await readFile(new URL("./fixtures/classifier/pixel.png", import.meta.url), "base64");
+		const image = calls.ask({ prompt: "describe", images: [{ data }] }).catch((error: Error) => error.message);
+		if (action === "abort") controller.abort();
+		else calls.close();
+
+		// In-memory image preparation settles before the next event loop turn, while all slots are still held.
+		expect(await Promise.race([image, nextTurn("still waiting for a slot")])).toBe(action === "abort"
+			? "Model call aborted"
+			: "Model calls are only allowed while their originating Cell runs");
+		expect(calls.summary()?.count).toBe(MAX_MODEL_CALLS_IN_FLIGHT);
+	} finally {
+		release();
+		await settled;
+		calls.close();
+	}
 });
 
 test("a Kernel replacement preserves usage already gathered by the Cell", async () => {
@@ -853,16 +888,20 @@ test("a background task calling pi.classify after its Cell returned raises pi.Mo
 
 const IMAGE_FORMATS = ["png", "jpeg", "webp", "gif"];
 
-test("classifier detects mixed paths and bytes from content, using the Kernel's changed cwd", async () => {
-	h = await createHarness({ ...withClassifier(), fauxClassifier: { input: ["text", "image"] } });
-	const dir = join(h.cwd, "images");
+async function writeImageFixtures(dir: string): Promise<ImageContent[]> {
 	await mkdir(dir);
-	const images = await Promise.all(IMAGE_FORMATS.map(async (format, i) => {
+	return Promise.all(IMAGE_FORMATS.map(async (format, i) => {
 		const bytes = await readFile(new URL(`./fixtures/classifier/pixel.${format}`, import.meta.url));
 		// Misleading suffix: the content, not the extension, determines MIME type.
 		await writeFile(join(dir, `${i}.txt`), bytes);
 		return { type: "image", data: bytes.toString("base64"), mimeType: `image/${format}` };
 	}));
+}
+
+test("classifier detects mixed paths and bytes from content, using the Kernel's changed cwd", async () => {
+	h = await createHarness({ ...withClassifier(), fauxClassifier: { input: ["text", "image"] } });
+	const dir = join(h.cwd, "images");
+	const images = await writeImageFixtures(dir);
 	const { result, text, description } = await runCell(h, [
 		"from pathlib import Path",
 		"import sys",
@@ -1024,19 +1063,14 @@ const IMAGES_LINE = "takes a list of paths, bytes, or PIL.Image; PNG/JPEG/WebP/G
 test("pi.ask sends mixed paths, bytes, and Pillow images in list order before the prompt text", async () => {
 	h = await createHarness({ setup: enabled() });
 	const dir = join(h.cwd, "images");
-	await mkdir(dir);
-	const fixtures = await Promise.all(IMAGE_FORMATS.map(async (format, i) => {
-		const bytes = await readFile(new URL(`./fixtures/classifier/pixel.${format}`, import.meta.url));
-		await writeFile(join(dir, `${i}.bin`), bytes);
-		return { type: "image", data: bytes.toString("base64"), mimeType: `image/${format}` };
-	}));
+	const fixtures = await writeImageFixtures(dir);
 	const { result, text, description, requests } = await runCell(h, [
 		"from pathlib import Path",
 		"from PIL import Image",
 		`os.chdir(${JSON.stringify(dir)})`,
-		"interleaved = bytearray(2 * len(Path('2.bin').read_bytes()))",
-		"interleaved[::2] = Path('2.bin').read_bytes()",
-		"images = ['0.bin', Image.new('RGB', (3, 2), (1, 2, 3)), Path('1.bin'), memoryview(interleaved)[::2], bytearray(Path('3.bin').read_bytes())]",
+		"interleaved = bytearray(2 * len(Path('2.txt').read_bytes()))",
+		"interleaved[::2] = Path('2.txt').read_bytes()",
+		"images = ['0.txt', Image.new('RGB', (3, 2), (1, 2, 3)), Path('1.txt'), memoryview(interleaved)[::2], bytearray(Path('3.txt').read_bytes())]",
 		"print(await pi.ask('Describe them', system='Be brief.', images=images))",
 	].join("\n"));
 	expect(result.isError).toBe(false);
@@ -1130,18 +1164,37 @@ test("pi.ask image guidance follows the session model only while modelCalls.mode
 	h = await createHarness({ fauxModels: models, setup: enabled({ model: "faux/vision" }) });
 	const configured = (await runCell(h, "1")).description;
 	expect(configured).toContain(ASK_IMAGES_SIGNATURE);
-	await h.session.setModel(h.session.modelRuntime.getModel("faux", "faux-1")!);
-	expect((await runCell(h, "1")).description).toBe(configured);
+	for (const id of ["vision", "faux-1"]) {
+		await h.session.setModel(h.session.modelRuntime.getModel("faux", id)!);
+		expect(h.session.model?.id).toBe(id);
+		expect((await runCell(h, "1")).description).toBe(configured);
+	}
 });
 
-test("when pi.ask and pi.classify both take images, the images line appears once and names both", async () => {
-	h = await createHarness({ ...withClassifier(), fauxClassifier: { input: ["text", "image"] } });
+test.each([
+	{ askImages: true, classifierImages: true },
+	{ askImages: true, classifierImages: false },
+	{ askImages: false, classifierImages: true },
+])("image guidance is under the first capable API (ask: $askImages, classifier: $classifierImages)", async ({ askImages, classifierImages }) => {
+	h = await createHarness({
+		...withClassifier(),
+		fauxModels: askImages ? undefined : TEXT_ONLY,
+		fauxClassifier: { input: classifierImages ? ["text", "image"] : ["text"] },
+	});
 	const { description } = await runCell(h, "1");
-	expect(description).toContain(ASK_IMAGES_SIGNATURE);
-	expect(description).toContain("questions: dict, *, images=None)");
-	expect(description.split(IMAGES_LINE)).toHaveLength(2);
+	expect(description).toContain(askImages ? ASK_IMAGES_SIGNATURE : ASK_SIGNATURE);
+	expect(description.includes(ASK_IMAGES_USE)).toBe(askImages);
+	expect(description).toContain(classifierImages ? "questions: dict, *, images=None)" : "questions: dict)");
 	const lines = description.split("\n");
+	expect(lines.filter((line) => line.endsWith(IMAGES_LINE))).toHaveLength(1);
 	const shared = lines.findIndex((line) => line.endsWith(IMAGES_LINE));
-	expect(lines[shared]).toBe(`  - \`images\` (for \`pi.ask\` and \`pi.classify\`) ${IMAGES_LINE}`);
-	expect(shared).toBeLessThan(lines.findIndex((line) => line.startsWith("- `await pi.classify(")));
+	const apis = askImages && classifierImages ? " (for \`pi.ask\` and \`pi.classify\`)" : "";
+	expect(lines[shared]).toBe(`  - \`images\`${apis} ${IMAGES_LINE}`);
+	const classifier = lines.findIndex((line) => line.startsWith("- \`await pi.classify("));
+	if (askImages) {
+		expect(shared).toBeGreaterThan(lines.findIndex((line) => line.startsWith(ASK_IMAGES_SIGNATURE)));
+		expect(shared).toBeLessThan(classifier);
+	} else {
+		expect(shared).toBe(classifier + 1);
+	}
 });
