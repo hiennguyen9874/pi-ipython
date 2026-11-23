@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-23
+
 ### Added
 
 - Classifier image input: `pi.classify(state, questions, images=[...])` accepts mixed paths and bytes-like values. Relative paths use the Kernel's current directory; the host detects PNG/JPEG/WebP/GIF from content and rejects unsupported input before spending Model-call budget. Image guidance appears only for image-capable classifiers. (#80)
